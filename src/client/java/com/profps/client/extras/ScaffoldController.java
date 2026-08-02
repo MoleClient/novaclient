@@ -261,14 +261,14 @@ public final class ScaffoldController {
 			legitDirection = Vec3d.ZERO;
 			return;
 		}
-		turnToward(player, placement.point());
-		BlockHitResult ray = liveBlockHit(player);
-		if (ray == null || !ray.getBlockPos().equals(placement.support()) || ray.getSide() != placement.face()) {
-			status = "Legit aiming";
-			return;
-		}
 		long now = System.nanoTime();
 		if (now - lastPlaceNanos < PLACE_INTERVAL_NS) return;
+
+		// Legit places silently against the support face, exactly like Clutch and Height
+		// Clutch do. It must never steal yaw/pitch: the whole point of Legit is that you
+		// keep aiming wherever you like while it edge-sneaks and bridges under you.
+		BlockHitResult ray = new BlockHitResult(placement.point(), placement.face(),
+				placement.support(), false);
 		ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, ray);
 		if (!result.isAccepted()) {
 			status = "Placement refused";
