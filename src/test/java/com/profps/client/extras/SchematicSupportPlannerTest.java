@@ -80,6 +80,30 @@ final class SchematicSupportPlannerTest {
 	}
 
 	@Test
+	void standFloorPlanLeavesTheBodyCellsOpen() {
+		// Stand scaffolding plans a causeway to the floor cell beneath a stand
+		// while the stand's two body cells stay open for the player. The plan
+		// must arrive without ever occupying them.
+		TestSpace space = new TestSpace();
+		space.groundY = 0;
+		SchematicSupportPlanner.Cell floor = new SchematicSupportPlanner.Cell(0, 5, 0);
+		SchematicSupportPlanner.Cell body = new SchematicSupportPlanner.Cell(0, 6, 0);
+		SchematicSupportPlanner.Cell head = new SchematicSupportPlanner.Cell(0, 7, 0);
+		space.unavailable.add(body);
+		space.unavailable.add(head);
+
+		List<SchematicSupportPlanner.Cell> plan = SchematicSupportPlanner.plan(
+				floor, space, 8_192, 32, 16, 64);
+
+		assertFalse(plan.isEmpty());
+		assertFalse(plan.contains(body));
+		assertFalse(plan.contains(head));
+		assertEquals(1, plan.getFirst().y(), "the route must rise from real terrain");
+		assertTrue(plan.stream().anyMatch(cell -> cell.manhattan(floor) == 1),
+				"the chain must end with a placement face for the stand floor");
+	}
+
+	@Test
 	void tallFloatingTargetCanReachTerrainWithALongStaircase() {
 		TestSpace space = new TestSpace();
 		space.groundY = 0;

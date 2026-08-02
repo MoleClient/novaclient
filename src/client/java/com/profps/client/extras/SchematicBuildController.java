@@ -72,6 +72,15 @@ import java.util.Set;
  * Every placement still requires a real raycast, a real support face, an
  * available material, vanilla placement prediction, and vanilla
  * {@code interactBlock}.
+ *
+ * <p>The controller is never allowed to idle while work is pending: when no
+ * cell has a proven stand it walks toward the nearest pending cell anyway,
+ * because closing distance is what turns unprovable stands into provable ones.
+ * When no stand exists at all it creates one out of temporary blocks — a
+ * bridge/staircase causeway planned by {@link SchematicSupportPlanner}, or a
+ * straight-up pillar jump-placed beneath the body — then builds from it and
+ * cleans it up through the same owned-block ledger as face supports. Movement
+ * runs at real player pace: sprint on the ground, sprint-flight in the air.
  */
 public final class SchematicBuildController {
 	private static final boolean AUTO_MOVE_AVAILABLE = true;
@@ -101,6 +110,20 @@ public final class SchematicBuildController {
 	private static final int ANCHOR_STAND_PROOFS_PER_PLAN = 384;
 	private static final int UNSTICK_TRIGGER_TICKS = 16;
 	private static final int UNSTICK_BURST_TICKS = 9;
+	// Never-idle navigation: when no pending cell has a provable stand this
+	// tick, walk toward the nearest one anyway. Approach starts outside this
+	// distance and asks the partial-path search for only modest progress —
+	// 8 keeps the search's minimum-progress clamp at its 2-block floor, so a
+	// short trip (the "standing two blocks behind the build" case) still gets
+	// a route instead of being refused for lack of a long corridor.
+	private static final double APPROACH_MIN_DISTANCE = 4.0D;
+	private static final double APPROACH_PROGRESS = 8.0D;
+	private static final int NAV_CANDIDATES_PER_TICK = 3;
+	// Stand scaffolding: temporary blocks placed for the BODY, not the block.
+	private static final int SCAFFOLD_STAND_EXAMINE_LIMIT = 40;
+	private static final int SCAFFOLD_STAND_PLAN_ATTEMPTS = 8;
+	private static final int MAX_PILLAR_HEIGHT = 24;
+	private static final int PILLAR_STALL_TICKS = 70;
 	private static final int MAX_PATH_NODES = 32_768;
 	private static final int SUPPORT_PATH_NODES = 32_768;
 	private static final int SUPPORT_HORIZONTAL_HORIZON = 128;
@@ -200,6 +223,13 @@ public final class SchematicBuildController {
 	private final ArrayDeque<DesiredBlock> temporaryQueue = new ArrayDeque<>();
 	private final LinkedHashMap<BlockPos, BlockState> ownedTemporaryBlocks = new LinkedHashMap<>();
 	private DesiredBlock temporarySupportGoal;
+	// Pillar scaffold: jump-place a column beneath the body up to pillarTopY.
+	private int pillarColumnX;
+	private int pillarColumnZ;
+	private int pillarTopY;
+	private int pillarStallTicks;
+	private int lastPillarFeetY = Integer.MIN_VALUE;
+	private BlockState pillarMaterial;
 	private int nextCleanupAttemptTick;
 	private boolean placementSent;
 	private boolean breakingTemporary;
@@ -306,7 +336,8 @@ public final class SchematicBuildController {
 		// blocks as progress would let scaffolding alone keep a layer alive
 		// forever without ever placing a schematic block.
 		if (layerProgressTick != Integer.MIN_VALUE
-				&& (!temporaryQueue.isEmpty() || workKind == WorkKind.TEMP_PLACE)) {
+				&& (!temporaryQueue.isEmpty() || workKind == WorkKind.TEMP_PLACE
+						|| workKind == WorkKind.PILLAR)) {
 			layerProgressTick++;
 		}
 		if (target != null) {
@@ -381,6 +412,7 @@ public final class SchematicBuildController {
 		}
 
 		if (workKind == WorkKind.TEMP_REMOVE) alignAndBreakTemporary(client);
+		else if (workKind == WorkKind.PILLAR) drivePillar(client);
 		else alignAndPlace(client);
 	}
 
@@ -535,9 +567,14 @@ public final class SchematicBuildController {
 		if (layerProgressTick == Integer.MIN_VALUE || layerProgressTick > now) layerProgressTick = now;
 		if (!pending.isEmpty() && now - layerProgressTick > LAYER_STALL_TICKS) return advanceLayer(client);
 
-		DesiredBlock next = prioritizedSupportGoal(client);
-		if (next == null) next = choosePendingTarget(client);
-		if (next != null) {
+		// Several candidates per tick: one cell with a broken stand proof must
+		// never cost a whole tick of stillness while its neighbors are workable.
+		boolean scaffoldTried = false;
+		for (int attempt = 0; attempt < NAV_CANDIDATES_PER_TICK; attempt++) {
+			DesiredBlock next = prioritizedSupportGoal(client);
+			if (next == null) next = choosePendingTarget(client);
+			if (next == null) break;
+
 			BlockState current = client.world.getBlockState(next.pos());
 			if (current.isReplaceable() && !hasSupport(client.world, next.pos())) {
 				if (!config.schematicTemporaryBlocks) {
@@ -545,13 +582,13 @@ public final class SchematicBuildController {
 					retryAfter.put(next.pos(), client.player.age + TARGET_RETRY_TICKS);
 					status(client, "Layer " + activeLayer + " needs a support face (Temporary Blocks is off)",
 							Formatting.GOLD, 40);
-					return false;
+					continue;
 				}
 				if (enqueueTemporarySupport(client, next)) return prepareTemporaryTarget(client);
 				retryAfter.put(next.pos(), client.player.age + TARGET_RETRY_TICKS);
 				status(client, "No safe temporary-block route or enough scaffold material",
 						Formatting.GOLD, 40);
-				return false;
+				continue;
 			}
 
 			NavigationPlan plan = navigationPlan(client, next);
@@ -560,6 +597,14 @@ public final class SchematicBuildController {
 				return true;
 			}
 			if (flightActivationPhase > 0) return false;
+			// No walkable stand exists anywhere in reach of this cell. Make one:
+			// a temporary causeway or pillar the body can occupy is exactly as
+			// legitimate as the face supports planned for unsupported cells.
+			// One planning burst per tick keeps the worst case off the frame time.
+			if (!scaffoldTried) {
+				scaffoldTried = true;
+				if (enqueueStandScaffold(client, next)) return true;
+			}
 			if (sameDesiredBlock(temporarySupportGoal, next)) temporarySupportGoal = null;
 			retryAfter.put(next.pos(), client.player.age + TARGET_RETRY_TICKS);
 		}
@@ -582,6 +627,12 @@ public final class SchematicBuildController {
 				status(client, "Layer " + activeLayer + " needs a support face or obstruction cleared",
 						Formatting.GOLD, 40);
 			}
+			// Standing still never fixes a failed stand proof; closing distance
+			// often does. Walk at the nearest pending cell whenever we are not
+			// already beside it, and re-prove everything from closer range.
+			if (approachPending(client)) return true;
+			status(client, "Layer " + activeLayer + ": " + pending.size() + " cell(s) waiting for a route",
+					Formatting.GRAY, 40);
 			return false;
 		}
 
@@ -794,7 +845,7 @@ public final class SchematicBuildController {
 		if (available <= 0) return false;
 
 		SchematicSupportPlanner.Cell targetCell = supportCell(desired.pos());
-		SchematicSupportPlanner.Space space = new TemporarySupportSpace(client, desired.pos());
+		SchematicSupportPlanner.Space space = new TemporarySupportSpace(client, desired.pos(), Set.of());
 		List<SchematicSupportPlanner.Cell> plan = SchematicSupportPlanner.planFromSupports(
 				targetCell, temporarySupportCandidates(client, desired), space,
 				SUPPORT_PATH_NODES, SUPPORT_HORIZONTAL_HORIZON,
@@ -937,6 +988,16 @@ public final class SchematicBuildController {
 			NavigationPlan plan = navigationPlan(client, new DesiredBlock(pos, entry.getValue()));
 			if (plan == null) {
 				if (flightActivationPhase > 0) return false;
+				// Standing on the very block (a pillar top): break beneath the
+				// feet and ride the column down, exactly like a player would.
+				if (client.player.isOnGround() && client.player.getBlockPos().down().equals(pos)
+						&& safeToBreakUnderFeet(client, pos)) {
+					nextCleanupAttemptTick = 0;
+					beginWork(new DesiredBlock(pos, entry.getValue()), WorkKind.TEMP_REMOVE,
+							new NavigationPlan(List.of(feetNode(client.player)), true));
+					status(client, "Descending the temporary pillar", Formatting.GRAY, 20);
+					return true;
+				}
 				retryAfter.put(pos, client.player.age + TARGET_RETRY_TICKS);
 				continue;
 			}
@@ -959,13 +1020,293 @@ public final class SchematicBuildController {
 		temporarySupportGoal = null;
 	}
 
+	// ── Never-idle approach + stand scaffolding ───────────────────────────────
+
+	/**
+	 * Publishes a bounded partial route toward the nearest pending cell outside
+	 * its retry window. Failed stand proofs are usually distance problems in
+	 * disguise — occluded rays, unloaded cells, horizon cutoffs — so the honest
+	 * response to "nothing is provable" is to close distance and re-prove, hop
+	 * by hop, not to stand still for a retry window.
+	 */
+	private boolean approachPending(MinecraftClient client) {
+		ClientPlayerEntity player = client.player;
+		Vec3d feet = player.getEntityPos();
+		Map.Entry<BlockPos, BlockState> nearest = null;
+		double nearestSq = Double.POSITIVE_INFINITY;
+		// Any cell of the layer is a fine approach magnet; a bounded sample
+		// keeps this off the frame time for very wide pending windows.
+		int examined = 0;
+		for (Map.Entry<BlockPos, BlockState> entry : pending.entrySet()) {
+			if (examined++ >= 768) break;
+			if (retryAfter.containsKey(entry.getKey())
+					|| !materialAvailable(client, entry.getKey(), entry.getValue())) continue;
+			double sq = feet.squaredDistanceTo(Vec3d.ofCenter(entry.getKey()));
+			if (sq < nearestSq) {
+				nearestSq = sq;
+				nearest = entry;
+			}
+		}
+		if (nearest == null || nearestSq < APPROACH_MIN_DISTANCE * APPROACH_MIN_DISTANCE) return false;
+
+		boolean flight = player.getAbilities().flying;
+		SchematicPathfinder.Node start = feetNode(player);
+		WorldSpace space = new WorldSpace(client, player);
+		List<SchematicPathfinder.Node> goals = theoreticalPlacementStands(nearest.getKey());
+		List<SchematicPathfinder.Node> progress = flight
+				? SchematicPathfinder.flightPathTowardAny(start, goals, space, MAX_PATH_NODES / 4, APPROACH_PROGRESS)
+				: SchematicPathfinder.groundPathTowardAny(start, goals, space, MAX_PATH_NODES / 4, APPROACH_PROGRESS);
+		if (progress.size() <= 1) return false;
+		beginWork(new DesiredBlock(nearest.getKey(), nearest.getValue()), WorkKind.SCHEMATIC,
+				new NavigationPlan(progress, false));
+		status(client, "Moving to layer " + activeLayer, Formatting.AQUA, 20);
+		return true;
+	}
+
+	/**
+	 * Creates a place to stand when no walkable stand exists for {@code desired}.
+	 * First choice is a bridge/staircase causeway planned back to reachable
+	 * terrain by {@link SchematicSupportPlanner} — the reversed plan is walkable
+	 * by construction, and it serves both missing-floor stands and standable
+	 * islands that merely lack a route. When no causeway fits, a straight
+	 * jump-placed pillar needs only one clear column. Every block goes through
+	 * the owned-temporary ledger, so cleanup is identical to face supports.
+	 */
+	private boolean enqueueStandScaffold(MinecraftClient client, DesiredBlock desired) {
+		if (!config.schematicTemporaryBlocks) return false;
+		BlockState material = chooseTemporaryMaterial(client);
+		if (material == null) return false;
+		int available = client.player.isCreative() ? MAX_TEMPORARY_BLOCKS_PER_PLAN
+				: Math.min(MAX_TEMPORARY_BLOCKS_PER_PLAN, expendableBlockCount(client, material));
+		if (available <= 0) return false;
+
+		List<StandCandidate> stands = scaffoldStandCandidates(client, desired.pos());
+		for (StandCandidate candidate : stands) {
+			SchematicPathfinder.Node stand = candidate.node();
+			BlockPos floor = new BlockPos(stand.x(), stand.y() - 1, stand.z());
+			Set<BlockPos> body = Set.of(new BlockPos(stand.x(), stand.y(), stand.z()),
+					new BlockPos(stand.x(), stand.y() + 1, stand.z()));
+			boolean floorMissing = client.world.getBlockState(floor).isReplaceable();
+			// Never squat a cell the schematic itself wants: cleanup deliberately
+			// abandons owned blocks on desired cells, so a temp floor there would
+			// become a permanent wrong block.
+			if (floorMissing && desiredStateAt(floor) != null) continue;
+			List<SchematicSupportPlanner.Cell> plan = SchematicSupportPlanner.plan(
+					supportCell(floor), new TemporarySupportSpace(client, desired.pos(), body),
+					SUPPORT_PATH_NODES / 4, SUPPORT_HORIZONTAL_HORIZON, SUPPORT_DOWNWARD_HORIZON,
+					Math.max(0, available - (floorMissing ? 1 : 0)));
+			if (plan.isEmpty()) continue;
+
+			temporaryQueue.clear();
+			for (SchematicSupportPlanner.Cell cell : plan) {
+				BlockPos pos = new BlockPos(cell.x(), cell.y(), cell.z());
+				if (client.world.getBlockState(pos).isReplaceable()) {
+					temporaryQueue.addLast(new DesiredBlock(pos, material));
+				}
+			}
+			if (floorMissing) temporaryQueue.addLast(new DesiredBlock(floor, material));
+			if (temporaryQueue.isEmpty()) continue;
+			temporarySupportGoal = desired;
+			status(client, "Building a " + temporaryQueue.size() + "-block route to a stand", Formatting.AQUA, 0);
+			if (prepareTemporaryTarget(client)) return true;
+			// The failed attempt deferred the goal cell; lift that so the next
+			// candidate stand still gets its try at full priority.
+			retryAfter.remove(desired.pos());
+			temporaryQueue.clear();
+			temporarySupportGoal = null;
+		}
+
+		return planPillar(client, desired, stands, material, available);
+	}
+
+	/**
+	 * Theoretical stands worth scaffolding toward, cheapest first. The body
+	 * cells must already be open and the hypothetical eye must have a real ray
+	 * to the work; the floor (or the route to it) is what gets created.
+	 */
+	private List<StandCandidate> scaffoldStandCandidates(MinecraftClient client, BlockPos target) {
+		SchematicPathfinder.Node feet = feetNode(client.player);
+		double eyeHeight = client.player.getStandingEyeHeight();
+		Vec3d center = Vec3d.ofCenter(target);
+		Set<SchematicPathfinder.Node> rejected = failedStands.getOrDefault(target, Set.of());
+		List<StandCandidate> ranked = new ArrayList<>();
+		for (SchematicPathfinder.Node node : theoreticalPlacementStands(target)) {
+			if (rejected.contains(node)) continue;
+			Vec3d eye = new Vec3d(node.x() + 0.5D, node.y() + eyeHeight, node.z() + 0.5D);
+			if (eye.squaredDistanceTo(center) > STAND_REACH * STAND_REACH) continue;
+			double cost = Math.sqrt(node.squaredDistanceTo(feet));
+			// Stands at or below the work are cheaper to build to and never
+			// occlude the still-empty layer above it.
+			if (node.y() > target.getY()) cost += (node.y() - target.getY()) * 1.5D;
+			ranked.add(new StandCandidate(node, eye, cost));
+		}
+		ranked.sort(Comparator.comparingDouble(StandCandidate::cost));
+
+		List<StandCandidate> out = new ArrayList<>();
+		WorldSpace space = new WorldSpace(client, client.player);
+		int examined = 0;
+		for (StandCandidate candidate : ranked) {
+			if (examined++ >= SCAFFOLD_STAND_EXAMINE_LIMIT
+					|| out.size() >= SCAFFOLD_STAND_PLAN_ATTEMPTS) break;
+			SchematicPathfinder.Node node = candidate.node();
+			if (!space.passable(node.x(), node.y(), node.z())
+					|| space.hazardous(node.x(), node.y(), node.z())
+					|| !standCanSeeWork(client, candidate.eye(), target)) continue;
+			out.add(candidate);
+		}
+		return out;
+	}
+
+	/**
+	 * Straight-up pillar to a stand cell: walk to the ground beneath its column,
+	 * then jump-place the column beneath the body. Needs no horizontal room at
+	 * all, which is exactly the case the causeway planner cannot serve.
+	 */
+	private boolean planPillar(MinecraftClient client, DesiredBlock desired,
+			List<StandCandidate> stands, BlockState material, int available) {
+		if (client.player.getAbilities().flying) return false;
+		WorldSpace space = new WorldSpace(client, client.player);
+		for (StandCandidate candidate : stands) {
+			SchematicPathfinder.Node stand = candidate.node();
+			int base = Integer.MIN_VALUE;
+			boolean columnClean = true;
+			for (int y = stand.y() - 1; y >= stand.y() - MAX_PILLAR_HEIGHT; y--) {
+				// Every cell from the base up gets filled, so none of them may be
+				// a cell the schematic itself wants: cleanup deliberately abandons
+				// owned blocks on desired cells, and a temp block there would
+				// outlive the build as a permanent wrong block.
+				if (desiredStateAt(new BlockPos(stand.x(), y, stand.z())) != null) {
+					columnClean = false;
+					break;
+				}
+				if (space.standable(stand.x(), y, stand.z())) {
+					base = y;
+					break;
+				}
+				if (!space.passable(stand.x(), y, stand.z())) break;
+			}
+			if (!columnClean) continue;
+			int height = stand.y() - base;
+			if (base == Integer.MIN_VALUE || height <= 0 || height > available
+					|| space.hazardous(stand.x(), base, stand.z())) continue;
+
+			SchematicPathfinder.Node baseNode = new SchematicPathfinder.Node(stand.x(), base, stand.z());
+			SchematicPathfinder.Node start = feetNode(client.player);
+			List<SchematicPathfinder.Node> path = start.equals(baseNode) ? List.of(start)
+					: SchematicPathfinder.groundPathToAny(start, List.of(baseNode), space, MAX_PATH_NODES / 2);
+			if (path.isEmpty()) continue;
+
+			pillarColumnX = stand.x();
+			pillarColumnZ = stand.z();
+			pillarTopY = stand.y();
+			pillarMaterial = material;
+			temporarySupportGoal = desired;
+			beginWork(desired, WorkKind.PILLAR, new NavigationPlan(path, true));
+			status(client, "Pillaring " + height + " block(s) up to a stand", Formatting.AQUA, 0);
+			return true;
+		}
+		return false;
+	}
+
+	/** Executes one pillar tick: centre over the column, jump, place, repeat. */
+	private void drivePillar(MinecraftClient client) {
+		ClientPlayerEntity player = client.player;
+		releaseMovementOnly();
+		controlling = true;
+		phaseTicks++;
+
+		int feetY = MathHelper.floor(player.getBoundingBox().minY + 1.0E-3D);
+		if (feetY != lastPillarFeetY) {
+			lastPillarFeetY = feetY;
+			pillarStallTicks = 0;
+		} else if (++pillarStallTicks > PILLAR_STALL_TICKS) {
+			abandonTarget(client);
+			return;
+		}
+		if (feetY >= pillarTopY && player.isOnGround()) {
+			// The stand exists now. Normal selection re-proves the route (a
+			// one-node path onto the pillar top) and places from up here; the
+			// support goal keeps this cell first in line.
+			clearTarget();
+			return;
+		}
+
+		// Stay centred over the column; a drifted jump lands beside the pillar.
+		Vec3d centre = new Vec3d(pillarColumnX + 0.5D, player.getY(), pillarColumnZ + 0.5D);
+		if (horizontalDistanceSq(player.getEntityPos(), centre) > 0.04D && player.isOnGround()) {
+			driveToPoint(player, centre);
+			return;
+		}
+
+		BlockPos support = null;
+		for (int y = Math.min(feetY, pillarTopY) - 1; y >= pillarTopY - MAX_PILLAR_HEIGHT - 1; y--) {
+			BlockPos pos = new BlockPos(pillarColumnX, y, pillarColumnZ);
+			BlockState state = client.world.getBlockState(pos);
+			if (!state.isReplaceable() && !state.getCollisionShape(client.world, pos).isEmpty()) {
+				support = pos;
+				break;
+			}
+		}
+		if (support == null) {
+			abandonTarget(client);
+			return;
+		}
+
+		aimGoal = facePoint(support, Direction.UP, 0);
+		aimSpeed = 1.9F;
+		ownsRotation = true;
+		// Press jump only while grounded: releasing in the air clears vanilla's
+		// held-jump cooldown, so every landing takes off again immediately.
+		movementInput = new PlayerInput(false, false, false, false, player.isOnGround(), false, false);
+
+		BlockPos placeCell = support.up();
+		if (placeCell.getY() >= pillarTopY) return; // column finished; landing
+		int slot = findMaterialSlot(client, pillarMaterial);
+		if (slot < 0) {
+			abandonTarget(client);
+			return;
+		}
+		if (player.getInventory().getSelectedSlot() != slot) {
+			player.getInventory().setSelectedSlot(slot);
+			return;
+		}
+		// The body must be fully above the cell being filled, or vanilla refuses.
+		if (player.getBoundingBox().minY < placeCell.getY() + 1.0D - 1.0E-3D) return;
+
+		HitResult raw = player.raycast(MAX_REACH, 1.0F, false);
+		if (!(raw instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK
+				|| !hit.getBlockPos().equals(support) || hit.getSide() != Direction.UP) return;
+		long now = System.nanoTime();
+		if (now < lastPlaceNanos + jitterMs(28, 46)) return;
+		if (placementForHit(client, player, hit, placeCell, pillarMaterial) == null) return;
+		ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
+		if (!result.isAccepted()) return;
+		player.swingHand(Hand.MAIN_HAND);
+		lastPlaceNanos = now;
+		ownedTemporaryBlocks.put(placeCell.toImmutable(), pillarMaterial);
+	}
+
+	/** True when removing this block drops the body at most three onto safe ground. */
+	private boolean safeToBreakUnderFeet(MinecraftClient client, BlockPos removed) {
+		for (int drop = 1; drop <= 3; drop++) {
+			BlockPos below = removed.down(drop);
+			BlockState state = client.world.getBlockState(below);
+			if (!state.getFluidState().isEmpty()) return false;
+			if (!state.isReplaceable() && !state.getCollisionShape(client.world, below).isEmpty()) {
+				return !new WorldSpace(client, client.player)
+						.hazardous(removed.getX(), below.getY() + 1, removed.getZ());
+			}
+		}
+		return false;
+	}
+
 	private void beginWork(DesiredBlock next, WorkKind kind, NavigationPlan plan) {
 		target = next;
 		workKind = kind;
 		path = plan.path();
 		pathIndex = Math.min(1, path.size());
 		navigationComplete = plan.complete();
-		transitWaitTicks = plan.complete() ? 0 : 8;
+		transitWaitTicks = plan.complete() ? 0 : 4;
 		phaseTicks = 0;
 		settleTicks = 0;
 		placementAim = null;
@@ -1089,18 +1430,22 @@ public final class SchematicBuildController {
 	private final class TemporarySupportSpace implements SchematicSupportPlanner.Space {
 		private final MinecraftClient client;
 		private final BlockPos desiredTarget;
+		private final Set<BlockPos> blocked;
 		private final Map<BlockPos, Boolean> anchorCache = new HashMap<>();
 		private int standProofBudget = ANCHOR_STAND_PROOFS_PER_PLAN;
 
-		private TemporarySupportSpace(MinecraftClient client, BlockPos desiredTarget) {
+		/** {@code blocked} holds cells the plan must leave open (a stand's body). */
+		private TemporarySupportSpace(MinecraftClient client, BlockPos desiredTarget, Set<BlockPos> blocked) {
 			this.client = client;
 			this.desiredTarget = desiredTarget;
+			this.blocked = blocked;
 		}
 
 		@Override
 		public boolean available(SchematicSupportPlanner.Cell cell) {
 			BlockPos pos = new BlockPos(cell.x(), cell.y(), cell.z());
-			if (pos.equals(desiredTarget) || !client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
+			if (pos.equals(desiredTarget) || blocked.contains(pos)
+					|| !client.world.isChunkLoaded(pos.getX() >> 4, pos.getZ() >> 4)
 					|| retryAfter.containsKey(pos)
 					|| pos.getY() < client.world.getBottomY()
 					|| pos.getY() >= client.world.getBottomY() + client.world.getHeight()) return false;
@@ -1373,7 +1718,7 @@ public final class SchematicBuildController {
 		Vec3d travelLook = new Vec3d(steering.x,
 				player.getEyeY() + MathHelper.clamp(steering.y - player.getY(), -0.75D, 0.75D), steering.z);
 		aimGoal = travelLook;
-		aimSpeed = 1.38F;
+		aimSpeed = 1.65F;
 		ownsRotation = true;
 		controlling = true;
 
@@ -1387,9 +1732,12 @@ public final class SchematicBuildController {
 		boolean flying = player.getAbilities().flying;
 		boolean jump = flying ? vertical > 0.30D : vertical > 0.65D && player.isOnGround();
 		boolean sneak = flying && vertical < -0.30D;
-		double remaining = remainingPathDistance(player.getEntityPos());
-		boolean sprint = forward && !left && !right && !flying && remaining > 5.0D
-				&& player.isOnGround() && !player.isTouchingWater() && random.nextInt(13) != 0;
+		// Full pace, always: sprint on the ground and sprint-fly in the air. A
+		// builder that ambles between stands is slower than the player it
+		// replaces, which defeats the point of moving for them. Vanilla still
+		// arbitrates the flag (hunger, sneaking, water), so publishing it every
+		// tick can never produce an illegal state.
+		boolean sprint = forward && !backward && !player.isTouchingWater();
 
 		if (unstickTicks > 0) {
 			// Hold the heading, add a hop and a sidestep, and drop sprint so the
@@ -1433,7 +1781,12 @@ public final class SchematicBuildController {
 				retryAfter.put(target.pos(), client.player.age + TEMPORARY_CELL_RETRY_TICKS);
 				deferTemporarySupport(client);
 			} else {
-				if (!path.isEmpty()) {
+				if (workKind == WorkKind.PILLAR) {
+					// Blame the stand the pillar was meant to create, so the next
+					// scaffold attempt picks a different column.
+					failedStands.computeIfAbsent(target.pos(), ignored -> new HashSet<>())
+							.add(new SchematicPathfinder.Node(pillarColumnX, pillarTopY, pillarColumnZ));
+				} else if (!path.isEmpty()) {
 					failedStands.computeIfAbsent(target.pos(), ignored -> new HashSet<>()).add(path.getLast());
 				}
 				retryAfter.put(target.pos(), client.player.age + TARGET_RETRY_TICKS);
@@ -1473,7 +1826,7 @@ public final class SchematicBuildController {
 	}
 
 	private Vec3d pathLookaheadPoint(ClientPlayerEntity player, Vec3d fallback) {
-		double budget = player.getAbilities().flying ? 4.2D : 2.8D;
+		double budget = player.getAbilities().flying ? 6.0D : 2.8D;
 		Vec3d previous = player.getEntityPos();
 		Vec3d lookahead = fallback;
 		for (int i = pathIndex; i < path.size(); i++) {
@@ -1490,18 +1843,6 @@ public final class SchematicBuildController {
 			if (budget <= 0.0D) break;
 		}
 		return lookahead;
-	}
-
-	private double remainingPathDistance(Vec3d playerPosition) {
-		double distance = 0.0D;
-		Vec3d previous = playerPosition;
-		for (int i = pathIndex; i < path.size(); i++) {
-			SchematicPathfinder.Node node = path.get(i);
-			Vec3d next = new Vec3d(node.x() + 0.5D, node.y(), node.z() + 0.5D);
-			distance += previous.distanceTo(next);
-			previous = next;
-		}
-		return distance;
 	}
 
 	// ── Aim, orientation prediction, placement, waterlogging ──────────────────
@@ -1543,19 +1884,32 @@ public final class SchematicBuildController {
 				drivePath(client);
 					return;
 				}
-			} else if (!player.isOnGround() || player.getVelocity().horizontalLengthSquared() > 0.010D) {
-				// Let sprint/ice momentum bleed off before aiming at a precise face.
-				// This avoids the old overshoot -> walk back -> overshoot loop.
-				aimGoal = target.center();
-				aimSpeed = 1.10F;
+			} else if (!player.isOnGround()) {
+				// Mid-air between stands: pre-aim at the work and place on
+				// landing. Sliding momentum on the ground is no reason to wait —
+				// the live raycast below is the real gate, and a body drifting
+				// into the cell is caught by the overlap check above.
+				aimGoal = placementAim != null ? placementAim.aimPoint() : target.center();
+				aimSpeed = 1.60F;
 				ownsRotation = true;
 				return;
 			}
 
-		if (placementAim == null || phaseTicks % 18 == 0) {
+		if (placementAim == null || phaseTicks % 12 == 0) {
 			placementAim = findPlacementAim(client, target);
 			settleTicks = 0;
 			if (placementAim == null) {
+				// Placing while moving means the body can slide a little past
+				// its stand; step back onto it before concluding the stand is
+				// blind. The threshold is far below the waypoint tolerance, so
+				// only a real drift triggers it.
+				SchematicPathfinder.Node stand = path.isEmpty() ? feetNode(player) : path.getLast();
+				Vec3d standCentre = new Vec3d(stand.x() + 0.5D, stand.y(), stand.z() + 0.5D);
+				if (phaseTicks <= 28 && !player.getAbilities().flying
+						&& horizontalDistanceSq(player.getEntityPos(), standCentre) > 0.015D) {
+					driveToPoint(player, standCentre);
+					return;
+				}
 				if (phaseTicks > 28) {
 					if (workKind == WorkKind.TEMP_PLACE) {
 						retryAfter.put(target.pos(), player.age + TEMPORARY_CELL_RETRY_TICKS);
@@ -1582,7 +1936,7 @@ public final class SchematicBuildController {
 		}
 
 		aimGoal = placementAim.aimPoint();
-		aimSpeed = 1.42F;
+		aimSpeed = 1.85F;
 		ownsRotation = true;
 		BlockHitResult liveHit = livePlacementHit(client, placementAim);
 		if (liveHit == null) {
@@ -1590,7 +1944,7 @@ public final class SchematicBuildController {
 			return;
 		}
 
-		if (++settleTicks < 2) return;
+		if (++settleTicks < 1) return;
 		if (player.getInventory().getSelectedSlot() != placementAim.hotbarSlot()) {
 			player.getInventory().setSelectedSlot(placementAim.hotbarSlot());
 			settleTicks = 0;
@@ -1598,7 +1952,7 @@ public final class SchematicBuildController {
 		}
 
 		long now = System.nanoTime();
-		long interval = lastPlaceNanos + jitterMs(42, 70);
+		long interval = lastPlaceNanos + jitterMs(22, 38);
 		if (now < interval) return;
 
 		ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, liveHit);
@@ -1617,7 +1971,7 @@ public final class SchematicBuildController {
 		placementSent = true;
 		recentPosition = target.pos();
 		recentPositionUntil = now + RECENT_POSITION_NS;
-		confirmationTicks = 4;
+		confirmationTicks = 2;
 		settleTicks = 0;
 	}
 
@@ -1634,7 +1988,7 @@ public final class SchematicBuildController {
 			return;
 		}
 
-		if (placementAim == null || (!breakingTemporary && phaseTicks % 12 == 0)) {
+		if (placementAim == null || (!breakingTemporary && phaseTicks % 8 == 0)) {
 			placementAim = findBreakAim(client, target.pos());
 			settleTicks = 0;
 			if (placementAim == null) {
@@ -1648,7 +2002,7 @@ public final class SchematicBuildController {
 		}
 
 		aimGoal = placementAim.aimPoint();
-		aimSpeed = 1.38F;
+		aimSpeed = 1.70F;
 		ownsRotation = true;
 		BlockHitResult live = liveBlockHit(client, target.pos());
 		if (live == null) {
@@ -1656,7 +2010,7 @@ public final class SchematicBuildController {
 			if (breakingTemporary) cancelTemporaryBreaking(client);
 			return;
 		}
-		if (++settleTicks < 2) return;
+		if (++settleTicks < 1) return;
 
 		if (player.getInventory().getSelectedSlot() != placementAim.hotbarSlot()) {
 			player.getInventory().setSelectedSlot(placementAim.hotbarSlot());
@@ -2188,6 +2542,8 @@ public final class SchematicBuildController {
 		breakingTemporary = false;
 		breakSwingTicks = 0;
 		placementSent = false;
+		pillarStallTicks = 0;
+		lastPillarFeetY = Integer.MIN_VALUE;
 	}
 
 	private void resetHover() {
@@ -2267,7 +2623,7 @@ public final class SchematicBuildController {
 		}
 	}
 
-	private enum WorkKind { SCHEMATIC, TEMP_PLACE, TEMP_REMOVE }
+	private enum WorkKind { SCHEMATIC, TEMP_PLACE, TEMP_REMOVE, PILLAR }
 	private enum PlacementKind { BLOCK, WATERLOG, UNWATERLOG, TOGGLE, BREAK }
 	private record DesiredBlock(BlockPos pos, BlockState state) {
 		Vec3d center() { return Vec3d.ofCenter(pos); }

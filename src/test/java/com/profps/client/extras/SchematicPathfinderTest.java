@@ -126,6 +126,25 @@ final class SchematicPathfinderTest {
 	}
 
 	@Test
+	void nearbyUnreachableGoalStillYieldsAShortApproachHop() {
+		// The Auto Move approach fallback: a stand can be unprovable from afar
+		// (occlusion, missing floor) while still worth walking toward. With the
+		// preferred progress at 8, the search's minimum-progress clamp sits at
+		// its 2-block floor, so even a player a few blocks behind the build
+		// gets a route instead of a refusal.
+		TestSpace space = new TestSpace();
+		SchematicPathfinder.Node floating = new SchematicPathfinder.Node(6, 4, 0);
+		space.forcedY.put("6,0", 4);
+
+		List<SchematicPathfinder.Node> path = SchematicPathfinder.groundPathTowardAny(
+				new SchematicPathfinder.Node(0, 0, 0), List.of(floating), space, 1_024, 8.0D);
+
+		assertFalse(path.isEmpty());
+		assertTrue(path.getLast().x() >= 3, "the hop must close real distance toward the goal");
+		assertFalse(path.contains(floating));
+	}
+
+	@Test
 	void distantGoalReturnsAProgressRouteToTheLoadedFrontier() {
 		TestSpace space = new TestSpace();
 		space.maximumLoadedX = 64;
