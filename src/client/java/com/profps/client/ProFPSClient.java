@@ -17,6 +17,7 @@ import com.profps.client.combatmode.CombatModeRuntime;
 import com.profps.client.config.ProFPSConfig;
 import com.profps.client.crystalpvp.AnchorMacroController;
 import com.profps.client.crystalpvp.AutoCrystalController;
+import com.profps.client.crystalpvp.AutoXPController;
 import com.profps.client.crystalpvp.FastUseController;
 import com.profps.client.crystalpvp.TotemTweaksController;
 import com.profps.client.donutsmp.AdvancedEspRenderer;
@@ -127,6 +128,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		swordAi = new SwordAiController(config);
 		autoCrystal = new AutoCrystalController(config);
 		AutoPotController autoPot = new AutoPotController(config);
+		AutoXPController autoXp = new AutoXPController(config);
 		HitboxesRenderer hitboxes = new HitboxesRenderer(config);
 		BasicEspRenderer basicEsp = new BasicEspRenderer(config);
 		AdvancedEspRenderer advancedEsp = new AdvancedEspRenderer(config);
@@ -205,6 +207,7 @@ public final class ProFPSClient implements ClientModInitializer {
 			jumpReset.tick(client);
 			velocity.tick(client);
 			autoPot.tick(client);
+			autoXp.tick(client);
 			anchorMacro.tick(client);
 			fastUse.tick(client);
 			totemTweaks.tick(client);

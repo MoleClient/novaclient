@@ -332,6 +332,7 @@ public final class NovaModules {
 		d.put("totem", "Rapidly refills your offhand and prepares a hotbar backup after a pop.");
 		d.put("autocrystal", "Right-click obsidian or bedrock to place and quickly break a crystal.");
 		d.put("fastuse", "Removes the right-click use delay.");
+		d.put("autoxp", "Throws XP bottles until your Mending armour is full.");
 		d.put("hitboxes", "Shows player hitboxes through walls in your chosen color.");
 		d.put("subtiers_autobed", "Detonates a bed shortly after your real placement in explosive dimensions.");
 		d.put("subtiers_autocreeper", "Lines up and launches your placed creeper toward a nearby player with a KB II+ sword.");
@@ -559,6 +560,9 @@ public final class NovaModules {
 		m.put("fastuse", new Module("fastuse", "Fast Use", Items.SUGAR,
 				() -> cfg.fastUse, v -> cfg.fastUse = v,
 				new IntSetting("Speed", "", 1, 10, 1, () -> cfg.fastUseLevel, v -> cfg.fastUseLevel = v)));
+		m.put("autoxp", new Module("autoxp", "Auto XP", Items.EXPERIENCE_BOTTLE,
+				() -> cfg.autoXpEnabled, v -> cfg.autoXpEnabled = v,
+				new IntSetting("Delay", " ms", 0, 1000, 10, () -> cfg.autoXpDelayMs, v -> cfg.autoXpDelayMs = v)));
 
 		// ── Mace & Spear ─────────────────────────────────────────────────────────────
 		m.put("automace", new Module("automace", "AutoMace", Items.MACE,
@@ -867,7 +871,7 @@ public final class NovaModules {
 		List<Category> categories = new ArrayList<>();
 		categories.add(new Category("Combat", Items.NETHERITE_SWORD, pick(m,
 				MODE_SWORD, MODE_AXE, "swordai", "hit", "aim", "strafe", "autoaim", "reach", "expandedhitbox", "jumpreset", "autopot", "velocity",
-				"hitboxes", "axestun", "kbdisplace", "anchor", "totem", "autocrystal", "fastuse")));
+				"hitboxes", "axestun", "kbdisplace", "anchor", "totem", "autocrystal", "fastuse", "autoxp")));
 		categories.add(new Category("Mace & Spear", Items.MACE, pick(m,
 				MODE_MACE, "automace", "autobreachswap", "autolunge", "spearcharge")));
 		categories.add(new Category("SubTiers", Items.DIAMOND, pick(m,

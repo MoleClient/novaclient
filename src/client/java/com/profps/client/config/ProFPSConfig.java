@@ -313,6 +313,8 @@ public final class ProFPSConfig {
 	public int scaffoldSpeed = 7; // 0 (slowest / most cautious) .. 10 (fastest) — how quick bridging is
 	public boolean clutchAssist = false;
 	public boolean heightClutchAssist = false; // water-bucket MLG / ladder fall-save from a held item
+	public boolean autoXpEnabled = false;      // throw XP bottles until Mending armour is back to full
+	public int autoXpDelayMs = 200;            // gap between throws (0-1000), jittered on top
 	public boolean jumpResetAssist = false;    // real humanized jump on taking a hit, to cut knockback
 	public int jumpResetReactionMs = 40;       // reaction after a hit before the jump fires (lower = faster)
 	public int jumpResetSkipPct = 6;           // chance to skip a reset (humanizing)
@@ -494,7 +496,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 89;
+	public int configVersion = 90;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1644,6 +1646,13 @@ public final class ProFPSConfig {
 			anchorDelayMinMs = 0;
 			anchorDelayMaxMs = 25;
 			configVersion = 89;
+			changed = true;
+		}
+		if (configVersion < 90) {
+			// New Combat → Auto XP. Off by default; it only ever fires on damaged Mending armour.
+			autoXpEnabled = false;
+			autoXpDelayMs = 200;
+			configVersion = 90;
 			changed = true;
 		}
 		return changed;
