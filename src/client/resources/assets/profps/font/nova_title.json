@@ -1,0 +1,10 @@
+{
+	"providers": [
+		{
+			"type": "ttf",
+			"file": "profps:nova_semibold.ttf",
+			"size": 15.0,
+			"oversample": 3.0
+		}
+	]
+}

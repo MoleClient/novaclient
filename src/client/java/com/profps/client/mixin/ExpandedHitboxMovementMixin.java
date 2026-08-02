@@ -1,0 +1,29 @@
+package com.profps.client.mixin;
+
+import com.profps.client.assists.ExpandedHitboxController;
+import com.profps.client.crystalpvp.AnchorMacroController;
+import net.minecraft.client.network.ClientPlayerEntity;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+/**
+ * Applies Expanded Hitbox's packet-facing rotation only while vanilla constructs
+ * the local player's movement update, then immediately restores the camera.
+ */
+@Mixin(ClientPlayerEntity.class)
+public abstract class ExpandedHitboxMovementMixin {
+
+	@Inject(method = "sendMovementPackets", at = @At("HEAD"))
+	private void profps$beforeExpandedHitboxMovement(CallbackInfo ci) {
+		ExpandedHitboxController.beforeMovementPacket((ClientPlayerEntity) (Object) this);
+		AnchorMacroController.beforeMovementPacket((ClientPlayerEntity) (Object) this);
+	}
+
+	@Inject(method = "sendMovementPackets", at = @At("RETURN"))
+	private void profps$afterExpandedHitboxMovement(CallbackInfo ci) {
+		AnchorMacroController.afterMovementPacket((ClientPlayerEntity) (Object) this);
+		ExpandedHitboxController.afterMovementPacket((ClientPlayerEntity) (Object) this);
+	}
+}

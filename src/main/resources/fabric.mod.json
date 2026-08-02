@@ -1,0 +1,33 @@
+{
+	"schemaVersion": 1,
+	"id": "profps",
+	"version": "${version}",
+	"name": "ProFPS",
+	"description": "A client-side combat and performance suite with coordinated Sword, Axe, and Mace modes plus the NovaClient control panel.",
+	"authors": [
+		"ProFPS"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/profps/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.profps.client.ProFPSClient"
+		]
+	},
+	"mixins": [
+		{
+			"config": "profps.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.2",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
