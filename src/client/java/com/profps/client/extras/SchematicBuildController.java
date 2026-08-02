@@ -1,5 +1,6 @@
 package com.profps.client.extras;
 
+import com.profps.ProFPS;
 import com.profps.client.config.ProFPSConfig;
 import com.profps.client.donutsmp.FreecamController;
 import com.profps.client.donutsmp.HumanizedAim;
@@ -220,6 +221,7 @@ public final class SchematicBuildController {
 	private int unstickStrafe;
 	private int replanAttempts;
 	private double lastWaypointDistance = Double.POSITIVE_INFINITY;
+	private Vec3d lastDrivePosition;
 	private final ArrayDeque<DesiredBlock> temporaryQueue = new ArrayDeque<>();
 	private final LinkedHashMap<BlockPos, BlockState> ownedTemporaryBlocks = new LinkedHashMap<>();
 	private DesiredBlock temporarySupportGoal;
@@ -238,6 +240,7 @@ public final class SchematicBuildController {
 	private final Map<BlockPos, Set<SchematicPathfinder.Node>> failedStands = new HashMap<>();
 	private int nextStatusTick;
 	private boolean wasEnabled;
+	private String lastTrace = "";
 
 	public SchematicBuildController(ProFPSConfig config, RememberController remember) {
 		this.config = config;
@@ -440,6 +443,8 @@ public final class SchematicBuildController {
 		remembered = remember.desiredStatesSnapshot();
 		rememberedEntries = new ArrayList<>(remembered.entrySet());
 		schematicBounds = bounds;
+		trace("sources changed: " + remembered.size() + " remembered cell(s), "
+				+ bounds.size() + " litematica placement(s)");
 		temporaryQueue.clear();
 		temporarySupportGoal = null;
 		cancelTemporaryBreaking(client);
@@ -597,6 +602,7 @@ public final class SchematicBuildController {
 				return true;
 			}
 			if (flightActivationPhase > 0) return false;
+			trace("no route to " + describe(next.pos()) + " (attempt " + (attempt + 1) + ")");
 			// No walkable stand exists anywhere in reach of this cell. Make one:
 			// a temporary causeway or pillar the body can occupy is exactly as
 			// legitimate as the face supports planned for unsupported cells.
@@ -654,6 +660,7 @@ public final class SchematicBuildController {
 		activeLayer++;
 		if (activeLayer <= maximumLayer) {
 			startLayerScan();
+			trace("layer " + activeLayer + " begins (pass " + (passIndex + 1) + ")");
 			status(client, "Building layer " + activeLayer, Formatting.AQUA, 0);
 			return null;
 		}
@@ -1057,6 +1064,7 @@ public final class SchematicBuildController {
 				? SchematicPathfinder.flightPathTowardAny(start, goals, space, MAX_PATH_NODES / 4, APPROACH_PROGRESS)
 				: SchematicPathfinder.groundPathTowardAny(start, goals, space, MAX_PATH_NODES / 4, APPROACH_PROGRESS);
 		if (progress.size() <= 1) return false;
+		trace("approach hop toward " + describe(nearest.getKey()) + " via " + progress.getLast());
 		beginWork(new DesiredBlock(nearest.getKey(), nearest.getValue()), WorkKind.SCHEMATIC,
 				new NavigationPlan(progress, false));
 		status(client, "Moving to layer " + activeLayer, Formatting.AQUA, 20);
@@ -1107,6 +1115,8 @@ public final class SchematicBuildController {
 			if (floorMissing) temporaryQueue.addLast(new DesiredBlock(floor, material));
 			if (temporaryQueue.isEmpty()) continue;
 			temporarySupportGoal = desired;
+			trace("causeway " + temporaryQueue.size() + " block(s) toward stand " + stand
+					+ " for " + describe(desired.pos()));
 			status(client, "Building a " + temporaryQueue.size() + "-block route to a stand", Formatting.AQUA, 0);
 			if (prepareTemporaryTarget(client)) return true;
 			// The failed attempt deferred the goal cell; lift that so the next
@@ -1201,6 +1211,8 @@ public final class SchematicBuildController {
 			pillarTopY = stand.y();
 			pillarMaterial = material;
 			temporarySupportGoal = desired;
+			trace("pillar " + height + " block(s) at " + stand.x() + "," + stand.z()
+					+ " up to y=" + stand.y() + " for " + describe(desired.pos()));
 			beginWork(desired, WorkKind.PILLAR, new NavigationPlan(path, true));
 			status(client, "Pillaring " + height + " block(s) up to a stand", Formatting.AQUA, 0);
 			return true;
@@ -1301,6 +1313,10 @@ public final class SchematicBuildController {
 	}
 
 	private void beginWork(DesiredBlock next, WorkKind kind, NavigationPlan plan) {
+		trace("work " + kind + " -> " + describe(next.pos()) + " ("
+				+ next.state().getBlock().getName().getString() + ") path=" + plan.path().size()
+				+ (plan.complete() ? "" : " partial")
+				+ (plan.path().isEmpty() ? "" : " stand=" + plan.path().getLast()));
 		target = next;
 		workKind = kind;
 		path = plan.path();
@@ -1312,6 +1328,7 @@ public final class SchematicBuildController {
 		placementAim = null;
 		stuckTicks = 0;
 		lastWaypointDistance = Double.POSITIVE_INFINITY;
+		lastDrivePosition = null;
 		breakingTemporary = false;
 		breakSwingTicks = 0;
 		placementSent = false;
@@ -1528,6 +1545,7 @@ public final class SchematicBuildController {
 			if (!flight && desired.pos().getY() - start.y() >= 3 && player.getAbilities().allowFlying
 					&& player.age >= flightAttemptCooldownUntil) {
 				flightActivationPhase = 1;
+				trace("entering creative flight for " + describe(desired.pos()) + " (rising layers)");
 				status(client, "Rising layers; entering creative flight", Formatting.AQUA, 0);
 				return null;
 			}
@@ -1552,6 +1570,7 @@ public final class SchematicBuildController {
 		// any legal stand; abilities/velocity are never written directly.
 		if (!flight && player.getAbilities().allowFlying && player.age >= flightAttemptCooldownUntil) {
 			flightActivationPhase = 1;
+			trace("entering creative flight for " + describe(desired.pos()) + " (ground route blocked)");
 			status(client, "Ground route blocked; entering creative flight", Formatting.AQUA, 0);
 		}
 		return null;
@@ -1681,24 +1700,34 @@ public final class SchematicBuildController {
 	private void drivePath(MinecraftClient client) {
 		ClientPlayerEntity player = client.player;
 		if (pathIndex >= path.size()) return;
-		SchematicPathfinder.Node waypoint = path.get(pathIndex);
-		Vec3d point = new Vec3d(waypoint.x() + 0.5D, waypoint.y(), waypoint.z() + 0.5D);
-		double horizontalSq = horizontalDistanceSq(player.getEntityPos(), point);
-		double vertical = point.y - player.getY();
-		if (horizontalSq < 0.20D && Math.abs(vertical) < (player.getAbilities().flying ? 0.38D : 0.60D)) {
+		Vec3d position = player.getEntityPos();
+		Vec3d previous = lastDrivePosition == null ? position : lastDrivePosition;
+		lastDrivePosition = position;
+		boolean flying = player.getAbilities().flying;
+
+		// Swept arrival: sprint-flight covers more than a whole cell per tick,
+		// so requiring a sampled position inside the arrival circle would skip
+		// straight over a waypoint and read as "never arrived" while the body
+		// sails past the build. Testing the tick's whole travel segment (and
+		// advancing through every waypoint it passed) makes speed harmless.
+		int advanced = 0;
+		while (pathIndex < path.size() && advanced < 3
+				&& reachedWaypoint(previous, position, path.get(pathIndex),
+						flying, pathIndex == path.size() - 1)) {
 			pathIndex++;
+			advanced++;
 			stuckTicks = 0;
 			unstickTicks = 0;
 			lastWaypointDistance = Double.POSITIVE_INFINITY;
-			if (pathIndex >= path.size()) {
-				releaseMovementOnly();
-				return;
-			}
-			waypoint = path.get(pathIndex);
-			point = new Vec3d(waypoint.x() + 0.5D, waypoint.y(), waypoint.z() + 0.5D);
-			horizontalSq = horizontalDistanceSq(player.getEntityPos(), point);
-			vertical = point.y - player.getY();
 		}
+		if (pathIndex >= path.size()) {
+			releaseMovementOnly();
+			return;
+		}
+		SchematicPathfinder.Node waypoint = path.get(pathIndex);
+		Vec3d point = new Vec3d(waypoint.x() + 0.5D, waypoint.y(), waypoint.z() + 0.5D);
+		double horizontalSq = horizontalDistanceSq(position, point);
+		double vertical = point.y - player.getY();
 
 		double distance = Math.sqrt(horizontalSq + vertical * vertical);
 		if (distance + 0.025D < lastWaypointDistance) {
@@ -1729,15 +1758,26 @@ public final class SchematicBuildController {
 		boolean backward = absoluteYaw > 112.5D;
 		boolean left = yawError < -22.5D && yawError > -157.5D;
 		boolean right = yawError > 22.5D && yawError < 157.5D;
-		boolean flying = player.getAbilities().flying;
 		boolean jump = flying ? vertical > 0.30D : vertical > 0.65D && player.isOnGround();
 		boolean sneak = flying && vertical < -0.30D;
 		// Full pace, always: sprint on the ground and sprint-fly in the air. A
 		// builder that ambles between stands is slower than the player it
 		// replaces, which defeats the point of moving for them. Vanilla still
 		// arbitrates the flag (hunger, sneaking, water), so publishing it every
-		// tick can never produce an illegal state.
-		boolean sprint = forward && !backward && !player.isTouchingWater();
+		// tick can never produce an illegal state. The one exception is the end
+		// of a flight: a sprint-flying body coasts about six blocks after input
+		// stops, so sprint is released early and the last stretch is flown at
+		// normal speed, with an active counter-input to kill the residue.
+		double remaining = remainingPathDistance(position);
+		boolean sprint = forward && !backward && !player.isTouchingWater()
+				&& (!flying || remaining > 7.0D);
+		if (flying && remaining < 2.2D && player.getVelocity().horizontalLength() > 0.35D) {
+			aimGoal = travelLook;
+			ownsRotation = true;
+			controlling = true;
+			movementInput = brakeInput(player);
+			return;
+		}
 
 		if (unstickTicks > 0) {
 			// Hold the heading, add a hop and a sidestep, and drop sprint so the
@@ -1776,6 +1816,10 @@ public final class SchematicBuildController {
 
 	/** Gives up on the current target, blaming the stand it could not work from. */
 	private void abandonTarget(MinecraftClient client) {
+		if (target != null) {
+			trace("abandon " + workKind + " " + describe(target.pos())
+					+ " stuck=" + stuckTicks + " phase=" + phaseTicks);
+		}
 		if (target != null) {
 			if (workKind == WorkKind.TEMP_PLACE) {
 				retryAfter.put(target.pos(), client.player.age + TEMPORARY_CELL_RETRY_TICKS);
@@ -1843,6 +1887,59 @@ public final class SchematicBuildController {
 			if (budget <= 0.0D) break;
 		}
 		return lookahead;
+	}
+
+	private double remainingPathDistance(Vec3d playerPosition) {
+		double distance = 0.0D;
+		Vec3d previous = playerPosition;
+		for (int i = pathIndex; i < path.size(); i++) {
+			SchematicPathfinder.Node node = path.get(i);
+			Vec3d next = new Vec3d(node.x() + 0.5D, node.y(), node.z() + 0.5D);
+			distance += previous.distanceTo(next);
+			previous = next;
+		}
+		return distance;
+	}
+
+	/**
+	 * Arrival test over the tick's whole travel segment. Intermediate flying
+	 * waypoints accept a wider pass — the lookahead steering rounds them off —
+	 * while the final node keeps the tight band the placement phase needs.
+	 */
+	private boolean reachedWaypoint(Vec3d previous, Vec3d position,
+			SchematicPathfinder.Node waypoint, boolean flying, boolean finalNode) {
+		Vec3d point = new Vec3d(waypoint.x() + 0.5D, waypoint.y(), waypoint.z() + 0.5D);
+		Vec3d closest = closestOnSegment(previous, position, point);
+		double horizontalTolerance = flying && !finalNode ? 0.5625D : 0.20D;
+		double verticalTolerance = flying ? (finalNode ? 0.38D : 0.80D) : 0.60D;
+		return horizontalDistanceSq(closest, point) < horizontalTolerance
+				&& Math.abs(point.y - closest.y) < verticalTolerance;
+	}
+
+	private Vec3d closestOnSegment(Vec3d start, Vec3d end, Vec3d target) {
+		Vec3d segment = end.subtract(start);
+		double lengthSq = segment.lengthSquared();
+		if (lengthSq < 1.0E-9D) return end;
+		double t = MathHelper.clamp(target.subtract(start).dotProduct(segment) / lengthSq, 0.0D, 1.0D);
+		return start.add(segment.multiply(t));
+	}
+
+	/**
+	 * Key combination opposing the current horizontal velocity, the way a
+	 * player taps the reverse key to kill flight momentum before a stop.
+	 */
+	private PlayerInput brakeInput(ClientPlayerEntity player) {
+		Vec3d velocity = player.getVelocity();
+		Vec3d desired = new Vec3d(-velocity.x, 0.0D, -velocity.z);
+		if (desired.lengthSquared() < 1.0E-6D) return PlayerInput.DEFAULT;
+		desired = desired.normalize();
+		double yaw = Math.toRadians(player.getYaw());
+		Vec3d forwardVec = new Vec3d(-Math.sin(yaw), 0.0D, Math.cos(yaw));
+		Vec3d leftVec = new Vec3d(Math.cos(yaw), 0.0D, Math.sin(yaw));
+		double forwardDot = desired.dotProduct(forwardVec);
+		double leftDot = desired.dotProduct(leftVec);
+		return new PlayerInput(forwardDot > 0.2D, forwardDot < -0.2D,
+				leftDot > 0.2D, leftDot < -0.2D, false, false, false);
 	}
 
 	// ── Aim, orientation prediction, placement, waterlogging ──────────────────
@@ -2506,6 +2603,21 @@ public final class SchematicBuildController {
 				&& first.state().getBlock() == second.state().getBlock();
 	}
 
+	/**
+	 * Decision trace written to latest.log. Consecutive duplicates collapse, so
+	 * the log records transitions, not ticks; the point is that a failed field
+	 * test can be reconstructed from the log after the fact.
+	 */
+	private void trace(String message) {
+		if (message.equals(lastTrace)) return;
+		lastTrace = message;
+		ProFPS.LOGGER.info("[AutoBuild] {}", message);
+	}
+
+	private String describe(BlockPos pos) {
+		return pos.getX() + "," + pos.getY() + "," + pos.getZ();
+	}
+
 	private void status(MinecraftClient client, String message, Formatting color, int cooldown) {
 		if (client.player.age < nextStatusTick) return;
 		client.inGameHud.setOverlayMessage(Text.literal("Auto Build ").formatted(Formatting.AQUA, Formatting.BOLD)
@@ -2539,6 +2651,7 @@ public final class SchematicBuildController {
 		unstickTicks = 0;
 		replanAttempts = 0;
 		lastWaypointDistance = Double.POSITIVE_INFINITY;
+		lastDrivePosition = null;
 		breakingTemporary = false;
 		breakSwingTicks = 0;
 		placementSent = false;

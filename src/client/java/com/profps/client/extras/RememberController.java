@@ -1,5 +1,6 @@
 package com.profps.client.extras;
 
+import com.profps.ProFPS;
 import com.profps.client.config.ProFPSConfig;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.minecraft.block.BlockState;
@@ -128,7 +129,24 @@ public final class RememberController {
 		RememberedBuild build = new RememberedBuild(nextBuildId++, captured);
 		builds.add(build);
 		revision++;
-		showAction(client, "Saved build " + build.id() + " (" + captured.size() + " blocks)", Formatting.GREEN);
+		// The span is the honest tell for a flood-fill leak: a small build that
+		// reports a plot-sized box means the capture crawled into the terrain,
+		// and everything downstream (layers, targets, routes) inherits that.
+		int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+		int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+		for (BlockPos pos : captured.keySet()) {
+			minX = Math.min(minX, pos.getX());
+			minY = Math.min(minY, pos.getY());
+			minZ = Math.min(minZ, pos.getZ());
+			maxX = Math.max(maxX, pos.getX());
+			maxY = Math.max(maxY, pos.getY());
+			maxZ = Math.max(maxZ, pos.getZ());
+		}
+		String span = (maxX - minX + 1) + "x" + (maxY - minY + 1) + "x" + (maxZ - minZ + 1);
+		ProFPS.LOGGER.info("[Remember] saved build {}: {} blocks, {} spanning {},{},{} -> {},{},{}",
+				build.id(), captured.size(), span, minX, minY, minZ, maxX, maxY, maxZ);
+		showAction(client, "Saved build " + build.id() + " (" + captured.size() + " blocks, " + span + ")",
+				Formatting.GREEN);
 	}
 
 	/** The newest remembered block state at this world position, or {@code null}. */
