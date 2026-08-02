@@ -44,6 +44,7 @@ import com.profps.client.extras.SchematicBuildController;
 import com.profps.client.extras.HeightClutchController;
 import com.profps.client.extras.PingEqualizerController;
 import com.profps.client.extras.PingSpoofController;
+import com.profps.client.extras.RTPFinderController;
 import com.profps.client.extras.ScaffoldController;
 import com.profps.client.instants.AutoClickerController;
 import com.profps.client.instants.AutoBreachSwapController;
@@ -55,6 +56,7 @@ import com.profps.client.instants.MovementInstantsController;
 import com.profps.client.instants.PearlCatchController;
 import com.profps.client.instants.ToolMineController;
 import com.profps.client.instants.FastPlaceController;
+import com.profps.client.inventory.AutoSignController;
 import com.profps.client.inventory.InventoryAutomationController;
 import com.profps.client.packet.PacketManager;
 import com.profps.client.packet.PacketOverlay;
@@ -152,6 +154,8 @@ public final class ProFPSClient implements ClientModInitializer {
 		ToolMineController toolMine = new ToolMineController(config);
 		FastPlaceController fastPlace = new FastPlaceController(config);
 		InventoryAutomationController inventoryAutomation = new InventoryAutomationController(config);
+		AutoSignController autoSign = new AutoSignController(config);
+		RTPFinderController rtpFinder = new RTPFinderController(config);
 		BedBreakerController bedBreaker = new BedBreakerController(config);
 		MovementInstantsController movementInstants = new MovementInstantsController(config);
 		ScaffoldController scaffold = new ScaffoldController(config);
@@ -223,6 +227,9 @@ public final class ProFPSClient implements ClientModInitializer {
 			toolMine.tick(client);
 			fastPlace.tick(client);
 			inventoryAutomation.tick(client);
+			// Auto Sign deliberately runs with a screen open — the sign editor IS its trigger.
+			autoSign.tick(client);
+			rtpFinder.tick(client);
 			movementInstants.tick(client);
 			// autoMace is driven from TriggerbotPreMovementMixin (firePreMovement) so its attack
 			// packet is sent BEFORE the flying packet (vanilla order) and won't trip Grim "Post".

@@ -333,6 +333,8 @@ public final class NovaModules {
 		d.put("autocrystal", "Right-click obsidian or bedrock to place and quickly break a crystal.");
 		d.put("fastuse", "Removes the right-click use delay.");
 		d.put("autoxp", "Throws XP bottles until your Mending armour is full.");
+		d.put("autosign", "Writes your configured text onto every sign you place.");
+		d.put("rtpfinder", "Spams an rtp command until it lands you near set coords.");
 		d.put("hitboxes", "Shows player hitboxes through walls in your chosen color.");
 		d.put("subtiers_autobed", "Detonates a bed shortly after your real placement in explosive dimensions.");
 		d.put("subtiers_autocreeper", "Lines up and launches your placed creeper toward a nearby player with a KB II+ sword.");
@@ -817,6 +819,23 @@ public final class NovaModules {
 						() -> cfg.inventoryAutoArmorDelayMinMs, v -> cfg.inventoryAutoArmorDelayMinMs = v),
 				new IntSetting("Delay max", " ms", 1, 200, 1,
 						() -> cfg.inventoryAutoArmorDelayMaxMs, v -> cfg.inventoryAutoArmorDelayMaxMs = v)));
+		m.put("autosign", new Module("autosign", "AutoSign", Items.OAK_SIGN,
+				() -> cfg.autoSignEnabled, v -> cfg.autoSignEnabled = v,
+				new StringSetting("Line 1", "", () -> cfg.autoSignLine1, v -> cfg.autoSignLine1 = v),
+				new StringSetting("Line 2", "", () -> cfg.autoSignLine2, v -> cfg.autoSignLine2 = v),
+				new StringSetting("Line 3", "", () -> cfg.autoSignLine3, v -> cfg.autoSignLine3 = v),
+				new StringSetting("Line 4", "", () -> cfg.autoSignLine4, v -> cfg.autoSignLine4 = v)));
+		m.put("rtpfinder", new Module("rtpfinder", "RTPFinder", Items.ENDER_PEARL,
+				() -> cfg.rtpFinderEnabled, v -> cfg.rtpFinderEnabled = v,
+				new StringSetting("Target X", "0", () -> String.valueOf(cfg.rtpFinderTargetX),
+						v -> cfg.rtpFinderTargetX = parseCoord(v, cfg.rtpFinderTargetX)),
+				new StringSetting("Target Z", "0", () -> String.valueOf(cfg.rtpFinderTargetZ),
+						v -> cfg.rtpFinderTargetZ = parseCoord(v, cfg.rtpFinderTargetZ)),
+				new ChoiceSetting("Stop within", new String[] {"5k", "10k", "20k"},
+						() -> cfg.rtpFinderRadius, v -> cfg.rtpFinderRadius = v),
+				new StringSetting("Command", "/rtp", () -> cfg.rtpFinderCommand, v -> cfg.rtpFinderCommand = v),
+				new IntSetting("Interval", " ms", 250, 10000, 250,
+						() -> cfg.rtpFinderIntervalMs, v -> cfg.rtpFinderIntervalMs = v)));
 		m.put("cheststeal", new Module("cheststeal", "ChestSteal", Items.CHEST,
 				() -> cfg.inventoryChestSteal, v -> cfg.inventoryChestSteal = v,
 				new BoolSetting("Check in menu", () -> cfg.inventoryChestStealCheckMenu, v -> cfg.inventoryChestStealCheckMenu = v),
@@ -883,10 +902,10 @@ public final class NovaModules {
 		categories.add(new Category("Instants", Items.CLOCK, pick(m,
 				"breakon", "fastbreak", "autotool", "fastplace", "autosprint", "autowalk")));
 		categories.add(new Category("Inventory", Items.CHEST, pick(m,
-				"autoarmor", "cheststeal", "refill", "autohotbar", "invcleaner")));
+				"autoarmor", "cheststeal", "refill", "autohotbar", "invcleaner", "autosign")));
 		categories.add(new Category("Misc", Items.COMPASS, pick(m,
 				"fullbright", "flight", "spam", "waterwalk", "boatfly", "teleporter", "nickname", "nickother",
-				"pingspoof", "pingequalizer", "slow")));
+				"pingspoof", "pingequalizer", "slow", "rtpfinder")));
 		return categories;
 	}
 
@@ -897,6 +916,15 @@ public final class NovaModules {
 			if (mod != null) out.add(mod);
 		}
 		return out;
+	}
+
+	/** Coordinates are typed, not dragged, so a bad keystroke keeps the previous value. */
+	private static int parseCoord(String value, int fallback) {
+		try {
+			return Integer.parseInt(value.trim().replace(",", "").replace("_", ""));
+		} catch (NumberFormatException exception) {
+			return fallback;
+		}
 	}
 
 	private static void replaceCsv(java.util.List<String> target, String value) {

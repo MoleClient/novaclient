@@ -315,6 +315,17 @@ public final class ProFPSConfig {
 	public boolean heightClutchAssist = false; // water-bucket MLG / ladder fall-save from a held item
 	public boolean autoXpEnabled = false;      // throw XP bottles until Mending armour is back to full
 	public int autoXpDelayMs = 200;            // gap between throws (0-1000), jittered on top
+	public boolean autoSignEnabled = false;    // write configured text onto every sign you place
+	public String autoSignLine1 = "";
+	public String autoSignLine2 = "";
+	public String autoSignLine3 = "";
+	public String autoSignLine4 = "";
+	public boolean rtpFinderEnabled = false;   // spam an rtp command until it lands near a target
+	public int rtpFinderTargetX = 0;
+	public int rtpFinderTargetZ = 0;
+	public int rtpFinderRadius = 1;            // 0 = 5k, 1 = 10k, 2 = 20k blocks or less
+	public String rtpFinderCommand = "/rtp";   // any command, e.g. "/rtp eu west"
+	public int rtpFinderIntervalMs = 1000;     // gap between attempts (250-10000)
 	public boolean jumpResetAssist = false;    // real humanized jump on taking a hit, to cut knockback
 	public int jumpResetReactionMs = 40;       // reaction after a hit before the jump fires (lower = faster)
 	public int jumpResetSkipPct = 6;           // chance to skip a reset (humanizing)
@@ -496,7 +507,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 90;
+	public int configVersion = 91;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1653,6 +1664,22 @@ public final class ProFPSConfig {
 			autoXpEnabled = false;
 			autoXpDelayMs = 200;
 			configVersion = 90;
+			changed = true;
+		}
+		if (configVersion < 91) {
+			// New Inventory → Auto Sign and Misc → RTP Finder. Both off until configured.
+			autoSignEnabled = false;
+			autoSignLine1 = "";
+			autoSignLine2 = "";
+			autoSignLine3 = "";
+			autoSignLine4 = "";
+			rtpFinderEnabled = false;
+			rtpFinderTargetX = 0;
+			rtpFinderTargetZ = 0;
+			rtpFinderRadius = 1;
+			rtpFinderCommand = "/rtp";
+			rtpFinderIntervalMs = 1000;
+			configVersion = 91;
 			changed = true;
 		}
 		return changed;
