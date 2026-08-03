@@ -1,5 +1,6 @@
 package com.profps.client.mixin;
 
+import com.profps.client.aim.SilentAimController;
 import com.profps.client.donutsmp.FreecamController;
 import net.minecraft.client.render.Camera;
 import net.minecraft.entity.Entity;
@@ -22,8 +23,15 @@ public abstract class CameraMixin {
 	@Inject(method = "update", at = @At("TAIL"))
 	private void profps$applyFreecam(World area, Entity focusedEntity, boolean thirdPerson,
 			boolean inverseView, float tickProgress, CallbackInfo ci) {
-		if (!FreecamController.isActive()) return;
-		setPos(FreecamController.cameraPosition(tickProgress));
-		setRotation(FreecamController.cameraYaw(), FreecamController.cameraPitch());
+		if (FreecamController.isActive()) {
+			setPos(FreecamController.cameraPosition(tickProgress));
+			setRotation(FreecamController.cameraYaw(), FreecamController.cameraPitch());
+			return;
+		}
+		// Silent aim only ever changes which rotation is drawn. The body keeps
+		// the aim rotation, so physics and every outbound packet are unchanged.
+		if (SilentAimController.isActive()) {
+			setRotation(SilentAimController.viewYaw(), SilentAimController.viewPitch());
+		}
 	}
 }

@@ -97,6 +97,7 @@ public final class ProFPSConfig {
 	public int hitFollowupMs = 45;        // combo follow-up motor delay (lower = faster combos)
 	public int hitAxePostDelayMs = 120;   // centre of the post-ready axe delay (jittered by +/-20ms; 0 disables)
 	public boolean hitCritTiming = true;  // hold the swing while you're rising into a jump; fire as you fall (crit)
+	public boolean hitCritSprintRelease = true; // tap off forward mid-air so a sprinting jump can actually crit
 
 	// Reach — extends entity targeting + the attack-range gate. Stored in HUNDREDTHS of a block.
 	// Grounded in Grim's actual Reach.java: it flags when (eye→look-ray-intercept of the
@@ -151,6 +152,13 @@ public final class ProFPSConfig {
 	public int autoMaceTurnSpeed = 45;    // how snappy the view whips onto the target (higher = faster)
 	public int autoMaceSettleMs = 35;     // acquisition dwell; overlaps aim + cooldown
 	public int autoMaceSmashSpeed = 75;   // turn speed during a falling smash (kept high so it lands mid-air)
+	/**
+	 * Silent aim: the mace turns the body onto the target as it always has, and
+	 * the camera stays under your own mouse. Rotations are never spoofed into
+	 * packets — the body really is aimed, so movement and the packet stream stay
+	 * consistent for a simulating anti-cheat. Only the drawn view changes.
+	 */
+	public boolean maceSilentAim = false;
 	public boolean autoMaceShieldBreak = true; // stun-slam: with an axe in hand, axe-tap to disable shield / stun, then mace-smash — fires on shielding targets and falling dives
 	public int autoMaceShieldBreakMs = 60;     // gap between the axe (stun) hit and the mace smash — ~1 server tick
 
@@ -441,6 +449,8 @@ public final class ProFPSConfig {
 	public int lungeTurnSpeed = 70;
 	public boolean lungeSpearMace = true;
 	public boolean lungeShieldBreak = true;
+	/** Pace the jab by how fast the key is actually spammed, and chain queued presses. */
+	public boolean lungeSpamScaling = true;
 	/** Visible aim support only while the player manually holds a spear charge. */
 	public boolean spearChargeAssist = false;
 	public int spearChargeFov = 65;
@@ -507,7 +517,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 91;
+	public int configVersion = 92;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1680,6 +1690,20 @@ public final class ProFPSConfig {
 			rtpFinderCommand = "/rtp";
 			rtpFinderIntervalMs = 1000;
 			configVersion = 91;
+			changed = true;
+		}
+		if (configVersion < 92) {
+			// Auto Totem now maintains the offhand continuously instead of
+			// reacting once to the pop packet. Silent swap becomes the default:
+			// the visible-inventory path locks the player's own movement and
+			// clicks for as long as the screen is up, which is the worst thing
+			// to do in the fight that just cost a totem. The GUI mode is still
+			// available for anyone who prefers to see the refill happen.
+			totemOpenInventory = false;
+			maceSilentAim = false;
+			lungeSpamScaling = true;
+			hitCritSprintRelease = true;
+			configVersion = 92;
 			changed = true;
 		}
 		return changed;

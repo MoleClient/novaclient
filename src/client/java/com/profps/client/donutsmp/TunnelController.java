@@ -467,7 +467,7 @@ public final class TunnelController {
 
 	private boolean isTunnelPick(ItemStack stack) {
 		if (stack.isEmpty() || !stack.isOf(Items.NETHERITE_PICKAXE)) return false;
-		String name = stack.getName().getString().toLowerCase();
+		String name = stack.getName().getString().toLowerCase(java.util.Locale.ROOT);
 		return name.contains("amethyst")
 				|| name.contains("amythyst")
 				|| name.contains("shard");

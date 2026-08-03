@@ -45,6 +45,13 @@ public final class AutoLungeController {
 	private long lastFrameNanos;
 	private boolean ownsRotation;
 	private String status = "Idle";
+	// Spam scaling: the jab is paced by how fast the key is actually pressed.
+	// Presses are counted over a rolling window, and a press that arrives while a
+	// jab is still finishing is queued rather than dropped, so holding a fast
+	// rhythm chains jabs back to back instead of restarting the wind-up.
+	private long lastPressNanos;
+	private double pressRateHz;
+	private boolean queuedRequest;
 
 	public AutoLungeController(ProFPSConfig config) {
 		this.config = config;
@@ -54,10 +61,18 @@ public final class AutoLungeController {
 	public void tickPreMovement(MinecraftClient client) {
 		if (config.autoLungeRequested) {
 			config.autoLungeRequested = false;
+			notePress();
 			if (phase == Phase.IDLE && allowed(client)) begin(client);
+			else queuedRequest = true;
 		}
 
-		if (phase == Phase.IDLE) return;
+		if (phase == Phase.IDLE) {
+			if (queuedRequest) {
+				queuedRequest = false;
+				if (allowed(client)) begin(client);
+			}
+			return;
+		}
 		if (!allowed(client)) {
 			reset(client, true);
 			return;
@@ -70,7 +85,7 @@ public final class AutoLungeController {
 				if (age < nextActionAge) return;
 				applyMovement(client, false);
 				phase = Phase.SPRINT;
-				nextActionAge = age + 1 + rng.nextInt(2);
+				nextActionAge = age + windUpTicks();
 				status = "Building speed";
 			}
 			case SPRINT -> {
@@ -128,14 +143,22 @@ public final class AutoLungeController {
 					CombatModeRuntime.armSpearMace(target.getUuid(), 2_400L);
 				}
 				phase = Phase.RECOVER;
-				nextActionAge = age + 2;
+				nextActionAge = age + recoverTicks();
 				status = config.lungeSpearMace && target != null
 						? "Spear → Mace armed"
 						: "Recovering";
 			}
 			case RECOVER -> {
 				applyMovement(client, false);
-				if (age >= nextActionAge) reset(client, true);
+				if (age < nextActionAge) return;
+				// A press that arrived mid-jab restarts the moment recovery ends,
+				// so a fast rhythm chains instead of replaying the whole wind-up.
+				boolean chain = queuedRequest && allowed(client);
+				reset(client, !chain);
+				if (chain) {
+					queuedRequest = false;
+					begin(client);
+				}
 			}
 			case IDLE -> { }
 		}
@@ -199,6 +222,44 @@ public final class AutoLungeController {
 		return true;
 	}
 
+	/** Records a keypress and keeps a decaying estimate of the spam rate. */
+	private void notePress() {
+		long now = System.nanoTime();
+		if (lastPressNanos != 0L) {
+			double gapSeconds = (now - lastPressNanos) / 1_000_000_000.0D;
+			if (gapSeconds > 1.5D) {
+				pressRateHz = 0.0D;
+			} else {
+				double instant = 1.0D / Math.max(0.03D, gapSeconds);
+				// Smoothed so one stray double-tap does not read as sustained spam.
+				pressRateHz = pressRateHz * 0.45D + instant * 0.55D;
+			}
+		}
+		lastPressNanos = now;
+	}
+
+	/** True once the key is being pressed faster than roughly four times a second. */
+	private boolean spamming() {
+		if (!config.lungeSpamScaling || lastPressNanos == 0L) return false;
+		return (System.nanoTime() - lastPressNanos) < 1_500_000_000L && pressRateHz >= 4.0D;
+	}
+
+	/**
+	 * Ticks spent building speed before the jump. Hard spam collapses this to the
+	 * single tick the sprint needs to register; a normal press keeps the varied
+	 * human wind-up.
+	 */
+	private int windUpTicks() {
+		if (!config.lungeSpamScaling) return 1 + rng.nextInt(2);
+		if (spamming()) return 1;
+		return pressRateHz >= 2.0D ? 1 + rng.nextInt(2) : 1 + rng.nextInt(3);
+	}
+
+	/** Cool-down before the sequence releases the keys back to the player. */
+	private int recoverTicks() {
+		return config.lungeSpamScaling && spamming() ? 1 : 2;
+	}
+
 	private void begin(MinecraftClient client) {
 		ClientPlayerEntity player = client.player;
 		if (!SpearCombatPolicy.canStartLunge(
@@ -226,7 +287,9 @@ public final class AutoLungeController {
 		originalSprint = client.options.sprintKey.isPressed();
 		originalJump = client.options.jumpKey.isPressed();
 		phase = Phase.REACTION;
-		nextActionAge = player.age + 1 + rng.nextInt(2);
+		// Under sustained spam the reaction beat is already paid by the player's
+		// own timing, so the jab starts on the next tick instead of adding one.
+		nextActionAge = player.age + (spamming() ? 0 : 1 + rng.nextInt(2));
 		status = target == null ? "Lunge ready" : "Tracking lunge";
 	}
 
@@ -351,6 +414,8 @@ public final class AutoLungeController {
 		lastFrameNanos = 0L;
 		ownsRotation = false;
 		status = "Idle";
+		// The spam estimate deliberately survives a reset: it describes the
+		// player's rhythm across jabs, which is the whole point of scaling to it.
 	}
 
 	private enum Phase {

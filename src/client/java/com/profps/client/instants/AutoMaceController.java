@@ -1,6 +1,7 @@
 package com.profps.client.instants;
 
 import com.profps.client.aim.MouseGcd;
+import com.profps.client.aim.SilentAimController;
 import com.profps.client.combatmode.CombatFeature;
 import com.profps.client.combatmode.CombatModePolicy;
 import com.profps.client.combatmode.CombatModeProfile;
@@ -381,6 +382,11 @@ public final class AutoMaceController {
 			clearEngagement();
 			return;
 		}
+
+		// Ask for silent aim for as long as this controller is actually turning
+		// the body. It is held by continuous request, so simply not asking on a
+		// frame where the mace is not aiming is what hands the body back.
+		if (config.maceSilentAim) SilentAimController.instance().engage(player);
 
 		updateBias(now, dt, tuning);
 		Vec3d eye = player.getEyePos();

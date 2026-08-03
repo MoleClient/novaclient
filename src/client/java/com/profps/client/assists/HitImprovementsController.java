@@ -139,6 +139,40 @@ public final class HitImprovementsController {
 		return prepared;
 	}
 
+	/**
+	 * Frees an airborne swing to land as a crit by tapping off the forward key.
+	 *
+	 * <p>Vanilla refuses a crit outright while the attacker is sprinting, and a
+	 * sprint only ends when the published input stops carrying forward movement —
+	 * dropping the sprint key alone leaves an established sprint running
+	 * (verified against {@code ClientPlayerEntity.shouldStopSprinting}). So the
+	 * only thing that actually converts a sprinting jump into a crit is the same
+	 * W-tap a player does by hand, which is exactly what this publishes. Air
+	 * control means momentum carries through the tap, so the jump still travels.
+	 *
+	 * <p>It only fires while airborne with a real target in front: on the ground
+	 * there is no crit to protect, and away from a fight this would be an
+	 * unexplained stutter in ordinary movement.
+	 */
+	public static PlayerInput critSprintOverride(PlayerInput current) {
+		HitImprovementsController controller = instance;
+		if (controller == null || current == null) return null;
+		if (!controller.config.hitCritTiming || !controller.config.hitCritSprintRelease) return null;
+
+		MinecraftClient client = MinecraftClient.getInstance();
+		ClientPlayerEntity player = client == null ? null : client.player;
+		if (player == null || !player.isSprinting() || player.isOnGround()) return null;
+		// Manual retreat or sneak is the player's own intent and already ends the
+		// sprint; never layer a tap on top of it.
+		if (current.backward() || current.sneak() || !current.forward()) return null;
+		if (player.isClimbing() || player.isTouchingWater() || player.isInLava()
+				|| player.hasVehicle() || player.isGliding() || player.getAbilities().flying) return null;
+		if (controller.getCrosshairPlayer(client) == null) return null;
+
+		return new PlayerInput(false, false, current.left(), current.right(),
+				current.jump(), false, false);
+	}
+
 	// ── Main update ──────────────────────────────────────────────────────────
 
 	public void tick(MinecraftClient client) {

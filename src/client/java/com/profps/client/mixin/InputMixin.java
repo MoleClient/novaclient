@@ -3,6 +3,7 @@ package com.profps.client.mixin;
 import com.profps.client.assists.HitImprovementsController;
 import com.profps.client.assists.StrafeImprovementsController;
 import com.profps.client.ai.SwordAiController;
+import com.profps.client.aim.SilentAimController;
 import com.profps.client.donutsmp.FreecamController;
 import com.profps.client.donutsmp.TunnelController;
 import com.profps.client.extras.SchematicBuildController;
@@ -99,6 +100,25 @@ public abstract class InputMixin {
 					input = normalHit;
 					overridden = true;
 				}
+
+				// The crit W-tap comes after the sprint prep on purpose: a sprint
+				// established for a ground hit must still be dropped once the
+				// player is airborne, or the swing cannot crit at all.
+				PlayerInput critTap = HitImprovementsController.critSprintOverride(input);
+				if (critTap != null) {
+					input = critTap;
+					overridden = true;
+				}
+			}
+
+			// Silent aim turns the body away from where the player is looking, and
+			// walking resolves against the body. Re-pick the keys last, on top of
+			// whatever produced this input, so the player still travels the way
+			// the view faces.
+			PlayerInput silent = SilentAimController.movementOverride(input);
+			if (silent != null) {
+				input = silent;
+				overridden = true;
 			}
 
 			if (overridden) {

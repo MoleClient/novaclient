@@ -438,6 +438,8 @@ public final class NovaModules {
 				() -> cfg.hitImprovements, v -> cfg.hitImprovements = v,
 				new BoolSetting("Patient", () -> cfg.hitPatient, v -> cfg.hitPatient = v),
 				new BoolSetting("Crit Timing", () -> cfg.hitCritTiming, v -> cfg.hitCritTiming = v),
+				new BoolSetting("Crit Sprint Release", () -> cfg.hitCritSprintRelease,
+						v -> cfg.hitCritSprintRelease = v),
 				new BoolSetting("Sneak Disable", () -> cfg.hitDisableWhileSneaking, v -> cfg.hitDisableWhileSneaking = v),
 				new BoolSetting("Sprint Aware", () -> cfg.hitSprintAwareCooldown, v -> cfg.hitSprintAwareCooldown = v),
 				new IntSetting("Reaction Min", " ms", 0, 200, 1, () -> cfg.hitReactionMinMs, v -> {
@@ -575,6 +577,7 @@ public final class NovaModules {
 				new IntSetting("Turn Speed", "%", 20, 90, 1, () -> cfg.autoMaceTurnSpeed, v -> cfg.autoMaceTurnSpeed = v),
 				new IntSetting("Smash Speed", "%", 30, 95, 1, () -> cfg.autoMaceSmashSpeed, v -> cfg.autoMaceSmashSpeed = v),
 				new IntSetting("Settle", " ms", 0, 150, 5, () -> cfg.autoMaceSettleMs, v -> cfg.autoMaceSettleMs = v),
+				new BoolSetting("Silent Aim", () -> cfg.maceSilentAim, v -> cfg.maceSilentAim = v),
 				new BoolSetting("Stun Slam (Axe)", () -> cfg.autoMaceShieldBreak, v -> cfg.autoMaceShieldBreak = v),
 				new IntSetting("Stun Gap", " ms", 0, 200, 5, () -> cfg.autoMaceShieldBreakMs, v -> cfg.autoMaceShieldBreakMs = v)));
 		m.put("autobreachswap", new Module("autobreachswap", "Auto Breach Swap", Items.MACE,
@@ -587,6 +590,7 @@ public final class NovaModules {
 				new IntSetting("Range", "m", 4, 24, 1, () -> cfg.lungeRange, v -> cfg.lungeRange = v),
 				new IntSetting("Turn Speed", "%", 20, 85, 1, () -> cfg.lungeTurnSpeed, v -> cfg.lungeTurnSpeed = v),
 				new BoolSetting("Spear → Mace", () -> cfg.lungeSpearMace, v -> cfg.lungeSpearMace = v),
+				new BoolSetting("Spam Scaling", () -> cfg.lungeSpamScaling, v -> cfg.lungeSpamScaling = v),
 				new BoolSetting("Shield Axe Break", () -> cfg.lungeShieldBreak, v -> cfg.lungeShieldBreak = v)).momentary());
 		m.put("spearcharge", new Module("spearcharge", "Spear Charge Assist", Items.DIAMOND_SPEAR,
 				() -> cfg.spearChargeAssist, v -> cfg.spearChargeAssist = v,

@@ -262,6 +262,12 @@ public final class ProFPSClient implements ClientModInitializer {
 		HudRenderCallback.EVENT.register(playerSightings);
 		WorldRenderEvents.END_MAIN.register(context -> {
 				MinecraftClient mc = MinecraftClient.getInstance();
+				// Runs unconditionally and before any aiming module: silent aim is
+				// held by continuous request, so this is what walks the body back
+				// under the camera the moment nothing is asking for it any more —
+				// including when a higher-priority controller stops the mace's
+				// frame hook from running at all.
+				com.profps.client.aim.SilentAimController.instance().frame(mc, silentAimFrameDelta());
 				pearlCatch.frame(mc);
 				boolean pearlOwnsRotation = pearlCatch.ownsRotation();
 				boolean expandedOwnsRotation = expandedHitbox.isBusy();
@@ -440,6 +446,17 @@ public final class ProFPSClient implements ClientModInitializer {
 		if (autoCrystal != null) autoCrystal.tick(client);
 		if (autoClicker != null) autoClicker.tickPreMovement(client);
 	}
+	private static long silentAimFrameNanos;
+
+	/** Elapsed render-frame time in tick units, so the hand-back is frame-rate independent. */
+	private static float silentAimFrameDelta() {
+		long now = System.nanoTime();
+		long previous = silentAimFrameNanos;
+		silentAimFrameNanos = now;
+		if (previous == 0L) return 1.0F;
+		return (float) Math.clamp((now - previous) / 1_000_000_000.0D * 20.0D, 0.05D, 3.0D);
+	}
+
 	public static AnchorMacroController anchorMacro() { return anchorMacro; }
 	public static FastUseController fastUse() { return fastUse; }
 	public static TotemTweaksController totemTweaks() { return totemTweaks; }

@@ -16,85 +16,147 @@ import org.lwjgl.glfw.GLFW;
 import java.security.SecureRandom;
 
 /**
- * Auto Totem — after your totem pops, rapidly refills a totem into your offhand (and, if there's room,
- * a hotbar backup).
+ * Auto Totem — keeps a totem in your offhand, and a spare in the hotbar.
  *
- * <p>Two refill styles, chosen by the <b>Open Inventory</b> toggle (on by default):
+ * <p>This is a <em>maintenance</em> loop, not a reaction to one event. Every tick
+ * it compares what you are holding against what you should be holding and fixes
+ * the difference. A totem pop only makes it act sooner; it is never the thing
+ * that decides whether the refill happens at all.
+ *
+ * <p>That distinction is the whole reliability story. The pop arrives as an
+ * {@code EntityStatusS2CPacket}, which the server sends while it is handling the
+ * damage — before the slot update that actually empties the offhand client-side.
+ * Reacting to the pop and asking "is the offhand empty?" at that instant reads a
+ * stack the server has already consumed, concludes there is nothing to do, and
+ * gives up. Whether the slot update happened to land first decided whether the
+ * refill happened, which is why the old one-shot version worked roughly half the
+ * time. Re-checking every tick until the offhand genuinely holds a totem removes
+ * the race entirely: no packet order can hide an empty offhand for long.
+ *
+ * <p>Sent moves are verified rather than assumed. {@code clickSlot} predicts its
+ * own result locally, so a rejected swap looks successful until the server
+ * reverts it; the watch outlives that revert and simply refills again.
+ *
+ * <p>Two refill styles, chosen by the <b>Open Inventory</b> toggle:
  * <ul>
- *   <li><b>Open Inventory (default).</b> Opens your inventory and moves the totem the way you
- *       physically would. The screen it opens is <em>guarded</em> — it swallows your own
- *       clicks/drags/scroll/number-keys so you can't shuffle items and corrupt your hotbar while
- *       it's working (Esc still closes it), and your selected slot is snapshotted and restored.</li>
- *   <li><b>Off — silent swap.</b> Never opens a screen; slips the totem into the offhand via a
- *       single {@code SWAP} slot-action on the always-live player handler (sync id 0), the same
- *       mechanic as vanilla's offhand-swap key. Least interruptive, but no visible inventory.</li>
+ *   <li><b>Off (default) — silent swap.</b> Slips the totem into the offhand with
+ *       a single {@code SWAP} slot-action on the always-live player handler, the
+ *       same mechanic as vanilla's offhand-swap key. Nothing opens, so your own
+ *       movement and clicks are never interrupted mid-fight.</li>
+ *   <li><b>Open Inventory.</b> Opens the inventory and moves the totem the way you
+ *       physically would. The screen is <em>guarded</em> — it swallows your clicks,
+ *       drags, scroll and number keys so you cannot shuffle items while it works
+ *       (Esc still closes it) — and it is held open for as few ticks as possible,
+ *       because a screen blocks your input for as long as it is up.</li>
  * </ul>
- *
- * <p>Emergency timing stays slightly varied without delaying the offhand refill. Every move is
- * re-validated, and the visible-inventory path uses vanilla SWAP actions so it does not need a
- * slow pickup/place/cleanup cursor chain.
  */
 public final class TotemTweaksController {
 	private static final int OFFHAND_SWAP_BUTTON = 40;  // vanilla SWAP button that targets the offhand
 	private static final Item TOTEM = Items.TOTEM_OF_UNDYING;
-	private static final int MAX_MOVES = 3;             // safety cap so a stuck state can't loop forever
+	// How long a pop keeps the refill urgent. It has to outlast a server revert
+	// of a rejected swap, or a rejected refill would never be retried.
+	private static final long POP_WATCH_NANOS = 2_500_000_000L;
+	// Spacing between slot actions, and the longer pause taken after a burst of
+	// attempts has failed, so a server that refuses the move is never spammed.
+	private static final long ACTION_GAP_NANOS = 90_000_000L;
+	private static final long BACKOFF_NANOS = 900_000_000L;
+	private static final int MAX_ATTEMPTS_PER_EPISODE = 4;
+	// A screen blocks player input, so the open-inventory path is bounded hard.
+	private static final long GUI_DEADLINE_NANOS = 900_000_000L;
 
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
 
-	private Phase phase = Phase.IDLE;
+	private long popWatchUntilNanos;
 	private long nextActionNanos;
-	private long deadlineNanos;
-	private String status = "Idle";
-
-	private boolean guiMode;            // captured at pop time: open-inventory vs. silent swap
+	private long guiDeadlineNanos;
 	private boolean openedInventory;
 	private int savedSelectedSlot = -1;
-	private int moveCount;
+	private int attempts;
+	private String status = "Idle";
 
 	public TotemTweaksController(ProFPSConfig config) {
 		this.config = config;
 	}
 
+	/**
+	 * A totem was consumed. This only raises urgency: it clears the rate limiter
+	 * and arms the watch. It deliberately does not inspect the offhand, because
+	 * at this instant the consumed stack is usually still there client-side.
+	 */
 	public void markTotemPop(MinecraftClient client, Entity entity) {
-		if (!config.totemTweaks || client == null || client.player == null || entity != client.player) {
-			return;
-		}
+		if (!config.totemTweaks || client == null || client.player == null || entity != client.player) return;
 		if (client.player.isSpectator()) return;
-		// A second pop always supersedes backup/close work from the prior one.
-		if (phase != Phase.IDLE) reset(client);
 		long now = System.nanoTime();
-		// Emergency refill: retain a small non-fixed response window, but do not leave the
-		// offhand empty for the old 140-320 ms reaction delay.
-		guiMode = config.totemOpenInventory;
-		phase = Phase.WAIT_AFTER_POP;
-		nextActionNanos = now + ms(18D + rng.nextDouble() * 34D);
-		deadlineNanos = now + ms(1500D);
-		openedInventory = false;
-		savedSelectedSlot = -1;
-		moveCount = 0;
+		popWatchUntilNanos = now + POP_WATCH_NANOS;
+		// Keep a small non-fixed reaction window, but never the old fixed delay.
+		nextActionNanos = Math.min(nextActionNanos, now + ms(12D + rng.nextDouble() * 26D));
+		attempts = 0;
 		status = "Reacting";
 	}
 
 	public void tick(MinecraftClient client) {
-		if (!config.totemTweaks) { reset(client); return; }
-		if (phase == Phase.IDLE) { status = "Idle"; return; }
-		if (!isUsable(client)) { reset(client); return; }
+		if (!config.totemTweaks) {
+			abandon(client);
+			status = "Off";
+			return;
+		}
+		if (!isUsable(client)) {
+			abandon(client);
+			return;
+		}
 
 		long now = System.nanoTime();
-		if (now > deadlineNanos) { reset(client); return; }
-		if (now < nextActionNanos) return;
+		if (ourScreenOpen(client)) {
+			driveInventoryRefill(client, now);
+			return;
+		}
 
-		switch (phase) {
-			case WAIT_AFTER_POP -> begin(client, now);
-			// Open-inventory path
-			case ANALYZE -> analyze(client, now);
-			case WAIT_BEFORE_CLOSE -> closeInventory(client, now);
-			case CLOSING -> finish(client);
-			// Silent-swap path
-			case SWAP_OFFHAND -> swapOffhand(client, now);
-			case SWAP_HOTBAR -> swapHotbar(client, now);
-			case IDLE -> {}
+		boolean offhandMissing = !client.player.getOffHandStack().isOf(TOTEM);
+		if (!offhandMissing) {
+			// The pop has been answered. Anything left is ordinary upkeep.
+			popWatchUntilNanos = 0L;
+			attempts = 0;
+		}
+
+		if (now < nextActionNanos) return;
+		// Never reach into the handler while a real container is open: the slot
+		// indices would address that screen instead of the player's inventory.
+		if (client.currentScreen != null) return;
+
+		int source = offhandMissing ? findTotem(client, false) : -1;
+		boolean wantsBackup = !offhandMissing && !hotbarHasTotem(client)
+				&& findEmptyHotbar(client) >= 0 && findTotem(client, true) >= 0;
+		if (source < 0 && !wantsBackup) {
+			status = offhandMissing ? "No totem" : "Ready";
+			return;
+		}
+		if (attempts >= MAX_ATTEMPTS_PER_EPISODE) {
+			// The moves are being refused. Wait it out instead of flooding the
+			// server with slot actions it is already rejecting.
+			nextActionNanos = now + BACKOFF_NANOS;
+			attempts = 0;
+			status = "Retrying";
+			return;
+		}
+
+		if (config.totemOpenInventory) {
+			openInventory(client, now);
+			return;
+		}
+		if (source >= 0) {
+			click(client, invToScreen(source), OFFHAND_SWAP_BUTTON, SlotActionType.SWAP);
+			attempts++;
+			nextActionNanos = now + ACTION_GAP_NANOS;
+			status = "Refilled";
+			return;
+		}
+		int backup = findTotem(client, true);
+		int emptyHotbar = findEmptyHotbar(client);
+		if (backup >= 0 && emptyHotbar >= 0) {
+			click(client, invToScreen(backup), emptyHotbar, SlotActionType.SWAP);
+			nextActionNanos = now + ACTION_GAP_NANOS;
+			status = "Backup";
 		}
 	}
 
@@ -104,62 +166,54 @@ public final class TotemTweaksController {
 		return status;
 	}
 
-	private void begin(MinecraftClient client, long now) {
-		if (guiMode) {
-			openInventory(client, now);
-		} else {
-			phase = Phase.SWAP_OFFHAND;
-			swapOffhand(client, now);
-		}
-	}
-
 	// ── Open-inventory path ─────────────────────────────────────────────────
 
 	private void openInventory(MinecraftClient client, long now) {
-		if (client.currentScreen != null) { reset(client); return; } // a real screen is open — don't fight it
 		savedSelectedSlot = client.player.getInventory().getSelectedSlot();
 		client.setScreen(new TotemScreen(client.player));
 		openedInventory = true;
-		phase = Phase.ANALYZE;
+		guiDeadlineNanos = now + GUI_DEADLINE_NANOS;
 		status = "Opening";
-		// Player inventory uses the always-live handler 0, so there is no container-open
-		// acknowledgement to await. Refill the offhand in this same tick.
-		analyze(client, now);
+		// The player inventory rides the always-live handler 0, so there is no
+		// container-open acknowledgement to await; refill in this same tick.
+		driveInventoryRefill(client, now);
 	}
 
-	/** Decide the next totem move from the current state; re-run between every move. */
-	private void analyze(MinecraftClient client, long now) {
-		if (!ourScreenOpen(client)) { reset(client); return; }
+	/** One move per visit, re-deciding from live state, then closes. */
+	private void driveInventoryRefill(MinecraftClient client, long now) {
+		if (!openedInventory) return;
+		if (now > guiDeadlineNanos) {
+			closeInventory(client);
+			nextActionNanos = now + ACTION_GAP_NANOS;
+			return;
+		}
+		if (now < nextActionNanos) return;
 
-		if (moveCount < MAX_MOVES && !client.player.getOffHandStack().isOf(TOTEM)) {
+		if (attempts < MAX_ATTEMPTS_PER_EPISODE && !client.player.getOffHandStack().isOf(TOTEM)) {
 			int source = findTotem(client, false);
 			if (source >= 0) {
-				// One vanilla offhand SWAP replaces the previous pickup + place + cleanup
-				// sequence and never leaves an item attached to the cursor.
 				click(client, invToScreen(source), OFFHAND_SWAP_BUTTON, SlotActionType.SWAP);
-				moveCount++;
-				nextActionNanos = now + ms(5D + rng.nextDouble() * 13D);
+				attempts++;
+				nextActionNanos = now + ms(4D + rng.nextDouble() * 10D);
 				status = "Refilling";
 				return;
 			}
 		}
-		if (moveCount < MAX_MOVES && !hotbarHasTotem(client)) {
+		if (!hotbarHasTotem(client)) {
 			int emptyHotbar = findEmptyHotbar(client);
 			int backup = findTotem(client, true);
 			if (emptyHotbar >= 0 && backup >= 0) {
 				click(client, invToScreen(backup), emptyHotbar, SlotActionType.SWAP);
-				moveCount++;
-				nextActionNanos = now + ms(6D + rng.nextDouble() * 14D);
+				nextActionNanos = now + ms(5D + rng.nextDouble() * 11D);
 				status = "Refilling";
 				return;
 			}
 		}
-		phase = Phase.WAIT_BEFORE_CLOSE;
-		nextActionNanos = now + ms(7D + rng.nextDouble() * 15D);
-		status = "Closing";
+		closeInventory(client);
+		nextActionNanos = now + ACTION_GAP_NANOS;
 	}
 
-	private void closeInventory(MinecraftClient client, long now) {
+	private void closeInventory(MinecraftClient client) {
 		if (openedInventory && ourScreenOpen(client)) {
 			client.player.closeHandledScreen();
 			client.setScreen(null);
@@ -167,50 +221,14 @@ public final class TotemTweaksController {
 		if (savedSelectedSlot >= 0 && savedSelectedSlot < 9) {
 			client.player.getInventory().setSelectedSlot(savedSelectedSlot);
 		}
-		phase = Phase.CLOSING;
-		nextActionNanos = now + ms(5D + rng.nextDouble() * 12D);
-	}
-
-	private void finish(MinecraftClient client) {
-		reset(client);
+		openedInventory = false;
+		savedSelectedSlot = -1;
+		guiDeadlineNanos = 0L;
+		status = client.player.getOffHandStack().isOf(TOTEM) ? "Ready" : "Retrying";
 	}
 
 	private boolean ourScreenOpen(MinecraftClient client) {
 		return client.currentScreen instanceof TotemScreen;
-	}
-
-	// ── Silent-swap path ────────────────────────────────────────────────────
-
-	private void swapOffhand(MinecraftClient client, long now) {
-		// Never reach into the handler while a container is open — the click would hit the wrong
-		// screen handler. Wait for the player to be free; the deadline bails us out.
-		if (client.currentScreen != null) { nextActionNanos = now + ms(25D); return; }
-		if (!client.player.getOffHandStack().isOf(TOTEM)) {
-			int totem = findTotem(client, false);
-			if (totem < 0) { reset(client); return; }
-			click(client, invToScreen(totem), OFFHAND_SWAP_BUTTON, SlotActionType.SWAP);
-			status = "Refilled";
-		}
-		if (hotbarHasTotem(client)) { reset(client); return; }
-		int backup = findTotem(client, true);
-		int emptyHotbar = findEmptyHotbar(client);
-		if (backup >= 0 && emptyHotbar >= 0) {
-			phase = Phase.SWAP_HOTBAR;
-			nextActionNanos = now + ms(8D + rng.nextDouble() * 18D);
-			status = "Backup";
-		} else {
-			reset(client);
-		}
-	}
-
-	private void swapHotbar(MinecraftClient client, long now) {
-		if (client.currentScreen != null || hotbarHasTotem(client)) { reset(client); return; }
-		int backup = findTotem(client, true);
-		int emptyHotbar = findEmptyHotbar(client); // inventory index 0-8, also the SWAP button
-		if (backup >= 0 && emptyHotbar >= 0) {
-			click(client, invToScreen(backup), emptyHotbar, SlotActionType.SWAP);
-		}
-		reset(client);
 	}
 
 	// ── Shared helpers ──────────────────────────────────────────────────────
@@ -248,40 +266,31 @@ public final class TotemTweaksController {
 
 	private boolean isUsable(MinecraftClient client) {
 		return client != null && client.player != null && client.world != null
-				&& client.interactionManager != null && client.player.isAlive();
+				&& client.interactionManager != null && client.player.isAlive()
+				&& !client.player.isSpectator();
 	}
 
-	private void reset(MinecraftClient client) {
-		if (openedInventory && client != null && client.currentScreen instanceof TotemScreen) {
+	/** Drops any screen this controller opened and clears the episode. */
+	private void abandon(MinecraftClient client) {
+		if (openedInventory && client != null && client.player != null
+				&& client.currentScreen instanceof TotemScreen) {
 			client.player.closeHandledScreen();
 			client.setScreen(null);
 			if (savedSelectedSlot >= 0 && savedSelectedSlot < 9) {
 				client.player.getInventory().setSelectedSlot(savedSelectedSlot);
 			}
 		}
-		phase = Phase.IDLE;
-		nextActionNanos = 0L;
-		deadlineNanos = 0L;
 		openedInventory = false;
 		savedSelectedSlot = -1;
-		moveCount = 0;
+		guiDeadlineNanos = 0L;
+		popWatchUntilNanos = 0L;
+		nextActionNanos = 0L;
+		attempts = 0;
 		status = "Idle";
 	}
 
 	private long ms(double value) {
 		return (long) (value * 1_000_000D);
-	}
-
-	private enum Phase {
-		IDLE,
-		WAIT_AFTER_POP,
-		// open-inventory path
-		ANALYZE,
-		WAIT_BEFORE_CLOSE,
-		CLOSING,
-		// silent-swap path
-		SWAP_OFFHAND,
-		SWAP_HOTBAR
 	}
 
 	/**
