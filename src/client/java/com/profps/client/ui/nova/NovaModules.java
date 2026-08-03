@@ -22,8 +22,8 @@ import java.util.function.Supplier;
  * {@link ProFPSConfig} fields. Both the GUI and the in-game keybind handler
  * work off this model, so toggling from either place behaves identically
  * (including the one real cross-module dependency: Stash Pinger feeds off the
- * Advanced ESP block scan, so enabling it pulls Advanced ESP on — Mob ESP is
- * independent of both).
+ * Storage ESP container scan, so enabling it pulls Storage ESP on — Mob ESP and
+ * Hole/Tunnel/Stairs ESP are independent of both).
  */
 public final class NovaModules {
 	/** Mode module ids. These match the keybind ids the Modes panel used, so existing binds survive. */
@@ -341,10 +341,12 @@ public final class NovaModules {
 		d.put("subtiers_autominecart", "Chains your rail placement into a TNT minecart and a fast aimed bow shot.");
 		d.put("slow", "Slows your swing animation, full-speed packets.");
 		d.put("mobesp", "Outlines living entities through walls.");
-		d.put("advesp", "Scans terrain for bases and tunnels.");
+		d.put("advesp", "Finds dug shafts, tunnels, staircases and rooms.");
+		d.put("storageesp", "Outlines every container and redstone build through walls.");
+		d.put("suschunks", "Flags chunks holding base evidence you cannot see from above.");
 		d.put("heatmap", "Marks where players were recently seen.");
 		d.put("baseheat", "Colors chunks by player activity.");
-		d.put("chunkfinder", "Finds newly generated or suspicious chunks.");
+		d.put("chunkfinder", "Colors chunks by how much has been happening in them.");
 		d.put("stash", "Pings storage stashes the scan finds.");
 		d.put("amethyst", "Highlights amethyst geodes through the ground.");
 		d.put("portals", "Maps nether portals and their links.");
@@ -616,34 +618,46 @@ public final class NovaModules {
 				new BoolSetting("Monsters", () -> cfg.donutBasicShowMonsters, v -> cfg.donutBasicShowMonsters = v),
 				new BoolSetting("Passive", () -> cfg.donutBasicShowPassive, v -> cfg.donutBasicShowPassive = v),
 				new BoolSetting("Aquatic", () -> cfg.donutBasicShowAquatic, v -> cfg.donutBasicShowAquatic = v)));
-		m.put("advesp", new Module("advesp", "Advanced ESP", Items.SPYGLASS,
-				() -> cfg.donutAdvancedEsp, v -> {
-					cfg.donutAdvancedEsp = v;
+		m.put("advesp", new Module("advesp", "Hole/Tunnel/Stairs ESP", Items.SPYGLASS,
+				() -> cfg.donutAdvancedEsp, v -> cfg.donutAdvancedEsp = v,
+				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutAdvancedEspRange, v -> cfg.donutAdvancedEspRange = v),
+				new BoolSetting("Shafts", () -> cfg.donutAdvancedShowShafts, v -> cfg.donutAdvancedShowShafts = v),
+				new BoolSetting("Tunnels", () -> cfg.donutAdvancedShowTunnels, v -> cfg.donutAdvancedShowTunnels = v),
+				new BoolSetting("Stairs", () -> cfg.donutAdvancedShowStairs, v -> cfg.donutAdvancedShowStairs = v),
+				new BoolSetting("Pockets", () -> cfg.donutAdvancedShowPockets, v -> cfg.donutAdvancedShowPockets = v),
+				new ButtonSetting("Reload", "Rescan area", () -> cfg.donutAdvancedEspReloadRequested = true)));
+		m.put("storageesp", new Module("storageesp", "Storage ESP", Items.CHEST,
+				() -> cfg.donutStorageEsp, v -> {
+					cfg.donutStorageEsp = v;
 					if (!v) cfg.donutStashPinger = false;
 				},
-				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutAdvancedEspRange, v -> cfg.donutAdvancedEspRange = v),
-				new BoolSetting("Tunnels", () -> cfg.donutAdvancedShowTunnels, v -> cfg.donutAdvancedShowTunnels = v),
-				new BoolSetting("Pockets", () -> cfg.donutAdvancedShowPockets, v -> cfg.donutAdvancedShowPockets = v),
-				new BoolSetting("Shafts", () -> cfg.donutAdvancedShowShafts, v -> cfg.donutAdvancedShowShafts = v),
-				new BoolSetting("Placed Blocks", () -> cfg.donutAdvancedShowPlaced, v -> cfg.donutAdvancedShowPlaced = v),
-				new BoolSetting("Spawners", () -> cfg.donutAdvancedShowSpawners, v -> cfg.donutAdvancedShowSpawners = v),
-				new ButtonSetting("Reload", "Rescan area", () -> cfg.donutAdvancedEspReloadRequested = true)));
+				new IntSetting("Range", "m", 32, 512, 16, () -> cfg.donutStorageEspRange, v -> cfg.donutStorageEspRange = v),
+				new IntSetting("Fill", "%", 5, 60, 1, () -> cfg.donutStorageEspOpacity, v -> cfg.donutStorageEspOpacity = v),
+				new BoolSetting("Chests", () -> cfg.donutStorageShowChests, v -> cfg.donutStorageShowChests = v),
+				new BoolSetting("Shulkers & Barrels", () -> cfg.donutStorageShowShulkers, v -> cfg.donutStorageShowShulkers = v),
+				new BoolSetting("Redstone", () -> cfg.donutStorageShowRedstone, v -> cfg.donutStorageShowRedstone = v),
+				new BoolSetting("Furnaces", () -> cfg.donutStorageShowFurnaces, v -> cfg.donutStorageShowFurnaces = v)));
+		m.put("suschunks", new Module("suschunks", "Suspicious Chunks", Items.SCULK_SENSOR,
+				() -> cfg.donutSuspiciousChunks, v -> cfg.donutSuspiciousChunks = v,
+				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutSuspiciousChunksRange, v -> cfg.donutSuspiciousChunksRange = v),
+				new IntSetting("Ceiling", "y", -64, 64, 4, () -> cfg.donutSuspiciousChunksCeiling, v -> cfg.donutSuspiciousChunksCeiling = v),
+				new BoolSetting("Labels", () -> cfg.donutSuspiciousChunksLabels, v -> cfg.donutSuspiciousChunksLabels = v)));
 		m.put("heatmap", new Module("heatmap", "Player Heatmap", Items.PLAYER_HEAD,
 				() -> cfg.donutPlayerSightings, v -> cfg.donutPlayerSightings = v));
 		m.put("baseheat", new Module("baseheat", "Base Heat", Items.CAMPFIRE,
 				() -> cfg.donutChunkActivity, v -> cfg.donutChunkActivity = v,
 				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutChunkActivityRange, v -> cfg.donutChunkActivityRange = v)));
-		m.put("chunkfinder", new Module("chunkfinder", "Chunk Finder", Items.FILLED_MAP,
+		m.put("chunkfinder", new Module("chunkfinder", "Activity Chunks", Items.FILLED_MAP,
 				() -> cfg.donutChunkFinder, v -> cfg.donutChunkFinder = v,
 				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutChunkFinderRange, v -> cfg.donutChunkFinderRange = v),
 				new BoolSetting("Tracers", () -> cfg.donutChunkFinderTracers, v -> cfg.donutChunkFinderTracers = v),
 				new BoolSetting("Labels", () -> cfg.donutChunkFinderLabels, v -> cfg.donutChunkFinderLabels = v),
 				new BoolSetting("Experimental", () -> cfg.donutChunkExperimental, v -> cfg.donutChunkExperimental = v)));
-		m.put("stash", new Module("stash", "Stash Pinger", Items.CHEST,
-				() -> cfg.donutStashPinger && cfg.donutAdvancedEsp,
+		m.put("stash", new Module("stash", "Stash Pinger", Items.ENDER_CHEST,
+				() -> cfg.donutStashPinger && cfg.donutStorageEsp,
 				v -> {
 					cfg.donutStashPinger = v;
-					if (v) cfg.donutAdvancedEsp = true;
+					if (v) cfg.donutStorageEsp = true;
 				},
 				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutStashPingerRange, v -> cfg.donutStashPingerRange = v),
 				new BoolSetting("Bases", () -> cfg.donutStashShowBases, v -> cfg.donutStashShowBases = v),
@@ -900,7 +914,7 @@ public final class NovaModules {
 		categories.add(new Category("SubTiers", Items.DIAMOND, pick(m,
 				"subtiers_autobed", "subtiers_autocreeper", "subtiers_autominecart")));
 		categories.add(new Category("DonutSMP", Items.ENDER_EYE, pick(m,
-				"mobesp", "advesp", "heatmap", "baseheat", "chunkfinder", "stash", "amethyst", "portals", "freecam", "tunnel")));
+				"mobesp", "advesp", "storageesp", "heatmap", "baseheat", "chunkfinder", "suschunks", "stash", "amethyst", "portals", "freecam", "tunnel")));
 		categories.add(new Category("Hypixel", Items.GOLD_INGOT, pick(m,
 				"autoclicker", "antifireball", "heightclutch", "clutch", "scaffold", "bedbreaker", "remember", "schematicbuild")));
 		categories.add(new Category("Instants", Items.CLOCK, pick(m,

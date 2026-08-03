@@ -553,21 +553,99 @@ public final class AdvancedEspRenderer {
 	}
 
 	/** All per-chunk detectors, sharing one section classification. */
+	/**
+	 * Terrain only. Containers, spawners and player-placed clusters used to be
+	 * found here too, which meant anybody who wanted a stash overlay also had to
+	 * carry this cavity scan and read its markers on top of theirs. That work now
+	 * belongs to Storage ESP, which stands on its own; this module answers only
+	 * "has the ground been dug into, and how".
+	 */
 	private void scanChunk(WorldChunk chunk, int minY, int maxY, List<Finding> out) {
 		SectionFlags flags = classifySections(chunk);
-		boolean wantSpawners = config.donutAdvancedShowSpawners || (config.donutStashPinger && config.donutStashShowSpawners);
-		boolean wantStashBases = config.donutStashPinger && config.donutStashShowBases;
-		if (wantSpawners || config.donutAdvancedShowPlaced || wantStashBases) {
-			scanBlocksOfInterest(chunk, flags, minY, maxY, out, wantSpawners, config.donutAdvancedShowPlaced);
-			// DonutSMP can replace the block palette with deepslate while still
-			// transmitting the real block-entity map. Consume that authoritative
-			// map too; otherwise Advanced ESP supplies no candidates to Stash
-			// Pinger even when several loaded storage blocks are right below us.
-			scanBlockEntitiesOfInterest(chunk, minY, maxY, out, wantSpawners, config.donutAdvancedShowPlaced);
-		}
 		if (config.donutAdvancedShowShafts) scanVerticalShafts(chunk, flags, minY, maxY, out);
 		if (config.donutAdvancedShowTunnels) scanHorizontalTunnels(chunk, flags, minY, maxY, out);
+		if (config.donutAdvancedShowStairs) scanStaircases(chunk, flags, minY, maxY, out);
 		if (config.donutAdvancedShowPockets) scanExcavatedPockets(chunk, flags, minY, maxY, out);
+	}
+
+	/**
+	 * Staircase mines: the descending diagonal corridor players dig to walk down
+	 * to their base. It is the one cavity shape the shaft and tunnel tests can
+	 * both miss — a shaft slice needs a near-enclosed vertical column, and a
+	 * tunnel run needs a level floor, so a flight of steps registers as neither.
+	 *
+	 * <p>A step is one 2-high air cell whose floor sits exactly one block below
+	 * its neighbour's along a fixed horizontal heading. Requiring the same
+	 * heading and a consistent descent for the whole run is what separates a dug
+	 * staircase from a cave that happens to slope.
+	 */
+	private void scanStaircases(WorldChunk chunk, SectionFlags flags, int minY, int maxY, List<Finding> out) {
+		BlockPos.Mutable pos = new BlockPos.Mutable();
+		int originX = chunk.getPos().getStartX();
+		int originZ = chunk.getPos().getStartZ();
+		for (int y = minY + 1; y <= maxY - 2; y++) {
+			// Sections that are solid through, or entirely air, cannot hold a flight.
+			if (flagAt(chunk, flags.empty, y, true) || flagAt(chunk, flags.noAir, y, true)) {
+				y = sectionTop(y);
+				continue;
+			}
+			for (int z = 1; z < 15; z++) {
+				for (int x = 1; x < 15; x++) {
+					int worldX = originX + x;
+					int worldZ = originZ + z;
+					if (!isStairStep(chunk, pos, worldX, y, worldZ)) continue;
+					for (int[] heading : STAIR_HEADINGS) {
+						int dx = heading[0];
+						int dz = heading[1];
+						// Only start at the top of a flight: if the step above and
+						// behind is also a step, this run was already emitted.
+						if (isStairStep(chunk, pos, worldX - dx, y + 1, worldZ - dz)) continue;
+						int run = staircaseRun(chunk, worldX, y, worldZ, dx, dz);
+						if (run < 5) continue;
+						int endX = worldX + dx * (run - 1);
+						int endZ = worldZ + dz * (run - 1);
+						int endY = y - (run - 1);
+						Box box = new Box(
+								Math.min(worldX, endX), endY, Math.min(worldZ, endZ),
+								Math.max(worldX, endX) + 1, y + 2, Math.max(worldZ, endZ) + 1)
+								.expand(0.18D, 0.05D, 0.18D);
+						if (hasGeneratedStructureSignature(chunk, pos, box)) continue;
+						out.add(new Finding(box, "Stairs", FindingType.STAIRS, 74.0D + run * 2.0D));
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	/** Length of the consistent one-block-per-step descent starting at this cell. */
+	private int staircaseRun(WorldChunk chunk, int x, int y, int z, int dx, int dz) {
+		int run = 0;
+		int cursorX = x;
+		int cursorY = y;
+		int cursorZ = z;
+		BlockPos.Mutable pos = new BlockPos.Mutable();
+		while (run < 24) {
+			if (!isStairStep(chunk, pos, cursorX, cursorY, cursorZ)) break;
+			run++;
+			cursorX += dx;
+			cursorZ += dz;
+			cursorY--;
+		}
+		return run;
+	}
+
+	/** Two-high air standing on solid ground, with the flight walled on a flank. */
+	private boolean isStairStep(WorldChunk chunk, BlockPos.Mutable pos, int x, int y, int z) {
+		if (!blockAt(chunk, pos.set(x, y, z)).isAir()) return false;
+		if (!blockAt(chunk, pos.set(x, y + 1, z)).isAir()) return false;
+		if (!isNaturalSolid(blockAt(chunk, pos.set(x, y - 1, z)))) return false;
+		// A cavern also contains 2-high air over solid ground; a dug flight is
+		// distinguished by being narrow, so demand a wall on at least one side.
+		return isNaturalSolid(blockAt(chunk, pos.set(x + 1, y, z)))
+				|| isNaturalSolid(blockAt(chunk, pos.set(x - 1, y, z)))
+				|| isNaturalSolid(blockAt(chunk, pos.set(x, y, z + 1)))
+				|| isNaturalSolid(blockAt(chunk, pos.set(x, y, z - 1)));
 	}
 
 	/**
@@ -678,10 +756,12 @@ public final class AdvancedEspRenderer {
 		return switch (type) {
 			case SHAFT -> config.donutAdvancedShowShafts;
 			case TUNNEL -> config.donutAdvancedShowTunnels;
+			case STAIRS -> config.donutAdvancedShowStairs;
 			case POCKET -> config.donutAdvancedShowPockets;
-			case PLACED -> config.donutAdvancedShowPlaced;
-			case SPAWNER -> config.donutAdvancedShowSpawners;
-			case BASE -> true; // headline finding — always shown while the module is on
+			// Containers, spawners and placed-block clusters moved to Storage ESP.
+			// The scanner no longer produces these, so the cases only remain to
+			// keep the switch exhaustive over the enum.
+			case PLACED, SPAWNER, BASE -> false;
 		};
 	}
 
@@ -1237,6 +1317,9 @@ public final class AdvancedEspRenderer {
 
 	// Set lookups instead of isOf chains — these run for every block in MIXED
 	// sections, so a single hash probe beats up to 26 reference compares.
+	/** The four cardinal headings a dug staircase can descend along. */
+	private static final int[][] STAIR_HEADINGS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
 	private static final Set<Block> RAIL_BLOCKS = Set.of(
 			Blocks.RAIL, Blocks.POWERED_RAIL, Blocks.DETECTOR_RAIL, Blocks.ACTIVATOR_RAIL);
 
@@ -1431,6 +1514,7 @@ public final class AdvancedEspRenderer {
 	private enum FindingType {
 		SHAFT(new AreaColor(1.0F, 0.22F, 0.78F, 0xFFFF38C7)),
 		TUNNEL(new AreaColor(0.12F, 0.86F, 1.0F, 0xFF1FDCFF)),
+		STAIRS(new AreaColor(0.55F, 1.0F, 0.35F, 0xFF8CFF59)),
 		POCKET(new AreaColor(1.0F, 0.70F, 0.18F, 0xFFFFB32E)),
 		PLACED(new AreaColor(1.0F, 0.18F, 0.14F, 0xFFFF2E24)),
 		SPAWNER(new AreaColor(0.18F, 0.92F, 1.0F, 0xFF2EECFF)),

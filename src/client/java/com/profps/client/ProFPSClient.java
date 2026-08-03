@@ -30,6 +30,8 @@ import com.profps.client.donutsmp.NetherPortalMapper;
 import com.profps.client.donutsmp.NovaGotoController;
 import com.profps.client.donutsmp.PlayerSightingLog;
 import com.profps.client.donutsmp.StashPinger;
+import com.profps.client.donutsmp.StorageEspRenderer;
+import com.profps.client.donutsmp.SuspiciousChunksRenderer;
 import com.profps.client.donutsmp.TunnelController;
 import com.profps.client.classics.BoatFlyController;
 import com.profps.client.classics.FlightController;
@@ -134,7 +136,9 @@ public final class ProFPSClient implements ClientModInitializer {
 		HitboxesRenderer hitboxes = new HitboxesRenderer(config);
 		BasicEspRenderer basicEsp = new BasicEspRenderer(config);
 		AdvancedEspRenderer advancedEsp = new AdvancedEspRenderer(config);
-		StashPinger stashPinger = new StashPinger(config, advancedEsp);
+		StorageEspRenderer storageEsp = new StorageEspRenderer(config);
+		SuspiciousChunksRenderer suspiciousChunks = new SuspiciousChunksRenderer(config);
+		StashPinger stashPinger = new StashPinger(config, storageEsp);
 		FreecamController freecam = new FreecamController(config);
 		TunnelController tunnel = new TunnelController(config);
 		NovaGotoController novaGoto = new NovaGotoController(config, stashPinger);
@@ -309,6 +313,8 @@ public final class ProFPSClient implements ClientModInitializer {
 		WorldRenderEvents.END_MAIN.register(hitboxes::render);
 		WorldRenderEvents.END_MAIN.register(basicEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(advancedEsp::renderWorld);
+		WorldRenderEvents.END_MAIN.register(storageEsp::renderWorld);
+		WorldRenderEvents.END_MAIN.register(suspiciousChunks::renderWorld);
 		WorldRenderEvents.END_MAIN.register(remember::render);
 		WorldRenderEvents.END_MAIN.register(chunkFinder::renderWorld);
 		WorldRenderEvents.END_MAIN.register(amethystDetector::renderWorld);

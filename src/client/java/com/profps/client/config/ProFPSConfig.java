@@ -434,7 +434,8 @@ public final class ProFPSConfig {
 	public int donutCategoryY = 28;
 	public boolean donutCategoryCollapsed = false;
 	public boolean donutBasicEsp = false;
-	public boolean donutAdvancedEsp = false;
+	public boolean donutAdvancedEsp = false;   // "Hole/Tunnel/Stairs ESP" in the UI — terrain cavities only
+	public boolean donutAdvancedShowStairs = true;
 	public transient boolean donutAdvancedEspReloadRequested = false; // momentary UI "Reload" signal (not persisted)
 	public transient boolean autoLungeRequested = false; // momentary Auto Lunge keybind/click signal (not persisted)
 
@@ -460,7 +461,22 @@ public final class ProFPSConfig {
 	public boolean donutFreecam = false;
 	public int donutFreecamSpeed = 5; // 1 (slow / precise) .. 10 (fast); 5 = the classic default
 	public boolean donutChunkActivity = false;
-	public boolean donutChunkFinder = false;
+	public boolean donutChunkFinder = false;   // "Activity Chunks" in the UI — flags chunks by recent activity
+	/** Storage ESP: containers and redstone machinery, independent of Hole/Tunnel/Stairs ESP. */
+	public boolean donutStorageEsp = false;
+	public int donutStorageEspRange = 128;
+	public int donutStorageEspOpacity = 22;    // fill alpha percent; outlines stay near-opaque
+	public boolean donutStorageShowChests = true;
+	public boolean donutStorageShowShulkers = true;
+	public boolean donutStorageShowRedstone = true;
+	public boolean donutStorageShowFurnaces = true;
+	public boolean donutStorageEspExpanded = false;
+	/** Suspicious Chunks: scarce, base-evidence-only chunk flags for depths you cannot see. */
+	public boolean donutSuspiciousChunks = false;
+	public int donutSuspiciousChunksRange = 256;
+	public int donutSuspiciousChunksCeiling = 8;  // only evidence at or below this Y counts
+	public boolean donutSuspiciousChunksLabels = true;
+	public boolean donutSuspiciousChunksExpanded = false;
 	public boolean donutAmethystDetector = false;
 	public boolean donutNetherPortalMapper = false;
 	public boolean donutPlayerSightings = false;
@@ -517,7 +533,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 92;
+	public int configVersion = 93;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -879,6 +895,22 @@ public final class ProFPSConfig {
 		}
 		if (donutChunkActivityRange < 48 || donutChunkActivityRange > 1024) {
 			donutChunkActivityRange = MathHelper.clamp(donutChunkActivityRange, 48, 1024);
+			changed = true;
+		}
+		if (donutStorageEspRange < 32 || donutStorageEspRange > 512) {
+			donutStorageEspRange = MathHelper.clamp(donutStorageEspRange, 32, 512);
+			changed = true;
+		}
+		if (donutStorageEspOpacity < 5 || donutStorageEspOpacity > 60) {
+			donutStorageEspOpacity = MathHelper.clamp(donutStorageEspOpacity, 5, 60);
+			changed = true;
+		}
+		if (donutSuspiciousChunksRange < 48 || donutSuspiciousChunksRange > 1024) {
+			donutSuspiciousChunksRange = MathHelper.clamp(donutSuspiciousChunksRange, 48, 1024);
+			changed = true;
+		}
+		if (donutSuspiciousChunksCeiling < -64 || donutSuspiciousChunksCeiling > 64) {
+			donutSuspiciousChunksCeiling = MathHelper.clamp(donutSuspiciousChunksCeiling, -64, 64);
 			changed = true;
 		}
 		if (donutChunkFinderRange < 48 || donutChunkFinderRange > 1024) {
@@ -1704,6 +1736,27 @@ public final class ProFPSConfig {
 			lungeSpamScaling = true;
 			hitCritSprintRelease = true;
 			configVersion = 92;
+			changed = true;
+		}
+		if (configVersion < 93) {
+			// The ESP split. Storage detection leaves Advanced ESP and becomes its
+			// own module, so Advanced ESP is now only about terrain — and gains a
+			// staircase detector to match the name it is given in the UI.
+			donutStorageEsp = false;
+			donutStorageEspRange = 128;
+			donutStorageEspOpacity = 22;
+			donutStorageShowChests = true;
+			donutStorageShowShulkers = true;
+			donutStorageShowRedstone = true;
+			donutStorageShowFurnaces = true;
+			donutAdvancedShowStairs = true;
+			// Off by default: it is meant to be rare and acted on, not left on as
+			// background decoration.
+			donutSuspiciousChunks = false;
+			donutSuspiciousChunksRange = 256;
+			donutSuspiciousChunksCeiling = 8;
+			donutSuspiciousChunksLabels = true;
+			configVersion = 93;
 			changed = true;
 		}
 		return changed;

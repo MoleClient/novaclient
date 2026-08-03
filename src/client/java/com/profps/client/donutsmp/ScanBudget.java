@@ -20,6 +20,8 @@ import java.util.Arrays;
 public final class ScanBudget {
 	public enum Lane {
 		ADVANCED_ESP,
+		STORAGE_ESP,
+		SUSPICIOUS_CHUNKS,
 		STASH_PINGER,
 		BASE_FINDER,
 		AMETHYST,
@@ -113,7 +115,9 @@ public final class ScanBudget {
 		if (config == null || !config.enabled) return false;
 		return switch (lane) {
 			case ADVANCED_ESP -> config.donutAdvancedEsp;
-			case STASH_PINGER -> config.donutAdvancedEsp && config.donutStashPinger;
+			case STORAGE_ESP -> config.donutStorageEsp;
+			case SUSPICIOUS_CHUNKS -> config.donutSuspiciousChunks;
+			case STASH_PINGER -> config.donutStorageEsp && config.donutStashPinger;
 			case BASE_FINDER -> config.donutChunkActivity || config.donutChunkFinder;
 			case AMETHYST -> config.donutAmethystDetector;
 			case NETHER_PORTAL -> config.donutNetherPortalMapper;

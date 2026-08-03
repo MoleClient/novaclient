@@ -46,9 +46,9 @@ public final class StashPinger implements HudRenderCallback {
 	private static final int CONFIRMATIONS_REQUIRED = 1;
 
 	private final ProFPSConfig config;
-	private final AdvancedEspRenderer advancedEsp;
+	private final StorageEspRenderer storageEsp;
 	private final List<StashPing> pings = new ArrayList<>();
-	private final List<AdvancedEspRenderer.AreaSnapshot> areaQueue = new ArrayList<>();
+	private final List<StorageEspRenderer.AreaSnapshot> areaQueue = new ArrayList<>();
 	private final List<PendingConfirm> pendingConfirms = new ArrayList<>();
 	private final java.util.Map<BlockPos, Integer> recentChatAlerts = new java.util.HashMap<>();
 	private int nextScanTick;
@@ -58,9 +58,9 @@ public final class StashPinger implements HudRenderCallback {
 	private boolean wasActive;
 	private ClientWorld lastWorld;
 
-	public StashPinger(ProFPSConfig config, AdvancedEspRenderer advancedEsp) {
+	public StashPinger(ProFPSConfig config, StorageEspRenderer storageEsp) {
 		this.config = config;
-		this.advancedEsp = advancedEsp;
+		this.storageEsp = storageEsp;
 	}
 
 	public void tick(MinecraftClient client) {
@@ -152,7 +152,7 @@ public final class StashPinger implements HudRenderCallback {
 		// Stash Pinger reads the Advanced ESP block scan for its data, so it needs
 		// that running — but it has nothing to do with Mob ESP (entity ESP), which
 		// is why toggling Mob ESP must NOT affect it.
-		return config.enabled && config.donutStashPinger && config.donutAdvancedEsp;
+		return config.enabled && config.donutStashPinger && config.donutStorageEsp;
 	}
 
 	public BaseTarget bestBaseTarget(MinecraftClient client) {
@@ -193,16 +193,16 @@ public final class StashPinger implements HudRenderCallback {
 	/** Open a scan cycle over the Advanced ESP findings, nearest areas first. */
 	private void beginScan(MinecraftClient client) {
 		areaQueue.clear();
-		List<AdvancedEspRenderer.AreaSnapshot> areas = advancedEsp.areaSnapshots();
+		List<StorageEspRenderer.AreaSnapshot> areas = storageEsp.areaSnapshots();
 		if (areas.isEmpty()) return;
 		double range = MathHelper.clamp(config.donutStashPingerRange, 48, 1024);
-		for (AdvancedEspRenderer.AreaSnapshot area : areas) {
+		for (StorageEspRenderer.AreaSnapshot area : areas) {
 			if (client.player.squaredDistanceTo(area.center()) > range * range) continue;
 			areaQueue.add(area);
 		}
 		// Farthest first in the list — areas pop off the tail, so nearest resolve soonest.
 		areaQueue.sort(Comparator.comparingDouble(
-				(AdvancedEspRenderer.AreaSnapshot area) -> client.player.squaredDistanceTo(area.center())).reversed());
+				(StorageEspRenderer.AreaSnapshot area) -> client.player.squaredDistanceTo(area.center())).reversed());
 	}
 
 	/** Verify queued areas until the shared time budget runs out; commit when drained. */
@@ -216,7 +216,7 @@ public final class StashPinger implements HudRenderCallback {
 				expired = true;
 				break;
 			}
-			AdvancedEspRenderer.AreaSnapshot area = areaQueue.remove(areaQueue.size() - 1);
+			StorageEspRenderer.AreaSnapshot area = areaQueue.remove(areaQueue.size() - 1);
 			if (isSpawnerArea(area)) {
 				if (!config.donutStashShowSpawners) continue;
 				upsertPing(client, new StashPing(area.center(), "Spawner", 120.0, tick), tick);
@@ -236,7 +236,7 @@ public final class StashPinger implements HudRenderCallback {
 		}
 	}
 
-	private boolean isSpawnerArea(AdvancedEspRenderer.AreaSnapshot area) {
+	private boolean isSpawnerArea(StorageEspRenderer.AreaSnapshot area) {
 		return "Spawner".equals(area.label());
 	}
 
