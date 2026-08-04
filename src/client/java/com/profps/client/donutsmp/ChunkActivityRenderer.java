@@ -115,6 +115,8 @@ public final class ChunkActivityRenderer implements HudRenderCallback {
 
 	// ── Incremental scan state (a cycle is spread across many ticks) ────────────
 	private final List<long[]> scanQueue = new ArrayList<>();
+	private int scanCentreChunkX = Integer.MIN_VALUE;
+	private int scanCentreChunkZ = Integer.MIN_VALUE;
 	private Map<Long, EntityTally> pendingCensus;
 	private int scanCycleTick;
 	/** Tick a full sweep last finished; the stall watchdog is level-triggered on this. */
@@ -205,6 +207,23 @@ public final class ChunkActivityRenderer implements HudRenderCallback {
 			savedDirty = false;
 			savedCooldown = 100;
 		}
+		// Flying outruns the cycle. A sweep is planned around one point and takes
+		// hundreds of ticks; at 40 blocks a second the player is two and a half
+		// chunks further on every second, so by the end the queue is grinding
+		// terrain far behind and nothing ahead was ever queued. Re-plan around
+		// the new position instead. The queue is ordered nearest-first, so what
+		// is closest always gets scanned first no matter how often this fires.
+		if (!scanQueue.isEmpty()
+				&& ScanBudget.leftScanArea(client, scanCentreChunkX, scanCentreChunkZ, 3)) {
+			abortScan();
+			burstTicks = Math.max(burstTicks, 3);
+			// A movement re-centre proves the scanner is alive, so it satisfies
+			// the stall watchdog; standing still produces none, which is exactly
+			// the case that watchdog exists for.
+			lastCompletedTick = client.player.age;
+			nextScanTick = 0;
+		}
+
 		// player.age resets on world change; never let a stale clock stall scans.
 		if (nextScanTick > client.player.age + SCAN_INTERVAL_TICKS) nextScanTick = 0;
 		try {
@@ -453,6 +472,8 @@ public final class ChunkActivityRenderer implements HudRenderCallback {
 		int radius = MathHelper.clamp(MathHelper.ceil(range / 16.0F), 2, Math.min(12, viewDistance + 1));
 
 		pendingCensus = censusEntities(world, centerChunkX, centerChunkZ, radius);
+		scanCentreChunkX = centerChunkX;
+		scanCentreChunkZ = centerChunkZ;
 		scanQueue.clear();
 		scanCycleTick = client.player.age;
 

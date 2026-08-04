@@ -70,6 +70,8 @@ public final class AdvancedEspRenderer {
 
 	// ── Incremental scan state (one cycle is spread across many ticks) ─────────
 	private final List<long[]> scanQueue = new ArrayList<>();
+	private int scanCentreChunkX = Integer.MIN_VALUE;
+	private int scanCentreChunkZ = Integer.MIN_VALUE;
 	private final List<Finding> chunkBuffer = new ArrayList<>();
 	private int scanMinY;
 	private int scanMaxY;
@@ -160,6 +162,22 @@ public final class AdvancedEspRenderer {
 		}
 		wasChunkStreamBusy = streaming;
 
+
+		// Flying outruns the cycle. A sweep is planned around one point and takes
+		// hundreds of ticks; at 40 blocks a second the player is two and a half
+		// chunks further on every second, so by the end the queue is grinding
+		// terrain far behind and nothing ahead was ever queued. Re-plan around
+		// the new position instead. The queue is ordered nearest-first, so what
+		// is closest always gets scanned first no matter how often this fires.
+		if (!scanQueue.isEmpty()
+				&& ScanBudget.leftScanArea(client, scanCentreChunkX, scanCentreChunkZ, 3)) {
+			scanQueue.clear();
+			burstTicks = Math.max(burstTicks, 3);
+			// Movement re-centres prove the scanner is alive, so they satisfy the
+			// stall watchdog; standing still produces none, which is the case it guards.
+			lastCompletedTick = client.player.age;
+			nextScanTick = 0;
+		}
 		try {
 			if (scanQueue.isEmpty()) {
 				if (client.player.age < nextScanTick) return;
@@ -502,6 +520,8 @@ public final class AdvancedEspRenderer {
 		scanMinY = Math.max(world.getBottomY() + 2, centerY - MAX_SCAN_HEIGHT);
 		scanMaxY = Math.min(world.getBottomY() + world.getHeight() - 3, centerY + 48);
 		scanCycleStartTick = client.player.age;
+		scanCentreChunkX = centerChunkX;
+		scanCentreChunkZ = centerChunkZ;
 		scanNether = world.getRegistryKey() == net.minecraft.world.World.NETHER;
 		int chunkRadius = scanChunkRadius();
 
@@ -602,7 +622,9 @@ public final class AdvancedEspRenderer {
 		BlockPos.Mutable pos = new BlockPos.Mutable();
 		int originX = chunk.getPos().getStartX();
 		int originZ = chunk.getPos().getStartZ();
-		for (int y = minY + 1; y <= maxY - 2; y++) {
+		// Stops short of the top so the ceiling probe reads a real block: out of
+		// bounds resolves to bedrock, which would pass as a roof at world height.
+		for (int y = minY + 1; y <= maxY - 3; y++) {
 			// Sections that are solid through, or entirely air, cannot hold a flight.
 			if (flagAt(chunk, flags.empty, y, true) || flagAt(chunk, flags.noAir, y, true)) {
 				y = sectionTop(y);
@@ -612,15 +634,20 @@ public final class AdvancedEspRenderer {
 				for (int x = 1; x < 15; x++) {
 					int worldX = originX + x;
 					int worldZ = originZ + z;
-					if (!isStairStep(chunk, pos, worldX, y, worldZ)) continue;
+					// Cheap rejects first: without two-high air under a solid
+					// ceiling there is no corridor here at all, and that alone
+					// discards the entire open surface of the world.
+					if (!isTwoHighAir(chunk, pos, worldX, y, worldZ)) continue;
+					pos.set(worldX, y + 2, worldZ);
+					if (!isNaturalSolid(blockAt(chunk, pos))) continue;
 					for (int[] heading : STAIR_HEADINGS) {
 						int dx = heading[0];
 						int dz = heading[1];
 						// Only start at the top of a flight: if the step above and
 						// behind is also a step, this run was already emitted.
-						if (isStairStep(chunk, pos, worldX - dx, y + 1, worldZ - dz)) continue;
+						if (isStairStep(chunk, pos, worldX - dx, y + 1, worldZ - dz, dx, dz)) continue;
 						int run = staircaseRun(chunk, worldX, y, worldZ, dx, dz);
-						if (run < 5) continue;
+						if (run < 6) continue;
 						int endX = worldX + dx * (run - 1);
 						int endZ = worldZ + dz * (run - 1);
 						int endY = y - (run - 1);
@@ -645,7 +672,7 @@ public final class AdvancedEspRenderer {
 		int cursorZ = z;
 		BlockPos.Mutable pos = new BlockPos.Mutable();
 		while (run < 24) {
-			if (!isStairStep(chunk, pos, cursorX, cursorY, cursorZ)) break;
+			if (!isStairStep(chunk, pos, cursorX, cursorY, cursorZ, dx, dz)) break;
 			run++;
 			cursorX += dx;
 			cursorZ += dz;
@@ -654,17 +681,34 @@ public final class AdvancedEspRenderer {
 		return run;
 	}
 
-	/** Two-high air standing on solid ground, with the flight walled on a flank. */
-	private boolean isStairStep(WorldChunk chunk, BlockPos.Mutable pos, int x, int y, int z) {
-		if (!blockAt(chunk, pos.set(x, y, z)).isAir()) return false;
-		if (!blockAt(chunk, pos.set(x, y + 1, z)).isAir()) return false;
-		if (!isNaturalSolid(blockAt(chunk, pos.set(x, y - 1, z)))) return false;
-		// A cavern also contains 2-high air over solid ground; a dug flight is
-		// distinguished by being narrow, so demand a wall on at least one side.
-		return isNaturalSolid(blockAt(chunk, pos.set(x + 1, y, z)))
-				|| isNaturalSolid(blockAt(chunk, pos.set(x - 1, y, z)))
-				|| isNaturalSolid(blockAt(chunk, pos.set(x, y, z + 1)))
-				|| isNaturalSolid(blockAt(chunk, pos.set(x, y, z - 1)));
+	/**
+	 * One step of a <em>dug</em> flight: a roofed, two-high, walled corridor cell.
+	 *
+	 * <p>Descending one block per step is not evidence of anything on its own —
+	 * that is what a hillside is, and what most cave floors are, which is why a
+	 * looser version of this test lit up every biome on the map. What actually
+	 * separates a staircase mine from terrain is that it is an enclosed tunnel:
+	 * <ul>
+	 *   <li><b>A ceiling.</b> Open ground has sky above it. This single check
+	 *       discards the entire outdoor surface of the world.</li>
+	 *   <li><b>Walls on both flanks</b>, perpendicular to the descent — a
+	 *       staircase is one block wide; a cave floor is not.</li>
+	 *   <li><b>Little surrounding air.</b> Caverns hold large open volumes even
+	 *       where a single slice looks corridor-shaped.</li>
+	 * </ul>
+	 * These are the same predicates the horizontal tunnel detector uses, which is
+	 * why that one never had this problem.
+	 */
+	private boolean isStairStep(WorldChunk chunk, BlockPos.Mutable pos, int x, int y, int z, int dx, int dz) {
+		if (!isTwoHighAir(chunk, pos, x, y, z)) return false;
+		pos.set(x, y + 2, z);
+		if (!isNaturalSolid(blockAt(chunk, pos))) return false;
+		// Perpendicular to the heading: for a run along X the flanks are ±Z.
+		int flankX = dz;
+		int flankZ = dx;
+		if (!sideWallSolid(chunk, pos, x + flankX, y, z + flankZ)) return false;
+		if (!sideWallSolid(chunk, pos, x - flankX, y, z - flankZ)) return false;
+		return compactAirNeighborhood(chunk, pos, x, y, z);
 	}
 
 	/**

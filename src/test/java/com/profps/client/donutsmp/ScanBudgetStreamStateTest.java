@@ -68,6 +68,33 @@ final class ScanBudgetStreamStateTest {
 		}
 	}
 
+	@Test
+	void sustainedStreamingStopsThrottlingTheScanners() {
+		// A wave starts: throttled, so chunk geometry compiles smoothly.
+		ScanBudget.notifyChunkLoaded(0);
+		assertTrue(ScanBudget.shouldReduceFor(0));
+
+		// Flight keeps chunks arriving every tick. The old rule kept the pool
+		// halved for the entire flight — exactly when there is the most ground
+		// to cover — because it only ever asked "did a chunk arrive recently".
+		for (int tick = 1; tick <= 200; tick++) ScanBudget.notifyChunkLoaded(tick);
+
+		assertTrue(streaming(200), "chunks really are still arriving");
+		assertFalse(ScanBudget.shouldReduceFor(200), "sustained streaming is steady state, not a spike");
+	}
+
+	@Test
+	void aQuietGapRearmsTheThrottleForTheNextWave() {
+		ScanBudget.notifyChunkLoaded(0);
+		for (int tick = 1; tick <= 200; tick++) ScanBudget.notifyChunkLoaded(tick);
+		assertFalse(ScanBudget.shouldReduceFor(200));
+
+		// Land, stop moving, then teleport somewhere new. That is a fresh spike
+		// and has to be protected again.
+		ScanBudget.notifyChunkLoaded(1_000);
+		assertTrue(ScanBudget.shouldReduceFor(1_000));
+	}
+
 	private static boolean streaming(int tick) {
 		return ScanBudget.laneBudgetReducedFor(tick);
 	}

@@ -70,6 +70,8 @@ public final class StorageEspRenderer {
 	private boolean failedClosed;
 
 	private final List<long[]> scanQueue = new ArrayList<>();
+	private int scanCentreChunkX = Integer.MIN_VALUE;
+	private int scanCentreChunkZ = Integer.MIN_VALUE;
 	private List<Marker> pending;
 	private java.util.Map<Long, Cluster> pendingClusters;
 	private double scanRangeSq;
@@ -99,6 +101,18 @@ public final class StorageEspRenderer {
 		}
 		if (failedClosed || client.world == null || client.player == null) return;
 		if (nextScanTick > client.player.age + SCAN_INTERVAL_TICKS) nextScanTick = 0;
+
+		// Flying outruns the cycle. A sweep is planned around one point and takes
+		// hundreds of ticks; at 40 blocks a second the player is two and a half
+		// chunks further on every second, so by the end the queue is grinding
+		// terrain far behind and nothing ahead was ever queued. Re-plan around
+		// the new position instead. The queue is ordered nearest-first, so what
+		// is closest always gets scanned first no matter how often this fires.
+		if (!scanQueue.isEmpty()
+				&& ScanBudget.leftScanArea(client, scanCentreChunkX, scanCentreChunkZ, 3)) {
+			scanQueue.clear();
+			nextScanTick = 0;
+		}
 		try {
 			if (scanQueue.isEmpty()) {
 				if (client.player.age < nextScanTick) return;
@@ -170,6 +184,8 @@ public final class StorageEspRenderer {
 		scanRangeSq = range * (double) range;
 		pending = new ArrayList<>();
 		pendingClusters = new java.util.HashMap<>();
+		scanCentreChunkX = centerChunkX;
+		scanCentreChunkZ = centerChunkZ;
 
 		scanQueue.clear();
 		for (int chunkZ = centerChunkZ - radius; chunkZ <= centerChunkZ + radius; chunkZ++) {

@@ -107,6 +107,8 @@ public final class SuspiciousChunksRenderer {
 	private ClientWorld lastWorld;
 
 	private final List<long[]> scanQueue = new ArrayList<>();
+	private int scanCentreChunkX = Integer.MIN_VALUE;
+	private int scanCentreChunkZ = Integer.MIN_VALUE;
 	private Map<Long, EntityEvidence> pendingEntities;
 	private int scanCeiling;
 
@@ -131,6 +133,19 @@ public final class SuspiciousChunksRenderer {
 			nextScanTick = 0;
 		}
 		if (nextScanTick > client.player.age + SCAN_INTERVAL_TICKS) nextScanTick = 0;
+
+		// Flying outruns the cycle. A sweep is planned around one point and takes
+		// hundreds of ticks; at 40 blocks a second the player is two and a half
+		// chunks further on every second, so by the end the queue is grinding
+		// terrain far behind and nothing ahead was ever queued. Re-plan around
+		// the new position instead. The queue is ordered nearest-first, so what
+		// is closest always gets scanned first no matter how often this fires.
+		if (!scanQueue.isEmpty()
+				&& ScanBudget.leftScanArea(client, scanCentreChunkX, scanCentreChunkZ, 3)) {
+			scanQueue.clear();
+			pendingEntities = null;
+			nextScanTick = 0;
+		}
 		try {
 			int age = client.player.age;
 			found.values().removeIf(suspicion -> age - suspicion.seenTick > TTL_TICKS);
@@ -219,6 +234,8 @@ public final class SuspiciousChunksRenderer {
 		int viewDistance = client.options == null ? 12 : client.options.getViewDistance().getValue();
 		int radius = MathHelper.clamp(MathHelper.ceil(range / 16.0F), 2, Math.min(16, viewDistance + 1));
 		scanCeiling = config.donutSuspiciousChunksCeiling;
+		scanCentreChunkX = centerChunkX;
+		scanCentreChunkZ = centerChunkZ;
 
 		scanQueue.clear();
 		for (int chunkZ = centerChunkZ - radius; chunkZ <= centerChunkZ + radius; chunkZ++) {
