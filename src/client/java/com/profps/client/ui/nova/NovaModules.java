@@ -587,6 +587,7 @@ public final class NovaModules {
 				new IntSetting("Mace Charge", "%", 50, 100, 1, () -> cfg.autoBreachSwapCharge, v -> cfg.autoBreachSwapCharge = v)));
 		m.put("autolunge", new Module("autolunge", "Auto Lunge Swap", Items.NETHERITE_SPEAR,
 				() -> false, v -> { if (v) cfg.autoLungeRequested = true; },
+				new BoolSetting("Jump Launch", () -> cfg.lungeSwapJump, v -> cfg.lungeSwapJump = v),
 				new BoolSetting("Humanize", () -> cfg.lungeSwapHumanize, v -> cfg.lungeSwapHumanize = v),
 				new BoolSetting("Spam Scaling", () -> cfg.lungeSpamScaling, v -> cfg.lungeSpamScaling = v),
 				new BoolSetting("Spear → Mace", () -> cfg.lungeSpearMace, v -> cfg.lungeSpearMace = v)).momentary());

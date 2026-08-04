@@ -454,6 +454,8 @@ public final class ProFPSConfig {
 	public boolean lungeSpamScaling = true;
 	/** Sampled reaction, charge overshoot and recovery gaps instead of fixed frame offsets. */
 	public boolean lungeSwapHumanize = true;
+	/** Sprint-jump into the burst; on the ground friction scrubs the velocity off almost at once. */
+	public boolean lungeSwapJump = true;
 	/** Visible aim support only while the player manually holds a spear charge. */
 	public boolean spearChargeAssist = false;
 	public int spearChargeFov = 65;
@@ -1767,6 +1769,7 @@ public final class ProFPSConfig {
 			// settings no longer describe anything it does.
 			lungeSwapHumanize = true;
 			lungeSpamScaling = true;
+			lungeSwapJump = true;
 			configVersion = 94;
 			changed = true;
 		}

@@ -57,10 +57,10 @@ import java.security.SecureRandom;
  * tell than the swap itself.
  */
 public final class AutoLungeSwapController {
-	/** Vanilla only jabs at a full bar; the carry item is what gets it there. */
-	private static final float FULL_CHARGE = 0.995F;
 	/** Safety net so a swap can never strand the player holding the spear. */
-	private static final int RESTORE_DEADLINE_TICKS = 20;
+	private static final int RESTORE_DEADLINE_TICKS = 34;
+	/** Give up waiting for lift-off rather than hanging the sequence on it. */
+	private static final int LAUNCH_TIMEOUT_TICKS = 8;
 
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
@@ -72,9 +72,16 @@ public final class AutoLungeSwapController {
 	private int returnSlot = -1;
 	private int nextActionAge;
 	private int deadlineAge;
+	private int launchDeadlineAge;
 	private long lastFrameNanos;
 	private boolean ownsRotation;
 	private String status = "Idle";
+
+	// The player's own keys, restored the moment the burst is over.
+	private boolean originalForward;
+	private boolean originalSprint;
+	private boolean originalJump;
+	private boolean holdingInput;
 
 	// Spam scaling: the burst is paced by how fast the key is actually pressed.
 	private long lastPressNanos;
@@ -116,10 +123,73 @@ public final class AutoLungeSwapController {
 
 		switch (phase) {
 			case PREPARE -> prepare(client, player, age);
+			case LAUNCH -> launch(client, player, age);
 			case FIRE -> fire(client, player, age);
 			case RECOVER -> recover(client, player, age);
 			case IDLE -> { }
 		}
+	}
+
+	/**
+	 * Sprint-jump, then wait for the player to actually leave the ground.
+	 *
+	 * <p>This is what turns the burst into distance. A lunge landing while the
+	 * player is still standing is scrubbed off almost immediately: on the ground
+	 * vanilla multiplies horizontal velocity by the block's slipperiness every
+	 * tick, which bleeds a burst away in two or three ticks and reads as sliding
+	 * along the floor. In the air only the much gentler drag applies, so the same
+	 * velocity carries for the whole arc.
+	 *
+	 * <p>Sprinting matters too: vanilla adds a forward impulse to a jump taken
+	 * while sprinting, and that stacks with the lunge instead of replacing it.
+	 */
+	private void launch(MinecraftClient client, ClientPlayerEntity player, int age) {
+		if (!player.isOnGround()) {
+			applyMovement(client, player, false);
+			if (age < nextActionAge) return;
+			// Fire in this same tick rather than scheduling the next one. Lift-off
+			// is only observable a tick after the jump input, and every further
+			// tick spent arranging the swap is airtime the burst does not get to
+			// travel through — waiting one more turns a long arc into a hop.
+			phase = Phase.FIRE;
+			fire(client, player, age);
+			return;
+		}
+		if (age > launchDeadlineAge) {
+			// Something is holding the player down — a ceiling, a slab, cobweb.
+			// Lunge from the ground rather than abandoning the press entirely.
+			phase = Phase.FIRE;
+			fire(client, player, age);
+			return;
+		}
+		applyMovement(client, player, true);
+		status = "Launching";
+		// One tick of airtime before the swap, plus an occasional extra so the
+		// burst never lands on the same frame offset twice running.
+		nextActionAge = age + 1 + (humanize() && rng.nextInt(4) == 0 ? 1 : 0);
+	}
+
+	/** Presses forward+sprint (and optionally jump) without losing the player's own keys. */
+	private void applyMovement(MinecraftClient client, ClientPlayerEntity player, boolean jump) {
+		if (!config.lungeSwapJump) return;
+		if (!holdingInput) {
+			originalForward = client.options.forwardKey.isPressed();
+			originalSprint = client.options.sprintKey.isPressed();
+			originalJump = client.options.jumpKey.isPressed();
+			holdingInput = true;
+		}
+		client.options.forwardKey.setPressed(true);
+		client.options.sprintKey.setPressed(true);
+		client.options.jumpKey.setPressed(jump);
+		player.setSprinting(true);
+	}
+
+	private void restoreInput(MinecraftClient client) {
+		if (!holdingInput || client == null || client.options == null) return;
+		client.options.forwardKey.setPressed(originalForward);
+		client.options.sprintKey.setPressed(originalSprint);
+		client.options.jumpKey.setPressed(originalJump);
+		holdingInput = false;
 	}
 
 	/**
@@ -139,7 +209,11 @@ public final class AutoLungeSwapController {
 			return;
 		}
 		if (age < nextActionAge) return;
-		phase = Phase.FIRE;
+		// Charge is full and the carry item is in hand. Take off first; the swap
+		// itself is worthless against ground friction.
+		phase = config.lungeSwapJump && player.isOnGround() ? Phase.LAUNCH : Phase.FIRE;
+		launchDeadlineAge = age + LAUNCH_TIMEOUT_TICKS;
+		nextActionAge = age;
 	}
 
 	/**
@@ -166,6 +240,8 @@ public final class AutoLungeSwapController {
 		}
 		phase = Phase.RECOVER;
 		// At least one tick, so the return slot change cannot overtake the attack.
+		// The swap back to the carry item is also what keeps the swing short, so
+		// it should not wait any longer than that.
 		nextActionAge = age + 1 + (humanize() ? rng.nextInt(2) : 0);
 		status = config.lungeSpearMace && target != null ? "Spear → Mace armed" : "Recovering";
 	}
@@ -176,11 +252,15 @@ public final class AutoLungeSwapController {
 	 * which is exactly what the swap exists to avoid.
 	 */
 	private void recover(MinecraftClient client, ClientPlayerEntity player, int age) {
+		// Keep carrying the burst while it is still in the air; letting go of
+		// forward mid-arc costs the air control that steers the landing.
+		if (!player.isOnGround()) applyMovement(client, player, false);
 		if (age < nextActionAge) return;
 		// Manual scrolling wins; only restore while our own spear is still up.
 		if (player.getInventory().getSelectedSlot() == spearSlot) {
 			select(client, player, returnSlot);
 		}
+		restoreInput(client);
 		boolean chain = queuedRequest && allowed(client);
 		reset();
 		if (chain) {
@@ -429,6 +509,8 @@ public final class AutoLungeSwapController {
 				&& client.player.getInventory().getSelectedSlot() == spearSlot) {
 			select(client, client.player, returnSlot);
 		}
+		// Whatever went wrong, the player gets their own keys back.
+		restoreInput(client);
 		reset();
 	}
 
@@ -449,6 +531,8 @@ public final class AutoLungeSwapController {
 		IDLE,
 		/** Carry item in hand, letting its fast bar fill. */
 		PREPARE,
+		/** Sprint-jump, then wait for lift-off so the burst is not eaten by friction. */
+		LAUNCH,
 		/** One tick: slot packet then attack, same dispatch. */
 		FIRE,
 		/** Back to the carry item so the swing and the next bar stay fast. */
