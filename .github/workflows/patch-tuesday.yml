@@ -1,0 +1,67 @@
+# Patch Tuesday: opens the weekly sandbox → main pull request.
+#
+# It only ever opens the PR. Merging stays a human decision, which is the whole
+# reason the release is a PR and not a scheduled fast-forward — a job that
+# merged on its own would put whatever happened to be on `sandbox` that morning
+# straight into `main` without anyone reading it.
+name: Patch Tuesday
+
+on:
+  schedule:
+    # 14:00 UTC Tuesdays — 09:00 America/New_York in winter, 10:00 in summer.
+    # GitHub cron has no timezone, so this drifts by an hour across DST; the
+    # window only needs to be "Tuesday morning", so that is acceptable.
+    - cron: "0 14 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  open-patch-pr:
+    name: Open or refresh the sandbox → main PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Open the patch pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Nothing to ship is the normal case on a quiet week, and an empty PR
+          # is noise that trains people to ignore the Tuesday notification.
+          if [ -z "$(git log --oneline origin/main..origin/sandbox)" ]; then
+            echo "sandbox has nothing that main does not already have; no PR opened."
+            exit 0
+          fi
+
+          existing="$(gh pr list --base main --head sandbox --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            # An open PR already tracks the branch, so it picked up this week's
+            # commits by itself. Reopening would only fragment the review.
+            echo "PR #${existing} is already open for sandbox → main; leaving it alone."
+            gh pr comment "$existing" --body "Patch Tuesday: this PR still tracks \`sandbox\`, so it already includes everything queued for today."
+            exit 0
+          fi
+
+          commits="$(git log --pretty='- %s' origin/main..origin/sandbox)"
+          gh pr create \
+            --base main \
+            --head sandbox \
+            --title "Patch Tuesday: $(date -u +'%Y-%m-%d')" \
+            --body "$(cat <<EOF
+          Weekly \`sandbox\` → \`main\` patch.
+
+          Queued since the last patch:
+
+          ${commits}
+
+          Opened automatically; merging is deliberately left to a human.
+          EOF
+          )"
