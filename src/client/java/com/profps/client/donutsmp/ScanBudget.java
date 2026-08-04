@@ -64,6 +64,34 @@ public final class ScanBudget {
 	}
 
 	/**
+	 * True while chunk data has arrived recently.
+	 *
+	 * <p>Compared against an explicit "never" sentinel rather than by subtraction.
+	 * {@code chunkLoadedAt} starts at {@link Integer#MIN_VALUE}, so
+	 * {@code age - chunkLoadedAt} overflows to a negative number and reads as
+	 * "streaming" before the first chunk packet ever arrives — and again after a
+	 * respawn resets {@code player.age} while the stamp is still large.
+	 */
+	private static boolean recentlyStreamed(int tick) {
+		return chunkLoadedAt != Integer.MIN_VALUE
+				&& tick >= chunkLoadedAt
+				&& tick - chunkLoadedAt < CHUNK_LOAD_QUIET_TICKS;
+	}
+
+	/** Exposes the stream state for regression tests; production reads it via {@link #takeBudget}. */
+	static boolean laneBudgetReducedFor(int tick) {
+		return recentlyStreamed(tick);
+	}
+
+	/** Clears the stream stamp so a world change cannot leave a stale future tick behind. */
+	public static void resetForWorldChange() {
+		chunkLoadedAt = Integer.MIN_VALUE;
+		claimedTick = Integer.MIN_VALUE;
+		poolTick = Integer.MIN_VALUE;
+		Arrays.fill(laneUsedNanos, 0L);
+	}
+
+	/**
 	 * Try to reserve this tick for starting a heavy scan cycle.
 	 *
 	 * @return true if the caller may scan; false if another scanner already owns
@@ -87,7 +115,7 @@ public final class ScanBudget {
 			poolTick = tick;
 			Arrays.fill(laneUsedNanos, 0L);
 		}
-		boolean reduced = tick - chunkLoadedAt < CHUNK_LOAD_QUIET_TICKS;
+		boolean reduced = recentlyStreamed(tick);
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client != null && client.currentScreen != null) reduced = true;
 		long allocation = laneBudget(config, lane, reduced);
@@ -130,6 +158,6 @@ public final class ScanBudget {
 	 */
 	public static boolean isChunkLoadBusy(MinecraftClient client) {
 		if (client.player == null) return false;
-		return client.player.age - chunkLoadedAt < CHUNK_LOAD_QUIET_TICKS;
+		return recentlyStreamed(client.player.age);
 	}
 }

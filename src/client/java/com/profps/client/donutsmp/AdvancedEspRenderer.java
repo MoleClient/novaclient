@@ -75,10 +75,13 @@ public final class AdvancedEspRenderer {
 	private int scanMaxY;
 	private int scanCycleStartTick;
 	private int lastCycleTicks = SCAN_INTERVAL_TICKS;
+	/** Loaded chunks actually walked this cycle; a trivial cycle must not define the display window. */
+	private int scannedLoadedChunks;
 	private boolean scanNether;
 	private int burstTicks;
 	private boolean wasChunkStreamBusy;
 	private int failureCount;
+	private int lastFailureTick = Integer.MIN_VALUE;
 	private int lastCompletedTick; // age the last full cycle finished — feeds the stall watchdog
 
 	public AdvancedEspRenderer(ProFPSConfig config) {
@@ -124,15 +127,26 @@ public final class AdvancedEspRenderer {
 			lastCompletedTick = client.player.age;
 		}
 
-		// Stall watchdog. The periodic rescan can wedge when you sit still on a busy
-		// server — chunk packets never stop arriving, so the burst-rescan edge below
-		// never fires and findings quietly fade out until you reload chunks. If no
-		// full cycle has COMPLETED in a few intervals, force a fresh burst scan so
-		// what's around you keeps refreshing on its own.
-		if (scanQueue.isEmpty() && client.player.age - lastCompletedTick > SCAN_INTERVAL_TICKS * 3) {
+		// Stall watchdog. This is what keeps the overlay alive when you stay put in
+		// terrain that is already loaded: no chunk packets arrive, so the
+		// stream-edge burst below can never fire again, and without this the
+		// module runs only on the slow path until its findings age out and the
+		// screen goes quietly blank until an RTP.
+		//
+		// It deliberately does NOT require an empty queue. The stall it exists for
+		// is a cycle crawling on a starved budget, which by definition still has
+		// entries in it — the old queue-empty condition could never be true at the
+		// same time as the fault, and it also reset its own clock, so it never
+		// fired at all. The clock now advances only on a genuinely completed
+		// cycle, so "no full coverage in a while" is what triggers it.
+		if (client.player.age - lastCompletedTick > SCAN_INTERVAL_TICKS * 4) {
+			scanQueue.clear();
 			nextScanTick = 0;
-			burstTicks = Math.max(burstTicks, 3);
-			lastCompletedTick = client.player.age;
+			burstTicks = Math.max(burstTicks, 5);
+			// Do not stamp lastCompletedTick here: nothing completed. Stamping it
+			// was what made the old watchdog fire once and then believe it had
+			// fixed the problem.
+			lastCompletedTick = client.player.age - SCAN_INTERVAL_TICKS * 2;
 		}
 
 		// A chunk-stream wave just ended (login, teleport, walking into fresh
@@ -157,6 +171,9 @@ public final class AdvancedEspRenderer {
 				stepScan(client);
 			}
 		} catch (RuntimeException exception) {
+			// Consecutive failures, not lifetime ones — see Chunk Activity.
+			if (client.player.age - lastFailureTick > 1200) failureCount = 0;
+			lastFailureTick = client.player.age;
 			failureCount++;
 			if (failureCount < 3) {
 				// Transient hiccup: drop this cycle and retry shortly instead of
@@ -170,7 +187,8 @@ public final class AdvancedEspRenderer {
 			findings.clear();
 			scanQueue.clear();
 			config.donutAdvancedEsp = false;
-			config.save();
+			// Not saved on purpose; a transient failure must not persist as an
+			// off switch the player never chose.
 			failedClosed = true;
 			ChunkActivityRenderer.announceDisabled(client, "Advanced ESP");
 		}
@@ -528,6 +546,7 @@ public final class AdvancedEspRenderer {
 			if (!world.isChunkLoaded(chunkX, chunkZ)) continue;
 			WorldChunk chunk = world.getChunk(chunkX, chunkZ);
 			if (chunk == null || chunk.isEmpty()) continue;
+			scannedLoadedChunks++;
 
 			chunkBuffer.clear();
 			scanChunk(chunk, scanMinY, scanMaxY, chunkBuffer);
@@ -730,7 +749,14 @@ public final class AdvancedEspRenderer {
 	private void finishCycle(int tick) {
 		failureCount = 0;
 		lastCompletedTick = tick;
-		lastCycleTicks = Math.max(1, tick - scanCycleStartTick);
+		// Only a cycle that actually walked loaded chunks describes how long a
+		// real sweep takes. A cycle that skipped almost everything as unloaded
+		// finishes in a tick, and letting that define the display window is what
+		// starved the next real cycle's findings out of view.
+		if (scannedLoadedChunks >= 16) {
+			lastCycleTicks = Math.max(1, tick - scanCycleStartTick);
+		}
+		scannedLoadedChunks = 0;
 		int stale = staleWindowTicks();
 		findings.removeIf(finding -> tick - finding.lastSeenTick > stale);
 		findings.sort(Comparator.comparingDouble((Finding finding) -> finding.displayScore(tick, stale)).reversed());
@@ -739,9 +765,28 @@ public final class AdvancedEspRenderer {
 		}
 	}
 
-	/** Findings stay alive for at least two scan cycles so slow incremental cycles never flicker. */
+	/**
+	 * How long a finding stays drawable — at least two scan cycles, so a slow
+	 * incremental cycle never blinks the overlay out between refreshes.
+	 *
+	 * <p>The window has to account for the cycle that is running <em>now</em>, not
+	 * just the last one that finished. A cycle where most queued chunks were
+	 * unloaded drains almost instantly and reports a length of one tick, which
+	 * used to collapse this to the 86-tick floor. The next real cycle then takes
+	 * hundreds of ticks, so every finding aged past the window and rendered at
+	 * zero alpha — the overlay went completely blank while the list was still
+	 * full of valid findings.
+	 */
 	private int staleWindowTicks() {
-		return Math.max(STALE_TICKS, lastCycleTicks * 2 + FADE_OUT_TICKS);
+		int elapsed = 0;
+		if (!scanQueue.isEmpty()) {
+			MinecraftClient client = MinecraftClient.getInstance();
+			if (client != null && client.player != null) {
+				elapsed = Math.max(0, client.player.age - scanCycleStartTick);
+			}
+		}
+		int reference = Math.max(lastCycleTicks, elapsed);
+		return Math.max(STALE_TICKS, reference * 2 + FADE_OUT_TICKS);
 	}
 
 	private int scanChunkRadius() {

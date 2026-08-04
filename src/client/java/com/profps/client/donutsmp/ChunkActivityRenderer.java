@@ -117,11 +117,14 @@ public final class ChunkActivityRenderer implements HudRenderCallback {
 	private final List<long[]> scanQueue = new ArrayList<>();
 	private Map<Long, EntityTally> pendingCensus;
 	private int scanCycleTick;
+	/** Tick a full sweep last finished; the stall watchdog is level-triggered on this. */
+	private int lastCompletedTick;
 	private int burstTicks;
 	private boolean wasActive;
 	private ClientWorld lastWorld;
 	private boolean wasChunkStreamBusy;
 	private int failureCount;
+	private int lastFailureTick = Integer.MIN_VALUE;
 
 	public ChunkActivityRenderer(ProFPSConfig config) {
 		this.config = config;
@@ -175,6 +178,21 @@ public final class ChunkActivityRenderer implements HudRenderCallback {
 		}
 		wasChunkStreamBusy = streaming;
 
+		// Stall watchdog. The stream edge above is the only prompt full rescan in
+		// steady state, and it can only fire when fresh chunk data arrives — so
+		// standing in terrain that is already loaded means it never fires again
+		// for the rest of the session, and pads age out until the overlay is
+		// empty. Recovering "only after an RTP" was exactly that. This is level
+		// triggered on how long it has been since a cycle actually completed, so
+		// it keeps working with no chunk traffic at all.
+		if (client.player.age - lastCompletedTick > SCAN_INTERVAL_TICKS * 4) {
+			scanQueue.clear();
+			pendingCensus = null;
+			nextScanTick = 0;
+			burstTicks = Math.max(burstTicks, 5);
+			lastCompletedTick = client.player.age - SCAN_INTERVAL_TICKS * 2;
+		}
+
 		// Archived bases are per-server; reload when the server changes.
 		String key = NetherPortalMapper.serverKey(client);
 		if (!key.equals(loadedFor)) {
@@ -208,6 +226,11 @@ public final class ChunkActivityRenderer implements HudRenderCallback {
 				stepScan(client);
 			}
 		} catch (RuntimeException exception) {
+			// Consecutive failures, not lifetime ones. Three unrelated hiccups
+			// spread across hours of play are not a broken module, and counting
+			// them that way eventually turned the module off on its own.
+			if (client.player.age - lastFailureTick > 1200) failureCount = 0;
+			lastFailureTick = client.player.age;
 			failureCount++;
 			if (failureCount < 3) {
 				// Transient hiccup: drop this cycle and retry shortly instead of
@@ -223,7 +246,9 @@ public final class ChunkActivityRenderer implements HudRenderCallback {
 			abortScan();
 			config.donutChunkActivity = false;
 			config.donutChunkFinder = false;
-			config.save();
+			// Deliberately not saved. Persisting a self-disable means one bad
+			// session leaves the module switched off in the file, and the player
+			// has to work out why it never came back.
 			failedClosed = true;
 			announceDisabled(client, "Base Heat + Chunk Finder");
 		}
@@ -490,6 +515,10 @@ public final class ChunkActivityRenderer implements HudRenderCallback {
 			chunksVersion++;
 		}
 		pendingCensus = null;
+		// A completed sweep is the only thing that satisfies the stall watchdog,
+		// and it also clears the consecutive-failure count.
+		failureCount = 0;
+		if (client != null && client.player != null) lastCompletedTick = client.player.age;
 	}
 
 	/**

@@ -50,6 +50,8 @@ public final class RevealedIntel {
 	private static final int MAX_INTEL_Y = 16;
 
 	private final Map<Long, Entry> entries = new HashMap<>();
+	/** Per-chunk sum of entry weights, kept in step with {@link #entries}. */
+	private final Map<Long, Double> chunkScores = new HashMap<>();
 	private boolean active;
 	private String loadedFor = "";
 	private boolean dirty;
@@ -147,6 +149,11 @@ public final class RevealedIntel {
 		if (existing != null) {
 			// Same spot revealed again — keep the strongest interpretation.
 			if (weight > existing.w) {
+				// Move the index by the delta; the entry object is mutated in
+				// place, so the index cannot be rebuilt from it afterwards.
+				double delta = weight - existing.w;
+				long chunkKey = net.minecraft.util.math.ChunkPos.toLong(existing.x >> 4, existing.z >> 4);
+				chunkScores.merge(chunkKey, delta, Double::sum);
 				existing.w = weight;
 				existing.label = what;
 				dirty = true;
@@ -157,21 +164,49 @@ public final class RevealedIntel {
 		if (entries.size() >= MAX_ENTRIES) {
 			entries.values().stream()
 					.min(Comparator.comparingDouble((Entry entry) -> entry.w).thenComparingLong(entry -> entry.t))
-					.ifPresent(weakest -> entries.remove(BlockPos.asLong(weakest.x, weakest.y, weakest.z)));
+					.ifPresent(weakest -> {
+						Entry evicted = entries.remove(BlockPos.asLong(weakest.x, weakest.y, weakest.z));
+						if (evicted != null) removeFromIndex(evicted);
+					});
 		}
-		entries.put(key, new Entry(pos.getX(), pos.getY(), pos.getZ(), what, weight, System.currentTimeMillis()));
+		Entry fresh = new Entry(pos.getX(), pos.getY(), pos.getZ(), what, weight, System.currentTimeMillis());
+		entries.put(key, fresh);
+		addToIndex(fresh);
 		dirty = true;
 	}
 
 	// ── Reads ──────────────────────────────────────────────────────────────────
 
-	/** Permanent (non-decaying) intel score for one chunk. */
+	/**
+	 * Permanent (non-decaying) intel score for one chunk.
+	 *
+	 * <p>Served from a per-chunk index rather than by walking every entry. This
+	 * is asked once per scanned chunk — hundreds of times per sweep — against a
+	 * set that persists to disk and only grows as you play a server, so the old
+	 * linear scan made every sweep slower the longer the account had been on that
+	 * server. That is the one cost here that genuinely degraded over time, and a
+	 * slower sweep is what pushed findings past their display window.
+	 */
 	public double chunkScore(int chunkX, int chunkZ) {
-		double score = 0.0;
-		for (Entry entry : entries.values()) {
-			if ((entry.x >> 4) == chunkX && (entry.z >> 4) == chunkZ) score += entry.w;
-		}
-		return Math.min(score, 140.0);
+		Double score = chunkScores.get(net.minecraft.util.math.ChunkPos.toLong(chunkX, chunkZ));
+		return score == null ? 0.0 : Math.min(score, 140.0);
+	}
+
+	/** Rebuilds the per-chunk index from the entry set. */
+	private void reindexChunkScores() {
+		chunkScores.clear();
+		for (Entry entry : entries.values()) addToIndex(entry);
+	}
+
+	private void addToIndex(Entry entry) {
+		long key = net.minecraft.util.math.ChunkPos.toLong(entry.x >> 4, entry.z >> 4);
+		chunkScores.merge(key, entry.w, Double::sum);
+	}
+
+	private void removeFromIndex(Entry entry) {
+		long key = net.minecraft.util.math.ChunkPos.toLong(entry.x >> 4, entry.z >> 4);
+		Double updated = chunkScores.computeIfPresent(key, (ignored, current) -> current - entry.w);
+		if (updated != null && updated <= 1.0E-6D) chunkScores.remove(key);
 	}
 
 	/** Strongest intel entries near a position, for world markers. */
@@ -243,6 +278,7 @@ public final class RevealedIntel {
 		} catch (Exception exception) {
 			ProFPS.LOGGER.warn("Failed to load revealed intel for {}.", key, exception);
 		}
+		reindexChunkScores();
 	}
 
 	private void save() {
