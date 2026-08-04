@@ -1,0 +1,46 @@
+# Dependency updates land on `sandbox`, never straight on `main`.
+#
+# `target-branch` is what enforces that: without it Dependabot opens every PR
+# against the default branch, which would put unreviewed dependency bumps
+# directly in front of `main` and defeat the point of having a sandbox at all.
+# Updates therefore collect on `sandbox` through the week and reach `main` only
+# through the Tuesday patch PR, so they ship as one reviewed batch.
+version: 2
+updates:
+  # The mod itself: Fabric Loom, Yarn mappings, Fabric API, Minecraft.
+  - package-ecosystem: "gradle"
+    directory: "/"
+    target-branch: "sandbox"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"
+    groups:
+      # One PR for the whole Fabric toolchain. Loom, Yarn and the loader move
+      # together for a Minecraft version, so splitting them produces PRs that
+      # cannot build on their own.
+      fabric-toolchain:
+        patterns:
+          - "net.fabricmc*"
+          - "com.mojang:minecraft"
+
+  # Keep the workflows below pinned to current action releases.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "sandbox"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
