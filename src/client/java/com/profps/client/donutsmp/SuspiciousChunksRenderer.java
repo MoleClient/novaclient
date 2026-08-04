@@ -84,15 +84,21 @@ public final class SuspiciousChunksRenderer {
 	private static final int TTL_TICKS = 9_000;
 	private static final int FADE_TICKS = 14;
 
-	// Show nothing below this. Set so an untouched deepslate chunk scores zero
-	// and a lone stray chest is not worth interrupting anybody for.
-	private static final double SHOW_THRESHOLD = 30.0D;
-	private static final double YELLOW_THRESHOLD = 60.0D;
-	private static final double RED_THRESHOLD = 105.0D;
+	/**
+	 * The single bar a chunk has to clear to be shown, pitched at what used to be
+	 * the middle tier.
+	 *
+	 * <p>There are no confidence tiers any more. A tier only helps when you can
+	 * act on the difference, and here you cannot: every hit costs the same trip
+	 * out, the same dig down and the same look around, so a "maybe" that is drawn
+	 * more faintly is still a full errand. One bar in the middle of the old
+	 * spread keeps the finds worth flying to without discarding the small bases
+	 * that the top tier alone would have missed.
+	 */
+	private static final double SHOW_THRESHOLD = 60.0D;
 
-	private static final int GREEN = 0xFF38FF7A;
-	private static final int YELLOW = 0xFFFFD44A;
-	private static final int RED = 0xFFFF3B30;
+	/** One colour for every hit — distinct from Storage ESP's lighter chest purple. */
+	private static final int SUSPICIOUS = 0xFFA24BFF;
 
 	private final ProFPSConfig config;
 	private final Map<Long, Suspicion> found = new HashMap<>();
@@ -514,7 +520,7 @@ public final class SuspiciousChunksRenderer {
 		/**
 		 * Every category is capped so one prolific signal cannot carry a chunk on
 		 * its own — a long lit corridor or a wall of chests still has to be
-		 * corroborated by something else to reach a warm tier.
+		 * corroborated by something else to clear the bar.
 		 */
 		double score(EntityEvidence entities) {
 			double total = Math.min(impossible * 14.0D, 60.0D);
@@ -585,8 +591,9 @@ public final class SuspiciousChunksRenderer {
 
 		void refresh(int tick, double score, Evidence evidence, EntityEvidence entities) {
 			this.seenTick = tick;
-			// The tier only ever climbs. A later sweep that happens to catch less
-			// of the same chunk must not quietly downgrade a confirmed find.
+			// The score only ever climbs. A later sweep that happens to catch less
+			// of the same chunk — fewer entities loaded, a section not resent —
+			// must not drop a confirmed find back under the bar and erase it.
 			this.score = Math.max(this.score, score);
 			this.why = evidence.why();
 			int low = evidence.minY == Integer.MAX_VALUE ? -59 : evidence.minY;
@@ -612,7 +619,7 @@ public final class SuspiciousChunksRenderer {
 		}
 
 		int color() {
-			return score >= RED_THRESHOLD ? RED : score >= YELLOW_THRESHOLD ? YELLOW : GREEN;
+			return SUSPICIOUS;
 		}
 
 		float fade(float renderTick) {
