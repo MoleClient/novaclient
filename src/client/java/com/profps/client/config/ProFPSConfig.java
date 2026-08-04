@@ -462,6 +462,8 @@ public final class ProFPSConfig {
 	public int autoSpearFov = 75;
 	public int autoSpearRange = 42;
 	public int autoSpearTurnSpeed = 48;
+	/** Pull the spear from the hotbar for the run in, and put the old slot back after. */
+	public boolean autoSpearAutoSwitch = true;
 	/** Camera stays under your own mouse while the approach is aimed. Off by default. */
 	public boolean autoSpearSilentAim = false;
 	public boolean donutStashPinger = false;
@@ -1782,6 +1784,7 @@ public final class ProFPSConfig {
 			autoSpearRange = 42;
 			autoSpearTurnSpeed = 48;
 			// Silent aim decouples the camera; it must never arrive switched on.
+			autoSpearAutoSwitch = true;
 			autoSpearSilentAim = false;
 			configVersion = 95;
 			changed = true;
