@@ -61,6 +61,35 @@ final class DonutWorldRenderer {
 		quad(buf, pos, x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1, r, g, b, alpha);
 	}
 
+	/**
+	 * Soft-edged box outline: three passes of decreasing width and rising alpha.
+	 * One fixed-width stroke rasterises with a stepped edge at most viewing
+	 * angles, which is what reads as "blocky"; layering the passes reproduces the
+	 * falloff of an antialiased line so the edge stays smooth from anywhere.
+	 */
+	static void drawSoftOutline(VertexConsumer buf, Matrix4fc pos, MatrixStack.Entry entry,
+			Box box, Vec3d camera, int color, float alpha) {
+		drawOutline(buf, pos, entry, box, camera, color, alpha * 0.22F, 5.0F);
+		drawOutline(buf, pos, entry, box, camera, color, alpha * 0.55F, 3.0F);
+		drawOutline(buf, pos, entry, box, camera, color, alpha, 1.5F);
+	}
+
+	static void drawOutline(VertexConsumer buf, Matrix4fc pos, MatrixStack.Entry entry,
+			Box box, Vec3d camera, int color, float alpha, float width) {
+		line(buf, pos, entry, camera, box.minX, box.minY, box.minZ, box.maxX, box.minY, box.minZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.maxX, box.minY, box.minZ, box.maxX, box.minY, box.maxZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.maxX, box.minY, box.maxZ, box.minX, box.minY, box.maxZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.minX, box.minY, box.maxZ, box.minX, box.minY, box.minZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.minX, box.maxY, box.minZ, box.maxX, box.maxY, box.minZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.maxX, box.maxY, box.minZ, box.maxX, box.maxY, box.maxZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.maxX, box.maxY, box.maxZ, box.minX, box.maxY, box.maxZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.minX, box.maxY, box.maxZ, box.minX, box.maxY, box.minZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.minX, box.minY, box.minZ, box.minX, box.maxY, box.minZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.maxX, box.minY, box.minZ, box.maxX, box.maxY, box.minZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.maxX, box.minY, box.maxZ, box.maxX, box.maxY, box.maxZ, color, alpha, width);
+		line(buf, pos, entry, camera, box.minX, box.minY, box.maxZ, box.minX, box.maxY, box.maxZ, color, alpha, width);
+	}
+
 	static void drawOutline(VertexConsumer buf, Matrix4fc pos, MatrixStack.Entry entry,
 			Box box, Vec3d camera, int color, float alpha) {
 		line(buf, pos, entry, camera, box.minX, box.minY, box.minZ, box.maxX, box.minY, box.minZ, color, alpha);

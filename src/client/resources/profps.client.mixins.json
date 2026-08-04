@@ -6,6 +6,8 @@
 		"AbstractClientPlayerSkinMixin",
 		"BlockItemInvoker",
 		"CameraMixin",
+		"EntityOutlineMixin",
+		"EntityTeamColorMixin",
 		"ChatHudNickMixin",
 		"ChunkLoadMixin",
 		"ClientPlayNetworkHandlerMixin",

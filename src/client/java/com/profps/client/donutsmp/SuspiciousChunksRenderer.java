@@ -180,7 +180,7 @@ public final class SuspiciousChunksRenderer {
 				float pulse = 0.82F + 0.18F * (float) Math.sin(renderTick * 0.11F + suspicion.seed);
 				// The outline is drawn in full on every chunk rather than only around
 				// a cluster's perimeter: each hit is its own place to go dig.
-				DonutWorldRenderer.drawOutline(lines, pos, entry, suspicion.box(), camera,
+				DonutWorldRenderer.drawSoftOutline(lines, pos, entry, suspicion.box(), camera,
 						suspicion.color(), (0.90F + 0.10F * pulse) * fade);
 			}
 			if (config.donutSuspiciousChunksLabels) {

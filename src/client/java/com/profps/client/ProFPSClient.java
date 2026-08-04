@@ -223,6 +223,9 @@ public final class ProFPSClient implements ClientModInitializer {
 			tunnel.tick(client);
 			novaGoto.tick(client);
 			advancedEsp.tick(client);
+			storageEsp.tick(client);
+			suspiciousChunks.tick(client);
+			// Stash Pinger reads Storage ESP's areas, so it ticks after it.
 			stashPinger.tick(client);
 			chunkActivity.tick(client);
 			amethystDetector.tick(client);
@@ -259,7 +262,6 @@ public final class ProFPSClient implements ClientModInitializer {
 		// Top-left FPS box removed. (ProFPSHud kept in the codebase, just not registered.)
 		HudRenderCallback.EVENT.register(new NovaModuleListHud(config, novaCategories));
 		HudRenderCallback.EVENT.register(scaffold::renderHud);
-		HudRenderCallback.EVENT.register(basicEsp::renderHud);
 		HudRenderCallback.EVENT.register(stashPinger);
 		HudRenderCallback.EVENT.register(chunkActivity);
 		HudRenderCallback.EVENT.register(netherMapper);
@@ -311,7 +313,6 @@ public final class ProFPSClient implements ClientModInitializer {
 		// END_MAIN is part of the normal world pass and renders these overlays after
 		// terrain/translucency regardless of whether debug rendering is active.
 		WorldRenderEvents.END_MAIN.register(hitboxes::render);
-		WorldRenderEvents.END_MAIN.register(basicEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(advancedEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(storageEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(suspiciousChunks::renderWorld);

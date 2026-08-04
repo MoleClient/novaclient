@@ -99,7 +99,11 @@ public final class ChunkFinderRenderer {
 				// "overlapping chunks". The crisp perimeter outline always stays,
 				// so distant bases are still clearly marked, just not filled.
 				double dist = Math.sqrt(camera.squaredDistanceTo(anchorPoint(cluster.anchor.box())));
-				float fillDist = (float) MathHelper.clamp(1.2 - dist / 96.0, 0.0, 1.0);
+				// Smoothstep instead of a straight ramp: a linear falloff has a
+				// visible crease where it reaches full strength, which looked
+				// like a hard ring on the ground around the player.
+				float linear = (float) MathHelper.clamp(1.2 - dist / 96.0, 0.0, 1.0);
+				float fillDist = linear * linear * (3.0F - 2.0F * linear);
 
 				if (fillDist > 0.01F) {
 					for (ChunkActivityRenderer.Pad member : cluster.members) {
@@ -250,14 +254,29 @@ public final class ChunkFinderRenderer {
 		}
 	}
 
-	/** A vertical rectangle outline between horizontal endpoints (hx0,hz0)→(hx1,hz1), height y0..y1. */
+	/**
+	 * A vertical rectangle outline between horizontal endpoints (hx0,hz0)→(hx1,hz1), height y0..y1.
+	 *
+	 * <p>Drawn as three passes of decreasing width and rising alpha rather than
+	 * one hard stroke. A single fixed-width line rasterises with a stepped edge
+	 * on every diagonal view angle, which is what made the regions read as blocky
+	 * even though the geometry was exact; the stacked passes give the edge the
+	 * falloff an antialiased line would have, so it stays smooth from any angle.
+	 */
 	private static void faceRect(VertexConsumer lines, Matrix4fc pos, MatrixStack.Entry entry, Vec3d cam,
 			double hx0, double hz0, double hx1, double hz1, double y0, double y1, int color, float alpha) {
-		float w = 2.2F; // thicker than 1px so edges stay legible amid overlapping regions
-		DonutWorldRenderer.drawLine(lines, pos, entry, cam, hx0, y0, hz0, hx1, y0, hz1, color, alpha, w); // bottom
-		DonutWorldRenderer.drawLine(lines, pos, entry, cam, hx0, y1, hz0, hx1, y1, hz1, color, alpha, w); // top
-		DonutWorldRenderer.drawLine(lines, pos, entry, cam, hx0, y0, hz0, hx0, y1, hz0, color, alpha, w); // post A
-		DonutWorldRenderer.drawLine(lines, pos, entry, cam, hx1, y0, hz1, hx1, y1, hz1, color, alpha, w); // post B
+		edgePass(lines, pos, entry, cam, hx0, hz0, hx1, hz1, y0, y1, color, alpha * 0.22F, 5.0F);
+		edgePass(lines, pos, entry, cam, hx0, hz0, hx1, hz1, y0, y1, color, alpha * 0.55F, 3.0F);
+		edgePass(lines, pos, entry, cam, hx0, hz0, hx1, hz1, y0, y1, color, alpha, 1.5F);
+	}
+
+	private static void edgePass(VertexConsumer lines, Matrix4fc pos, MatrixStack.Entry entry, Vec3d cam,
+			double hx0, double hz0, double hx1, double hz1, double y0, double y1,
+			int color, float alpha, float width) {
+		DonutWorldRenderer.drawLine(lines, pos, entry, cam, hx0, y0, hz0, hx1, y0, hz1, color, alpha, width);
+		DonutWorldRenderer.drawLine(lines, pos, entry, cam, hx0, y1, hz0, hx1, y1, hz1, color, alpha, width);
+		DonutWorldRenderer.drawLine(lines, pos, entry, cam, hx0, y0, hz0, hx0, y1, hz0, color, alpha, width);
+		DonutWorldRenderer.drawLine(lines, pos, entry, cam, hx1, y0, hz1, hx1, y1, hz1, color, alpha, width);
 	}
 
 	/** Point a tracer/label aims at: the centre of the flat pad, just above its face. */

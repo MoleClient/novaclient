@@ -51,6 +51,9 @@ public final class StashPinger implements HudRenderCallback {
 	private final List<StorageEspRenderer.AreaSnapshot> areaQueue = new ArrayList<>();
 	private final List<PendingConfirm> pendingConfirms = new ArrayList<>();
 	private final java.util.Map<BlockPos, Integer> recentChatAlerts = new java.util.HashMap<>();
+	/** How close you have to still be for the action-bar line to keep showing. */
+	private static final double TEXT_RADIUS = 72.0D;
+	private boolean overlayShowing;
 	private int nextScanTick;
 	private int nextActionBarTick;
 	private int nextMusicTick;
@@ -65,6 +68,10 @@ public final class StashPinger implements HudRenderCallback {
 
 	public void tick(MinecraftClient client) {
 		if (!isActive()) {
+			// Turning the module off has to take its action-bar line with it, or
+			// the last "Base found" sits there until vanilla times it out.
+			if (client != null && client.player != null) clearOverlayIfShowing(client);
+			overlayShowing = false;
 			pings.clear();
 			areaQueue.clear();
 			failedClosed = false;
@@ -86,8 +93,11 @@ public final class StashPinger implements HudRenderCallback {
 		if (nextScanTick > tick + SCAN_INTERVAL_TICKS) nextScanTick = 0;
 		pings.removeIf(ping -> tick - ping.lastSeenTick > PING_TTL_TICKS || !shouldShowPing(ping));
 		pendingConfirms.removeIf(confirm -> tick < confirm.lastTick || tick - confirm.lastTick > SCAN_INTERVAL_TICKS * 6);
-		if (!collapseNotifications() && !pings.isEmpty() && tick >= nextActionBarTick) {
-			client.inGameHud.setOverlayMessage(baseFoundMessage(), false);
+		if (collapseNotifications() || pings.isEmpty() || !nearAnyPing(client)) {
+			clearOverlayIfShowing(client);
+		} else if (tick >= nextActionBarTick) {
+			client.inGameHud.setOverlayMessage(baseFoundMessage(client), false);
+			overlayShowing = true;
 			nextActionBarTick = tick + 12;
 		}
 
@@ -175,19 +185,47 @@ public final class StashPinger implements HudRenderCallback {
 		return config.donutTunnel;
 	}
 
-	private Text baseFoundMessage() {
+	/**
+	 * Quiet green line naming what was found and how far off it is. It is
+	 * deliberately not bold: this sits in the action bar for as long as you are
+	 * near the find, and shouting for that whole time is what made the old gold
+	 * bold version feel like an error message.
+	 */
+	private Text baseFoundMessage(MinecraftClient client) {
 		boolean spawner = false;
 		boolean base = false;
+		double nearestSq = Double.POSITIVE_INFINITY;
 		for (StashPing ping : pings) {
 			if (ping.isSpawner()) spawner = true;
 			else base = true;
+			nearestSq = Math.min(nearestSq, client.player.squaredDistanceTo(ping.center));
 		}
-		String label = base && spawner ? "Base + Spawner Detected"
-				: spawner ? "Spawner Detected"
-				: "Base Detected";
+		String label = base && spawner ? "Base + spawner found"
+				: spawner ? "Spawner found"
+				: "Base found";
 		String count = pings.size() > 1 ? " x" + pings.size() : "";
-		Formatting color = spawner && !base ? Formatting.AQUA : Formatting.GOLD;
-		return Text.literal(label + count).formatted(color, Formatting.BOLD);
+		String distance = nearestSq == Double.POSITIVE_INFINITY ? ""
+				: " · " + (int) Math.round(Math.sqrt(nearestSq)) + "m";
+		return Text.literal(label + count + distance).formatted(Formatting.GREEN);
+	}
+
+	/**
+	 * True while the player is still standing in the find. Walking away has to
+	 * take the text with it — a line that lingers after you have left says
+	 * something is here when nothing is.
+	 */
+	private boolean nearAnyPing(MinecraftClient client) {
+		for (StashPing ping : pings) {
+			if (client.player.squaredDistanceTo(ping.center) <= TEXT_RADIUS * TEXT_RADIUS) return true;
+		}
+		return false;
+	}
+
+	/** Wipes the action bar once on the way out instead of letting it time out. */
+	private void clearOverlayIfShowing(MinecraftClient client) {
+		if (!overlayShowing) return;
+		overlayShowing = false;
+		client.inGameHud.setOverlayMessage(Text.empty(), false);
 	}
 
 	/** Open a scan cycle over the Advanced ESP findings, nearest areas first. */
@@ -309,7 +347,8 @@ public final class StashPinger implements HudRenderCallback {
 			nextActionBarTick = tick + 12;
 			return;
 		}
-		client.inGameHud.setOverlayMessage(baseFoundMessage(), false);
+		client.inGameHud.setOverlayMessage(baseFoundMessage(client), false);
+		overlayShowing = true;
 		client.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_PLING.value(), 1.0F, 1.25F);
 		if (tick >= nextMusicTick) {
 			client.world.playSoundClient(client.player.getX(), client.player.getY(), client.player.getZ(),
@@ -442,16 +481,25 @@ public final class StashPinger implements HudRenderCallback {
 		);
 	}
 
-	private void drawTracer(DrawContext context, int x0, int y0, int x1, int y1, int color, float fade) {
-		drawLine(context, x0, y0, x1, y1, 2, withAlpha(0x66000000, fade));
-		drawLine(context, x0, y0, x1, y1, 1, color);
+	/**
+	 * Soft-edged tracer. A single hard quad rotated off-axis rasterises with a
+	 * stair-stepped edge, which is what made the old line look drawn pixel by
+	 * pixel even though it was already one straight quad. Stacking a wide faint
+	 * pass, a mid pass and a bright core reproduces the falloff an antialiased
+	 * line would have, so the edge reads as smooth at any angle.
+	 */
+	private void drawTracer(DrawContext context, float x0, float y0, float x1, float y1, int color, float fade) {
+		drawLine(context, x0, y0, x1, y1, 5.0F, withAlpha((color & 0x00FFFFFF) | 0x30000000, fade));
+		drawLine(context, x0, y0, x1, y1, 3.0F, withAlpha((color & 0x00FFFFFF) | 0x70000000, fade));
+		drawLine(context, x0, y0, x1, y1, 1.4F, color);
 	}
 
 	/**
-	 * A genuinely straight segment: one quad rotated to the target angle,
-	 * instead of the old per-pixel staircase plot.
+	 * One straight quad from end to end. Endpoints stay in float space: rounding
+	 * them to whole pixels first is what bent the line off its true angle and
+	 * made it look hand-plotted.
 	 */
-	private void drawLine(DrawContext context, int x0, int y0, int x1, int y1, int thickness, int color) {
+	private void drawLine(DrawContext context, float x0, float y0, float x1, float y1, float thickness, int color) {
 		float dx = x1 - x0;
 		float dy = y1 - y0;
 		float length = (float) Math.sqrt(dx * dx + dy * dy);
@@ -460,7 +508,11 @@ public final class StashPinger implements HudRenderCallback {
 		matrices.pushMatrix();
 		matrices.translate(x0, y0);
 		matrices.rotate((float) Math.atan2(dy, dx));
-		context.fill(0, -(thickness / 2), Math.round(length), thickness - thickness / 2, color);
+		// Scale a unit-height bar to the wanted thickness so fractional widths
+		// survive; context.fill only accepts whole numbers.
+		matrices.translate(0.0F, -thickness * 0.5F);
+		matrices.scale(1.0F, thickness);
+		context.fill(0, 0, Math.round(length), 1, color);
 		matrices.popMatrix();
 	}
 
