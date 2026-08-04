@@ -50,7 +50,7 @@ import com.profps.client.extras.RTPFinderController;
 import com.profps.client.extras.ScaffoldController;
 import com.profps.client.instants.AutoClickerController;
 import com.profps.client.instants.AutoBreachSwapController;
-import com.profps.client.instants.AutoLungeController;
+import com.profps.client.instants.AutoLungeSwapController;
 import com.profps.client.instants.AutoMaceController;
 import com.profps.client.instants.AxeStunController;
 import com.profps.client.instants.KnockbackDisplacementController;
@@ -108,7 +108,7 @@ public final class ProFPSClient implements ClientModInitializer {
 	private static AutoCreeperController autoCreeper;
 	private static AutoClickerController autoClicker;
 	private static AutoCrystalController autoCrystal;
-	private static AutoLungeController autoLunge;
+	private static AutoLungeSwapController autoLunge;
 	private static AntiFireballController antiFireball;
 	private static KnockbackDisplacementController kbDisplace;
 	private static KeyBinding openKey;
@@ -152,7 +152,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		autoBreachSwap = new AutoBreachSwapController(config);
 		axeStun = new AxeStunController(config);
 		pearlCatch = new PearlCatchController(config);
-		autoLunge = new AutoLungeController(config);
+		autoLunge = new AutoLungeSwapController(config);
 		kbDisplace = new KnockbackDisplacementController(config);
 		AutoAimController autoAim = new AutoAimController(config);
 		ToolMineController toolMine = new ToolMineController(config);

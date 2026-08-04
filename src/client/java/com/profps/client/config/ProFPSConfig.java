@@ -452,6 +452,8 @@ public final class ProFPSConfig {
 	public boolean lungeShieldBreak = true;
 	/** Pace the jab by how fast the key is actually spammed, and chain queued presses. */
 	public boolean lungeSpamScaling = true;
+	/** Sampled reaction, charge overshoot and recovery gaps instead of fixed frame offsets. */
+	public boolean lungeSwapHumanize = true;
 	/** Visible aim support only while the player manually holds a spear charge. */
 	public boolean spearChargeAssist = false;
 	public int spearChargeFov = 65;
@@ -533,7 +535,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 93;
+	public int configVersion = 94;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1757,6 +1759,15 @@ public final class ProFPSConfig {
 			donutSuspiciousChunksCeiling = 8;
 			donutSuspiciousChunksLabels = true;
 			configVersion = 93;
+			changed = true;
+		}
+		if (configVersion < 94) {
+			// Auto Lunge became Auto Lunge Swap: the burst is now an attribute
+			// swap rather than a held-spear jab, so its old target-aiming
+			// settings no longer describe anything it does.
+			lungeSwapHumanize = true;
+			lungeSpamScaling = true;
+			configVersion = 94;
 			changed = true;
 		}
 		return changed;

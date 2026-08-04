@@ -326,7 +326,7 @@ public final class NovaModules {
 		d.put("kbdisplace", "Keybind: sprint-reset hit that shoves a nearby player back.");
 		d.put("automace", "Auto-attacks the nearest player with mace.");
 		d.put("autobreachswap", "Server-ordered sword-to-Breach-mace jump-crit swap and restore.");
-		d.put("autolunge", "One-press, fully charged Lunge jab with an optional mace handoff.");
+		d.put("autolunge", "Swaps a Lunge spear in on the attack frame for a fast movement burst.");
 		d.put("spearcharge", "Visible aim support while you manually hold a spear charge.");
 		d.put("anchor", "Reliably places and charges an anchor, with optional detonation or safe-item finish.");
 		d.put("totem", "Rapidly refills your offhand and prepares a hotbar backup after a pop.");
@@ -585,15 +585,11 @@ public final class NovaModules {
 		m.put("autobreachswap", new Module("autobreachswap", "Auto Breach Swap", Items.MACE,
 				() -> cfg.autoBreachSwap, v -> cfg.autoBreachSwap = v,
 				new IntSetting("Mace Charge", "%", 50, 100, 1, () -> cfg.autoBreachSwapCharge, v -> cfg.autoBreachSwapCharge = v)));
-		m.put("autolunge", new Module("autolunge", "Auto Lunge", Items.NETHERITE_SPEAR,
+		m.put("autolunge", new Module("autolunge", "Auto Lunge Swap", Items.NETHERITE_SPEAR,
 				() -> false, v -> { if (v) cfg.autoLungeRequested = true; },
-				new BoolSetting("Visible Aim", () -> cfg.lungeAim, v -> cfg.lungeAim = v),
-				new IntSetting("FOV", "°", 20, 120, 5, () -> cfg.lungeFov, v -> cfg.lungeFov = v),
-				new IntSetting("Range", "m", 4, 24, 1, () -> cfg.lungeRange, v -> cfg.lungeRange = v),
-				new IntSetting("Turn Speed", "%", 20, 85, 1, () -> cfg.lungeTurnSpeed, v -> cfg.lungeTurnSpeed = v),
-				new BoolSetting("Spear → Mace", () -> cfg.lungeSpearMace, v -> cfg.lungeSpearMace = v),
+				new BoolSetting("Humanize", () -> cfg.lungeSwapHumanize, v -> cfg.lungeSwapHumanize = v),
 				new BoolSetting("Spam Scaling", () -> cfg.lungeSpamScaling, v -> cfg.lungeSpamScaling = v),
-				new BoolSetting("Shield Axe Break", () -> cfg.lungeShieldBreak, v -> cfg.lungeShieldBreak = v)).momentary());
+				new BoolSetting("Spear → Mace", () -> cfg.lungeSpearMace, v -> cfg.lungeSpearMace = v)).momentary());
 		m.put("spearcharge", new Module("spearcharge", "Spear Charge Assist", Items.DIAMOND_SPEAR,
 				() -> cfg.spearChargeAssist, v -> cfg.spearChargeAssist = v,
 				new IntSetting("FOV", "°", 20, 120, 5, () -> cfg.spearChargeFov, v -> cfg.spearChargeFov = v),
