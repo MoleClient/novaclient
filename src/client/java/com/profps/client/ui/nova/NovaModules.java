@@ -596,6 +596,7 @@ public final class NovaModules {
 				new IntSetting("Range", "m", 8, 96, 2, () -> cfg.autoSpearRange, v -> cfg.autoSpearRange = v),
 				new IntSetting("FOV", "°", 20, 140, 5, () -> cfg.autoSpearFov, v -> cfg.autoSpearFov = v),
 				new IntSetting("Turn Speed", "%", 20, 90, 1, () -> cfg.autoSpearTurnSpeed, v -> cfg.autoSpearTurnSpeed = v),
+				new BoolSetting("Auto Switch", () -> cfg.autoSpearAutoSwitch, v -> cfg.autoSpearAutoSwitch = v),
 				new BoolSetting("Silent Aim", () -> cfg.autoSpearSilentAim, v -> cfg.autoSpearSilentAim = v)));
 
 		// ── SubTiers ───────────────────────────────────────────────────────────────

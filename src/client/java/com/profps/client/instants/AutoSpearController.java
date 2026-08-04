@@ -3,62 +3,73 @@ package com.profps.client.instants;
 import com.profps.client.aim.MouseGcd;
 import com.profps.client.aim.SilentAimController;
 import com.profps.client.config.ProFPSConfig;
+import com.profps.client.mixin.ClientPlayerInteractionManagerAccessor;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.component.DataComponentTypes;
-import net.minecraft.component.type.KineticWeaponComponent;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
-import net.minecraft.util.math.Box;
+import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
+import net.minecraft.util.Hand;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
 import java.security.SecureRandom;
+import java.util.UUID;
 
 /**
  * Auto Spear — lands the kinetic hit when you fly through somebody.
  *
- * <p>A spear is not a click weapon. Holding its charge amplifies your forward
- * movement, and the hit resolves on <em>contact</em> once the charge has been
- * held past its own delay: the item carries {@code delayTicks} before the
- * kinetic attack arms, {@code contactCooldownTicks} between hits, and a damage
- * multiplier applied against the movement the attack lands with. That is why a
- * spear rewards speed — an elytra swoop or a straight flight through a player
- * hits far harder than the same spear used standing still.
+ * <p>A spear is not a click weapon. Holding its charge amplifies forward
+ * movement and the hit resolves on <em>contact</em>, once the charge has been
+ * held past the item's own {@code delayTicks}. Damage scales with the movement
+ * the attack lands with, which is why an elytra swoop hits far harder than the
+ * same spear used standing still.
  *
- * <p>So the only thing worth automating is <em>when to start the charge</em>.
- * Start it too late and the attack has not armed by the time you reach them and
- * you fly straight through for nothing; start it far too early and you burn the
- * charge, arrive with it spent, and telegraph the whole approach. This predicts
- * the moment of contact from closing speed and begins the charge exactly one
- * arming delay before it — read from the item itself rather than hardcoded, so
- * it stays correct if the values are retuned.
+ * <p>So the module does what a player does on a swoop, in this order:
+ * <ol>
+ *   <li><b>Get the spear out early.</b> Once a target is in range and you are
+ *       closing, it switches to the spear from the hotbar. Waiting until the
+ *       last moment is the mistake — the charge has to already be running when
+ *       you arrive, and the amplified movement only helps if it applies for the
+ *       whole approach rather than the final tick.</li>
+ *   <li><b>Hold the charge for the entire run in</b>, not for one armed instant.
+ *       If the use ever lapses — the duration completes, a hit interrupts it —
+ *       it is restarted, so the charge is live continuously from acquisition to
+ *       contact.</li>
+ *   <li><b>Steer into them.</b> The hit needs the hitboxes to actually meet, so
+ *       the aim runs for the whole approach and leads the target: at swoop speed
+ *       the gap between where they are and where they will be is several blocks.
+ *       A spear that arms perfectly and passes a metre wide does nothing.</li>
+ * </ol>
  *
- * <p>The charge is held by pressing the real use key, which is what makes the
- * whole vanilla use loop run: the movement amplification, the packets, the
- * sounds and the contact resolution are all the game's own, not reimplemented
- * here. Aim help only nudges the approach line so the hitboxes actually meet;
- * a spear that arms perfectly and passes a metre wide still does nothing.
+ * <p>The use is started through vanilla's own {@code interactItem} and then kept
+ * alive by holding the real use key. Both are needed: this runs at the tail of
+ * {@code handleInputEvents}, after vanilla has already looked at the key for
+ * this tick, so pressing the key alone would not begin anything until the next
+ * one — a tick of the approach thrown away at speed.
  */
 public final class AutoSpearController {
-	/** Below this the hit is a poke, not a swoop, and arming just wastes the charge. */
-	private static final double MIN_CLOSING_SPEED = 0.32D;
-	/** How far past the target we keep the charge before conceding the pass missed. */
-	private static final int OVERRUN_GRACE_TICKS = 6;
-	private static final int MAX_HOLD_TICKS = 60;
+	/** Below this the pass is a walk-up, not a swoop, and holding just burns the charge. */
+	private static final double MIN_CLOSING_SPEED = 0.28D;
+	/** How long the charge is kept after the pass stops closing, for a near miss. */
+	private static final int OVERRUN_GRACE_TICKS = 8;
+	/** Re-check for a lapsed use no more often than this. */
+	private static final int REARM_INTERVAL_TICKS = 2;
 
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
 	private final MouseGcd mouse = new MouseGcd();
 
+	private boolean engaged;
 	private boolean holding;
 	private boolean originalUse;
-	private int holdTicks;
+	private int returnSlot = -1;
 	private int overrunTicks;
-	private java.util.UUID targetUuid;
+	private int rearmTick;
+	private UUID targetUuid;
 	private long lastFrameNanos;
 	private boolean ownsRotation;
-	private int leadJitter;
 	private String status = "Idle";
 
 	public AutoSpearController(ProFPSConfig config) {
@@ -67,61 +78,88 @@ public final class AutoSpearController {
 
 	public void tick(MinecraftClient client) {
 		if (!allowed(client)) {
-			release(client);
+			disengage(client);
 			return;
 		}
 		ClientPlayerEntity player = client.player;
-		ItemStack spear = player.getMainHandStack();
-		KineticWeaponComponent kinetic = spear.get(DataComponentTypes.KINETIC_WEAPON);
-		if (kinetic == null) {
-			// Only ever acts with the spear genuinely in hand; it never switches
-			// slots for you, because the swoop is something you set up yourself.
-			release(client);
-			status = "Hold a spear";
-			return;
-		}
 
 		PlayerEntity target = acquireTarget(client, player);
 		if (target == null) {
-			release(client);
+			// Keep the charge briefly: a target that just left the cone is often
+			// one you are already committed to passing through.
+			if (engaged && ++overrunTicks <= OVERRUN_GRACE_TICKS) {
+				sustain(client, player);
+				return;
+			}
+			disengage(client);
 			status = "No target";
 			return;
 		}
-		targetUuid = target.getUuid();
 
 		Approach approach = predict(player, target);
 		if (approach == null) {
-			// Not closing on them. Keep any charge already running — the pass may
-			// still be in progress — but do not start a new one.
-			if (holding && ++overrunTicks > OVERRUN_GRACE_TICKS) release(client);
+			if (engaged && ++overrunTicks <= OVERRUN_GRACE_TICKS) {
+				sustain(client, player);
+				return;
+			}
+			disengage(client);
+			status = "Not closing";
 			return;
 		}
 		overrunTicks = 0;
+		targetUuid = target.getUuid();
 
-		// Arm exactly one delay before contact, plus a sampled tick of lead so the
-		// start of the charge is never a fixed offset from the approach.
-		int armAt = kinetic.delayTicks() + leadJitter;
-		if (!holding && approach.ticksToContact() > armAt) {
-			status = "Closing " + (int) approach.distance() + "m";
-			return;
+		// The spear has to be out for the run in, not produced on arrival.
+		if (!isSpear(player.getMainHandStack())) {
+			int slot = findSpearSlot(player);
+			if (slot < 0) {
+				disengage(client);
+				status = "No spear in hotbar";
+				return;
+			}
+			if (!config.autoSpearAutoSwitch) {
+				status = "Hold a spear";
+				return;
+			}
+			if (returnSlot < 0) returnSlot = player.getInventory().getSelectedSlot();
+			select(client, player, slot);
 		}
 
-		hold(client);
-		status = "Charging";
-		if (++holdTicks > MAX_HOLD_TICKS) release(client);
+		engaged = true;
+		sustain(client, player);
+		status = "Charging · " + (int) approach.distance() + "m";
 	}
 
 	/**
-	 * Aim help, applied per render frame like the other combat modules.
+	 * Keeps the charge running. Vanilla ends a use the moment the key reads
+	 * released, and the use can also simply finish on its own, so this both holds
+	 * the key and restarts the use whenever it has lapsed.
+	 */
+	private void sustain(MinecraftClient client, ClientPlayerEntity player) {
+		if (!holding) {
+			originalUse = client.options.useKey.isPressed();
+			holding = true;
+		}
+		client.options.useKey.setPressed(true);
+		if (player.isUsingItem()) return;
+		// Started here rather than left to the key, because this runs after
+		// vanilla has already read the key for this tick.
+		if (player.age < rearmTick) return;
+		rearmTick = player.age + REARM_INTERVAL_TICKS;
+		client.interactionManager.interactItem(player, Hand.MAIN_HAND);
+	}
+
+	/**
+	 * Aim help, per render frame.
 	 *
-	 * <p>Aims at where the target <em>will be</em>, not where they are: at swoop
-	 * speed the gap between those is several blocks, and contact is what the hit
-	 * depends on.
+	 * <p>Runs for the whole approach rather than only once the charge is armed:
+	 * steering is what makes the hitboxes meet, and by the time a last-moment
+	 * arm would fire there is no approach left to steer.
 	 */
 	public boolean frame(MinecraftClient client) {
 		ownsRotation = false;
-		if (!allowed(client) || !holding) {
-			if (config.autoSpearSilentAim) SilentAimController.instance().release();
+		if (!allowed(client) || !engaged) {
+			SilentAimController.instance().release();
 			return false;
 		}
 		ClientPlayerEntity player = client.player;
@@ -147,12 +185,12 @@ public final class AutoSpearController {
 		float blend = 1.0F - (float) Math.pow(1.0F - speed, dt);
 		float yawError = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
 		float pitchError = MathHelper.wrapDegrees(desiredPitch - player.getPitch());
-		float cap = MathHelper.clamp(config.autoSpearTurnSpeed, 20, 90) * 0.55F * dt;
+		float cap = MathHelper.clamp(config.autoSpearTurnSpeed, 20, 90) * 0.6F * dt;
 
 		player.setYaw(player.getYaw() + mouse.yaw(MathHelper.clamp(
-				yawError * blend + (float) rng.nextGaussian() * 0.16F, -cap, cap)));
+				yawError * blend + (float) rng.nextGaussian() * 0.14F, -cap, cap)));
 		player.setPitch(MathHelper.clamp(player.getPitch() + mouse.pitch(MathHelper.clamp(
-				pitchError * blend + (float) rng.nextGaussian() * 0.11F, -cap * 0.75F, cap * 0.75F)),
+				pitchError * blend + (float) rng.nextGaussian() * 0.10F, -cap * 0.8F, cap * 0.8F)),
 				-90.0F, 90.0F));
 		player.headYaw = player.getYaw();
 		ownsRotation = true;
@@ -163,8 +201,8 @@ public final class AutoSpearController {
 
 	/**
 	 * Ticks until the two hitboxes meet, from the closing component of the
-	 * relative velocity. Returns null when the pass is not actually closing —
-	 * standing still, drifting away, or already through them.
+	 * relative velocity. Null when the pass is not closing at all — standing
+	 * still, drifting away, or already through them.
 	 */
 	private Approach predict(ClientPlayerEntity player, PlayerEntity target) {
 		Vec3d self = player.getEntityPos();
@@ -173,13 +211,11 @@ public final class AutoSpearController {
 		double distance = toTarget.length();
 		if (distance < 1.0E-4D) return new Approach(0, 0.0D);
 
-		// Relative velocity along the line between us. Their movement counts:
-		// a target flying at you halves the time you have to arm.
+		// Their movement counts: a target flying at you halves the time you have.
 		Vec3d relative = player.getVelocity().subtract(target.getVelocity());
 		double closing = relative.dotProduct(toTarget.normalize());
 		if (closing < MIN_CLOSING_SPEED) return null;
 
-		// Contact is hitbox to hitbox, not centre to centre.
 		double contactGap = (player.getWidth() + target.getWidth()) * 0.5D + 0.35D;
 		double travel = Math.max(0.0D, distance - contactGap);
 		return new Approach((int) Math.ceil(travel / closing), distance);
@@ -187,7 +223,7 @@ public final class AutoSpearController {
 
 	/** Where to point so the hitboxes meet, accounting for both of you moving. */
 	private Vec3d interceptPoint(ClientPlayerEntity player, PlayerEntity target) {
-		Vec3d self = player.getEntityPos();
+		Vec3d self = player.getEyePos();
 		Vec3d other = target.getBoundingBox().getCenter();
 		double distance = other.subtract(self).length();
 		Vec3d relative = player.getVelocity().subtract(target.getVelocity());
@@ -203,23 +239,24 @@ public final class AutoSpearController {
 	private PlayerEntity acquireTarget(MinecraftClient client, ClientPlayerEntity self) {
 		double range = MathHelper.clamp(config.autoSpearRange, 8, 96);
 		double minDot = Math.cos(Math.toRadians(MathHelper.clamp(config.autoSpearFov, 20, 140)));
-		PlayerEntity best = null;
-		double bestScore = Double.NEGATIVE_INFINITY;
+		// Scored against where you are actually travelling, not where you are
+		// looking: on a swoop the flight path decides who you can reach, and the
+		// view is free to be somewhere else entirely.
 		Vec3d heading = self.getVelocity().lengthSquared() > 1.0E-4D
 				? self.getVelocity().normalize()
 				: self.getRotationVec(1.0F);
 
+		PlayerEntity best = null;
+		double bestScore = Double.NEGATIVE_INFINITY;
 		for (PlayerEntity other : client.world.getPlayers()) {
 			if (other == self || !other.isAlive() || other.isSpectator()) continue;
 			Vec3d delta = other.getBoundingBox().getCenter().subtract(self.getEyePos());
 			double distance = delta.length();
 			if (distance < 1.0E-4D || distance > range) continue;
-			// Scored against where you are actually travelling, not where you are
-			// looking: on a swoop the flight path is what decides who you can
-			// reach, and the view is free to be somewhere else entirely.
-			double dot = delta.normalize().dotProduct(heading);
-			if (dot < minDot) continue;
-			double score = dot * 6.0D + (range - distance) / range;
+			if (delta.normalize().dotProduct(heading) < minDot) continue;
+			// Stay on the target already committed to rather than flipping to a
+			// marginally better one mid-approach.
+			double score = (range - distance) / range + (other.getUuid().equals(targetUuid) ? 0.45D : 0.0D);
 			if (score > bestScore) {
 				bestScore = score;
 				best = other;
@@ -236,34 +273,48 @@ public final class AutoSpearController {
 		return null;
 	}
 
-	// ── Charge handling ───────────────────────────────────────────────────────
+	// ── Spear handling ────────────────────────────────────────────────────────
 
-	/**
-	 * Holds the real use key. Everything the charge does — the forward
-	 * amplification, the packets, the contact resolution — is vanilla's own use
-	 * loop; nothing here reimplements it.
-	 */
-	private void hold(MinecraftClient client) {
-		if (holding) return;
-		originalUse = client.options.useKey.isPressed();
-		client.options.useKey.setPressed(true);
-		holding = true;
-		holdTicks = 0;
+	private int findSpearSlot(ClientPlayerEntity player) {
+		for (int slot = 0; slot < 9; slot++) {
+			if (isSpear(player.getInventory().getStack(slot))) return slot;
+		}
+		return -1;
 	}
 
-	private void release(MinecraftClient client) {
-		if (holding && client != null && client.options != null) {
-			client.options.useKey.setPressed(originalUse);
+	private boolean isSpear(ItemStack stack) {
+		return !stack.isEmpty() && stack.contains(DataComponentTypes.KINETIC_WEAPON);
+	}
+
+	private void select(MinecraftClient client, ClientPlayerEntity player, int slot) {
+		if (slot < 0 || slot > 8 || player.getInventory().getSelectedSlot() == slot) return;
+		player.getInventory().setSelectedSlot(slot);
+		player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slot));
+		((ClientPlayerInteractionManagerAccessor) client.interactionManager).profps$setLastSelectedSlot(slot);
+	}
+
+	/** Stops the charge, hands back the use key, and returns the previous slot. */
+	private void disengage(MinecraftClient client) {
+		if (client != null && client.player != null) {
+			if (holding) {
+				client.options.useKey.setPressed(originalUse);
+				if (client.player.isUsingItem() && client.interactionManager != null) {
+					client.interactionManager.stopUsingItem(client.player);
+				}
+			}
+			if (returnSlot >= 0 && config.autoSpearAutoSwitch
+					&& isSpear(client.player.getMainHandStack())) {
+				select(client, client.player, returnSlot);
+			}
 		}
-		if (holding && config.autoSpearSilentAim) SilentAimController.instance().release();
+		SilentAimController.instance().release();
+		engaged = false;
 		holding = false;
-		holdTicks = 0;
+		returnSlot = -1;
 		overrunTicks = 0;
+		rearmTick = 0;
 		targetUuid = null;
 		ownsRotation = false;
-		// Re-sample the lead so consecutive passes never arm on the same offset.
-		leadJitter = rng.nextInt(2);
-		if (status.equals("Charging")) status = "Idle";
 	}
 
 	private boolean allowed(MinecraftClient client) {
@@ -280,16 +331,10 @@ public final class AutoSpearController {
 	}
 
 	public boolean isBusy() {
-		return holding;
+		return engaged;
 	}
 
 	public String status() {
-		return status;
-	}
-
-	/** Player-sized volume used only to reason about contact in tests. */
-	static Box contactVolume(Vec3d centre, double width, double height) {
-		return new Box(centre.x - width * 0.5D, centre.y, centre.z - width * 0.5D,
-				centre.x + width * 0.5D, centre.y + height, centre.z + width * 0.5D);
+		return engaged ? status : "Idle";
 	}
 }
