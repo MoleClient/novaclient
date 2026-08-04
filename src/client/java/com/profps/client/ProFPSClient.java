@@ -51,6 +51,7 @@ import com.profps.client.extras.ScaffoldController;
 import com.profps.client.instants.AutoClickerController;
 import com.profps.client.instants.AutoBreachSwapController;
 import com.profps.client.instants.AutoLungeSwapController;
+import com.profps.client.instants.AutoSpearController;
 import com.profps.client.instants.AutoMaceController;
 import com.profps.client.instants.AxeStunController;
 import com.profps.client.instants.KnockbackDisplacementController;
@@ -109,6 +110,7 @@ public final class ProFPSClient implements ClientModInitializer {
 	private static AutoClickerController autoClicker;
 	private static AutoCrystalController autoCrystal;
 	private static AutoLungeSwapController autoLunge;
+	private static AutoSpearController autoSpear;
 	private static AntiFireballController antiFireball;
 	private static KnockbackDisplacementController kbDisplace;
 	private static KeyBinding openKey;
@@ -153,6 +155,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		axeStun = new AxeStunController(config);
 		pearlCatch = new PearlCatchController(config);
 		autoLunge = new AutoLungeSwapController(config);
+		autoSpear = new AutoSpearController(config);
 		kbDisplace = new KnockbackDisplacementController(config);
 		AutoAimController autoAim = new AutoAimController(config);
 		ToolMineController toolMine = new ToolMineController(config);
@@ -281,7 +284,8 @@ public final class ProFPSClient implements ClientModInitializer {
 				boolean creeperOwnsRotation = autoCreeper.ownsRotation();
 				boolean spearOwnsRotation = false;
 				if (!pearlOwnsRotation && !expandedOwnsRotation && !creeperOwnsRotation) {
-					spearOwnsRotation = autoLunge.frame(mc);
+					// Auto Spear steers the approach; the lunge swap never takes the camera.
+					spearOwnsRotation = autoSpear.frame(mc) || autoLunge.frame(mc);
 				}
 				if (!pearlOwnsRotation && !expandedOwnsRotation && !creeperOwnsRotation
 						&& !spearOwnsRotation) {
@@ -449,6 +453,7 @@ public final class ProFPSClient implements ClientModInitializer {
 			}
 		}
 		if (autoLunge != null) autoLunge.tickPreMovement(client);
+		if (autoSpear != null) autoSpear.tick(client);
 		if (kbDisplace != null) kbDisplace.tick(client);
 		if (autoCrystal != null) autoCrystal.tick(client);
 		if (autoClicker != null) autoClicker.tickPreMovement(client);

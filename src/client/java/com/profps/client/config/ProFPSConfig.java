@@ -457,10 +457,13 @@ public final class ProFPSConfig {
 	/** Sprint-jump into the burst; on the ground friction scrubs the velocity off almost at once. */
 	public boolean lungeSwapJump = true;
 	/** Visible aim support only while the player manually holds a spear charge. */
-	public boolean spearChargeAssist = false;
-	public int spearChargeFov = 65;
-	public int spearChargeRange = 16;
-	public int spearChargeTurnSpeed = 42;
+	/** Auto Spear: arms the kinetic charge so a fly-through lands on contact. */
+	public boolean autoSpearEnabled = false;
+	public int autoSpearFov = 75;
+	public int autoSpearRange = 42;
+	public int autoSpearTurnSpeed = 48;
+	/** Camera stays under your own mouse while the approach is aimed. Off by default. */
+	public boolean autoSpearSilentAim = false;
 	public boolean donutStashPinger = false;
 	public boolean donutFreecam = false;
 	public int donutFreecamSpeed = 5; // 1 (slow / precise) .. 10 (fast); 5 = the classic default
@@ -537,7 +540,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 94;
+	public int configVersion = 95;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -869,16 +872,16 @@ public final class ProFPSConfig {
 			lungeTurnSpeed = MathHelper.clamp(lungeTurnSpeed, 20, 85);
 			changed = true;
 		}
-		if (spearChargeFov < 20 || spearChargeFov > 120) {
-			spearChargeFov = MathHelper.clamp(spearChargeFov, 20, 120);
+		if (autoSpearFov < 20 || autoSpearFov > 140) {
+			autoSpearFov = MathHelper.clamp(autoSpearFov, 20, 140);
 			changed = true;
 		}
-		if (spearChargeRange < 4 || spearChargeRange > 24) {
-			spearChargeRange = MathHelper.clamp(spearChargeRange, 4, 24);
+		if (autoSpearRange < 8 || autoSpearRange > 96) {
+			autoSpearRange = MathHelper.clamp(autoSpearRange, 8, 96);
 			changed = true;
 		}
-		if (spearChargeTurnSpeed < 20 || spearChargeTurnSpeed > 85) {
-			spearChargeTurnSpeed = MathHelper.clamp(spearChargeTurnSpeed, 20, 85);
+		if (autoSpearTurnSpeed < 20 || autoSpearTurnSpeed > 90) {
+			autoSpearTurnSpeed = MathHelper.clamp(autoSpearTurnSpeed, 20, 90);
 			changed = true;
 		}
 		if (subTiersMinecartBowSpeed < 1 || subTiersMinecartBowSpeed > 10) {
@@ -1567,10 +1570,7 @@ public final class ProFPSConfig {
 			lungeTurnSpeed = 70;
 			lungeSpearMace = true;
 			lungeShieldBreak = true;
-			spearChargeAssist = false;
-			spearChargeFov = 65;
-			spearChargeRange = 16;
-			spearChargeTurnSpeed = 42;
+			// Spear Charge Assist was replaced by Auto Spear in v95.
 			configVersion = 80;
 			changed = true;
 		}
@@ -1771,6 +1771,19 @@ public final class ProFPSConfig {
 			lungeSpamScaling = true;
 			lungeSwapJump = true;
 			configVersion = 94;
+			changed = true;
+		}
+		if (configVersion < 95) {
+			// Spear Charge Assist only aimed while you held a charge yourself.
+			// Auto Spear replaces it: it decides when to start the charge so a
+			// fly-through actually lands, which is the part that needed timing.
+			autoSpearEnabled = false;
+			autoSpearFov = 75;
+			autoSpearRange = 42;
+			autoSpearTurnSpeed = 48;
+			// Silent aim decouples the camera; it must never arrive switched on.
+			autoSpearSilentAim = false;
+			configVersion = 95;
 			changed = true;
 		}
 		return changed;

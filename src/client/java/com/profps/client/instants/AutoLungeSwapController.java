@@ -388,71 +388,15 @@ public final class AutoLungeSwapController {
 		return (System.nanoTime() - lastPressNanos) < 1_500_000_000L && pressRateHz >= 4.0D;
 	}
 
-	// ── Spear charge assist (unchanged, and independent of the swap) ──────────
-
 	/**
-	 * Visible aim support while the player manually holds a spear charge. This
-	 * has nothing to do with the swap — a lunge is aimed where you want to go,
-	 * not at a target — so the burst itself never steals the camera.
+	 * Rotation hook kept for the shared frame chain. The swap never steals the
+	 * camera: a lunge is aimed where you want to go, not at a target, so pointing
+	 * it for you would fight the whole purpose of the burst. Spear aim now belongs
+	 * to Auto Spear, which is about contact rather than travel.
 	 */
 	public boolean frame(MinecraftClient client) {
 		ownsRotation = false;
-		if (!allowed(client) || !config.spearChargeAssist) return false;
-		ClientPlayerEntity player = client.player;
-		if (!player.isUsingItem() || !player.getActiveItem().contains(DataComponentTypes.KINETIC_WEAPON)) {
-			return false;
-		}
-		PlayerEntity target = acquireTarget(client, config.spearChargeRange, config.spearChargeFov);
-		if (target == null || !player.canSee(target)) return false;
-
-		long now = System.nanoTime();
-		float dt = lastFrameNanos == 0L ? 1.0F
-				: (float) MathHelper.clamp((now - lastFrameNanos) / 1_000_000_000.0D * 20.0D, 0.05D, 3.0D);
-		lastFrameNanos = now;
-
-		Vec3d eye = player.getEyePos();
-		Vec3d point = target.getBoundingBox().getCenter().add(target.getVelocity().multiply(0.45D));
-		double dx = point.x - eye.x;
-		double dz = point.z - eye.z;
-		double horizontal = Math.sqrt(dx * dx + dz * dz);
-		float desiredYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0D);
-		float desiredPitch = (float) -Math.toDegrees(Math.atan2(point.y - eye.y, horizontal));
-
-		float speed = MathHelper.clamp(config.spearChargeTurnSpeed, 20, 85) / 100.0F;
-		float blend = 1.0F - (float) Math.pow(1.0F - speed, dt);
-		float yawError = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
-		float pitchError = MathHelper.wrapDegrees(desiredPitch - player.getPitch());
-		float cap = 22.0F * dt;
-
-		player.setYaw(player.getYaw() + mouse.yaw(MathHelper.clamp(
-				yawError * blend + (float) rng.nextGaussian() * 0.16F, -cap, cap)));
-		player.setPitch(MathHelper.clamp(player.getPitch() + mouse.pitch(MathHelper.clamp(
-				pitchError * blend + (float) rng.nextGaussian() * 0.11F, -cap * 0.72F, cap * 0.72F)),
-				-90.0F, 90.0F));
-		ownsRotation = true;
-		return true;
-	}
-
-	private PlayerEntity acquireTarget(MinecraftClient client, int configuredRange, int configuredFov) {
-		ClientPlayerEntity self = client.player;
-		double range = MathHelper.clamp(configuredRange, 4, 24);
-		double minDot = Math.cos(Math.toRadians(MathHelper.clamp(configuredFov, 20, 120)));
-		PlayerEntity best = null;
-		double bestScore = Double.NEGATIVE_INFINITY;
-		for (PlayerEntity other : client.world.getPlayers()) {
-			if (other == self || !other.isAlive() || other.isSpectator() || !self.canSee(other)) continue;
-			Vec3d delta = other.getBoundingBox().getCenter().subtract(self.getEyePos());
-			double distance = delta.length();
-			if (distance < 1.0E-4D || distance > range) continue;
-			double dot = delta.normalize().dotProduct(self.getRotationVec(1.0F));
-			if (dot < minDot) continue;
-			double score = dot * 4.0D + (range - distance) / range;
-			if (score > bestScore) {
-				bestScore = score;
-				best = other;
-			}
-		}
-		return best;
+		return false;
 	}
 
 	/** Nearest player in front, used only to arm the optional Spear → Mace follow-up. */

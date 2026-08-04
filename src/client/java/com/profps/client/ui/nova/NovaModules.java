@@ -327,7 +327,7 @@ public final class NovaModules {
 		d.put("automace", "Auto-attacks the nearest player with mace.");
 		d.put("autobreachswap", "Server-ordered sword-to-Breach-mace jump-crit swap and restore.");
 		d.put("autolunge", "Swaps a Lunge spear in on the attack frame for a fast movement burst.");
-		d.put("spearcharge", "Visible aim support while you manually hold a spear charge.");
+		d.put("autospear", "Times the spear charge so flying through a player lands the kinetic hit.");
 		d.put("anchor", "Reliably places and charges an anchor, with optional detonation or safe-item finish.");
 		d.put("totem", "Rapidly refills your offhand and prepares a hotbar backup after a pop.");
 		d.put("autocrystal", "Right-click obsidian or bedrock to place and quickly break a crystal.");
@@ -591,11 +591,12 @@ public final class NovaModules {
 				new BoolSetting("Humanize", () -> cfg.lungeSwapHumanize, v -> cfg.lungeSwapHumanize = v),
 				new BoolSetting("Spam Scaling", () -> cfg.lungeSpamScaling, v -> cfg.lungeSpamScaling = v),
 				new BoolSetting("Spear → Mace", () -> cfg.lungeSpearMace, v -> cfg.lungeSpearMace = v)).momentary());
-		m.put("spearcharge", new Module("spearcharge", "Spear Charge Assist", Items.DIAMOND_SPEAR,
-				() -> cfg.spearChargeAssist, v -> cfg.spearChargeAssist = v,
-				new IntSetting("FOV", "°", 20, 120, 5, () -> cfg.spearChargeFov, v -> cfg.spearChargeFov = v),
-				new IntSetting("Range", "m", 4, 24, 1, () -> cfg.spearChargeRange, v -> cfg.spearChargeRange = v),
-				new IntSetting("Turn Speed", "%", 20, 85, 1, () -> cfg.spearChargeTurnSpeed, v -> cfg.spearChargeTurnSpeed = v)));
+		m.put("autospear", new Module("autospear", "Auto Spear", Items.DIAMOND_SPEAR,
+				() -> cfg.autoSpearEnabled, v -> cfg.autoSpearEnabled = v,
+				new IntSetting("Range", "m", 8, 96, 2, () -> cfg.autoSpearRange, v -> cfg.autoSpearRange = v),
+				new IntSetting("FOV", "°", 20, 140, 5, () -> cfg.autoSpearFov, v -> cfg.autoSpearFov = v),
+				new IntSetting("Turn Speed", "%", 20, 90, 1, () -> cfg.autoSpearTurnSpeed, v -> cfg.autoSpearTurnSpeed = v),
+				new BoolSetting("Silent Aim", () -> cfg.autoSpearSilentAim, v -> cfg.autoSpearSilentAim = v)));
 
 		// ── SubTiers ───────────────────────────────────────────────────────────────
 		m.put("subtiers_autobed", new Module("subtiers_autobed", "Auto Bed", Items.RED_BED,
@@ -907,7 +908,7 @@ public final class NovaModules {
 				MODE_SWORD, MODE_AXE, "swordai", "hit", "aim", "strafe", "autoaim", "reach", "expandedhitbox", "jumpreset", "autopot", "velocity",
 				"hitboxes", "axestun", "kbdisplace", "anchor", "totem", "autocrystal", "fastuse", "autoxp")));
 		categories.add(new Category("Mace & Spear", Items.MACE, pick(m,
-				MODE_MACE, "automace", "autobreachswap", "autolunge", "spearcharge")));
+				MODE_MACE, "automace", "autobreachswap", "autolunge", "autospear")));
 		categories.add(new Category("SubTiers", Items.DIAMOND, pick(m,
 				"subtiers_autobed", "subtiers_autocreeper", "subtiers_autominecart")));
 		categories.add(new Category("DonutSMP", Items.ENDER_EYE, pick(m,
