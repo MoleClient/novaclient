@@ -107,7 +107,9 @@ public final class AutoLungeSwapController {
 				queuedRequest = false;
 				if (allowed(client)) begin(client);
 			}
-			return;
+			// Fall through when a queued press just opened a burst, so it runs
+			// its first step now instead of waiting another tick.
+			if (phase == Phase.IDLE) return;
 		}
 		if (!allowed(client)) {
 			abort(client);
@@ -199,22 +201,45 @@ public final class AutoLungeSwapController {
 	 * the carry item's, and a bare fist refills in about five ticks.
 	 */
 	private void prepare(MinecraftClient client, ClientPlayerEntity player, int age) {
-		if (player.getInventory().getSelectedSlot() != carrySlot) {
-			select(client, player, carrySlot);
-			status = "Priming";
-			return;
-		}
-		// The bar the server will divide by is this item's, so this is the gate.
+		// The bar the server will divide by is the held item's, so this is the
+		// gate — and when it already reads full there is nothing to refill. The
+		// carry item exists purely to refill it fast; switching to it anyway
+		// would cost the slot change and a tick of settling for no gain, which
+		// is most of what made a press feel late.
 		if (!SpearCombatPolicy.jabCharged(player.getAttackCooldownProgress(0.0F))) {
+			if (carrySlot < 0) {
+				notify(client, "Auto Lunge Swap: needs a free slot or a wind charge to swap from");
+				abort(client);
+				return;
+			}
+			if (player.getInventory().getSelectedSlot() != carrySlot) {
+				if (returnSlot < 0) returnSlot = player.getInventory().getSelectedSlot();
+				select(client, player, carrySlot);
+			}
+			// The attack-speed attribute still reads the previous item this tick,
+			// so the refilled bar is only observable from the next one.
 			status = "Charging";
 			return;
 		}
 		if (age < nextActionAge) return;
-		// Charge is full and the carry item is in hand. Take off first; the swap
-		// itself is worthless against ground friction.
-		phase = config.lungeSwapJump && player.isOnGround() ? Phase.LAUNCH : Phase.FIRE;
+
+		// Whatever is in hand supplied the full bar, so that is what the swap
+		// hands to the spear and what to come back to afterwards.
+		if (returnSlot < 0) returnSlot = player.getInventory().getSelectedSlot();
+
+		// Take off first; the swap is worthless against ground friction. Chain
+		// straight into the next phase rather than waiting for the next tick —
+		// the whole burst is only a few ticks long, so a tick spent changing
+		// phase is a tick of felt delay.
 		launchDeadlineAge = age + LAUNCH_TIMEOUT_TICKS;
 		nextActionAge = age;
+		if (config.lungeSwapJump && player.isOnGround()) {
+			phase = Phase.LAUNCH;
+			launch(client, player, age);
+		} else {
+			phase = Phase.FIRE;
+			fire(client, player, age);
+		}
 	}
 
 	/**
@@ -230,7 +255,10 @@ public final class AutoLungeSwapController {
 			return;
 		}
 
-		returnSlot = carrySlot;
+		// Only fall back to the carry slot when PREPARE did not already record
+		// what was in hand — on the instant path the bar came from the player's
+		// own item, and that is what has to come back.
+		if (returnSlot < 0) returnSlot = carrySlot >= 0 ? carrySlot : player.getInventory().getSelectedSlot();
 		select(client, player, spearSlot);
 		boolean swung = ((MinecraftClientInvoker) client).invokeDoAttack();
 		if (!swung) player.swingHand(Hand.MAIN_HAND);
@@ -289,24 +317,28 @@ public final class AutoLungeSwapController {
 			notify(client, "Auto Lunge Swap: need a Lunge spear in the hotbar");
 			return;
 		}
+		// Optional on purpose. A carry item is only needed to refill a spent bar;
+		// with a full bar the burst can go from whatever is already in hand, so a
+		// completely full hotbar is no longer a refusal.
 		carrySlot = findCarrySlot(player, spearSlot);
-		if (carrySlot < 0) {
-			notify(client, "Auto Lunge Swap: needs a free slot or a wind charge to swap from");
-			return;
-		}
 
 		phase = Phase.PREPARE;
-		// Human reaction, skipped once the player is clearly spamming — at that
-		// point the rhythm is theirs and the module should not add to it.
-		nextActionAge = player.age + (spamming() ? 0 : reactionTicks());
+		nextActionAge = player.age + reactionTicks();
 		deadlineAge = player.age + RESTORE_DEADLINE_TICKS;
 		status = "Priming";
+		// No first step here: the caller falls straight through to the phase
+		// switch, so PREPARE already runs in this same tick.
 	}
 
-	/** Sampled per activation so no two bursts share a frame offset. */
+	/**
+	 * No pre-delay. The human timing is the keypress itself — it already arrives
+	 * on a moment nobody can predict — and stalling on top of it does not make
+	 * the burst look more human, it just makes the module feel broken. The
+	 * sampled variation that is worth having lives where it costs nothing: the
+	 * occasional extra tick of airtime before the swap, and the recovery gap.
+	 */
 	private int reactionTicks() {
-		if (!humanize()) return 0;
-		return 1 + rng.nextInt(3);
+		return 0;
 	}
 
 	private boolean humanize() {
