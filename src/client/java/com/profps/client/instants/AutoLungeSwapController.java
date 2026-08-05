@@ -11,6 +11,7 @@ import net.minecraft.enchantment.Enchantment;
 import net.minecraft.enchantment.Enchantments;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.text.Text;
@@ -290,7 +291,7 @@ public final class AutoLungeSwapController {
 		}
 		carrySlot = findCarrySlot(player, spearSlot);
 		if (carrySlot < 0) {
-			notify(client, "Auto Lunge Swap: keep one hotbar slot free to swap from");
+			notify(client, "Auto Lunge Swap: needs a free slot or a wind charge to swap from");
 			return;
 		}
 
@@ -313,17 +314,30 @@ public final class AutoLungeSwapController {
 	}
 
 	/**
-	 * The slot to swap out of and back into. An empty slot is the ideal — a bare
-	 * fist carries no attack-speed modifier at all, so its bar fills fastest and
-	 * the recovery swing is the shortest available.
+	 * The slot to swap out of and back into.
+	 *
+	 * <p>Ranked by how fast the charge bar refills, because that is the entire
+	 * cadence of the technique:
+	 * <ol>
+	 *   <li><b>An empty slot.</b> A bare fist carries no attack-speed modifier at
+	 *       all, so the bar fills fastest and the recovery swing is shortest.</li>
+	 *   <li><b>A wind charge.</b> It carries no attack-speed modifier either, so
+	 *       it hands the swap exactly the same full bar a fist would — and unlike
+	 *       a spare tool it stays useful in the hand it is parked in, since it
+	 *       can be thrown mid-air to extend the same burst it is carrying.</li>
+	 *   <li><b>Anything that is not a weapon or tool</b>, which at least still
+	 *       fills faster than the spear's own bar.</li>
+	 * </ol>
 	 */
 	private int findCarrySlot(ClientPlayerEntity player, int excludeSlot) {
 		for (int slot = 0; slot < 9; slot++) {
 			if (slot == excludeSlot) continue;
 			if (player.getInventory().getStack(slot).isEmpty()) return slot;
 		}
-		// No free slot: fall back to something that at least is not another
-		// weapon, so the bar still fills faster than the spear's own.
+		for (int slot = 0; slot < 9; slot++) {
+			if (slot == excludeSlot) continue;
+			if (player.getInventory().getStack(slot).isOf(Items.WIND_CHARGE)) return slot;
+		}
 		for (int slot = 0; slot < 9; slot++) {
 			if (slot == excludeSlot) continue;
 			ItemStack stack = player.getInventory().getStack(slot);
