@@ -76,6 +76,8 @@ public final class AnchorMacroController {
 	private boolean selfInteracting;
 	private boolean bindStarted;
 	private boolean shieldDone;
+	/** One crater re-anchor per sequence: explode, refill the hole, explode, stop. */
+	private boolean rechained;
 	private int placeAttempts;
 	private int shieldAttempts;
 	private float silentYaw = Float.NaN;
@@ -282,7 +284,13 @@ public final class AnchorMacroController {
 		if (placeAttempts >= MAX_PLACE_ATTEMPTS) {
 			finish(client, "Anchor placement kept failing", true); return;
 		}
-		Vec3d point = facePoint(supportPos, supportFace);
+		// Clicking the empty cell itself (the crater) aims at its centre; clicking
+		// a real neighbour aims at the shared face. A face point on an air cell
+		// sits on the boundary with whatever is next to it, which is the wrong
+		// cell for the server to resolve the placement into.
+		Vec3d point = supportPos.equals(anchorPos)
+				? Vec3d.ofCenter(anchorPos)
+				: facePoint(supportPos, supportFace);
 		BlockHitResult hit = exactBlockHit(client, supportPos, supportFace, point);
 		if (hit == null) return;
 		int slot = findHotbarSlot(client, Items.RESPAWN_ANCHOR);
@@ -523,10 +531,31 @@ public final class AnchorMacroController {
 	private void waitDetonate(MinecraftClient client) {
 		if (!anchorPresent(client)) {
 			detonateConfirmStartedNanos = 0L;
-			{
-				phase = Phase.RESTORE;
+			if (config.anchorAirPlace && !rechained) {
+				// This is what air place is for. The blast leaves the cell empty
+				// and takes its neighbours with it, so the next anchor has no face
+				// to build against — but that empty cell is exactly where it
+				// belongs. Click the crater itself and go again, once, then stop.
+				//
+				// Only after the server has confirmed the removal: re-clicking a
+				// cell the server still thinks is occupied is what used to stack
+				// anchors on top of each other.
+				rechained = true;
+				supportPos = anchorPos;
+				supportFace = Direction.UP;
+				shieldDone = false;
+				shieldPos = null;
+				placeAttempts = 0;
+				shieldAttempts = 0;
+				aimReadyAge = -1;
+				phase = Phase.PLACE_ANCHOR;
+				renewDeadline();
 				schedule();
+				status = "Re-anchoring the crater";
+				return;
 			}
+			phase = Phase.RESTORE;
+			schedule();
 			return;
 		}
 		long now = System.nanoTime();
@@ -976,6 +1005,7 @@ public final class AnchorMacroController {
 		deadlineNanos = System.nanoTime() + SEQUENCE_TIMEOUT_NS;
 		nextActionNanos = System.nanoTime();
 		shieldDone = false;
+		rechained = false;
 		placeAttempts = 0;
 		shieldAttempts = 0;
 		silentYaw = Float.NaN;
@@ -1016,6 +1046,7 @@ public final class AnchorMacroController {
 		detonateConfirmStartedNanos = 0L;
 		aimReadyAge = -1;
 		shieldDone = false;
+		rechained = false;
 		placeAttempts = 0;
 		shieldAttempts = 0;
 		status = finalStatus;
