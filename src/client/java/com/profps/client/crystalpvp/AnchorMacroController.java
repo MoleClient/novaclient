@@ -193,7 +193,23 @@ public final class AnchorMacroController {
 
 	private void startOnBind(MinecraftClient client) {
 		HitResult fresh = freshHit(client);
-		if (!(fresh instanceof BlockHitResult hit)) { finish(client, "Aim at a block", true); return; }
+		if (!(fresh instanceof BlockHitResult hit)) {
+			// Nothing under the crosshair. That is the crater: the blast removed
+			// the anchor and everything around it, so there is no block left to
+			// aim at even though the cell is exactly where the next anchor
+			// belongs. Refusing here is what made air place look dead — the
+			// placement code below was never reached at all.
+			BlockPos airCell = airPlaceTarget(client);
+			if (airCell == null) { finish(client, "Aim at a block", true); return; }
+			releaseHeldUse(client);
+			previousSlot = client.player.getInventory().getSelectedSlot();
+			anchorPos = airCell;
+			supportPos = airCell;
+			supportFace = Direction.UP;
+			phase = Phase.PLACE_ANCHOR;
+			armDeadline();
+			return;
+		}
 		releaseHeldUse(client);
 		previousSlot = client.player.getInventory().getSelectedSlot();
 		BlockState clicked = client.world.getBlockState(hit.getBlockPos());
@@ -207,6 +223,28 @@ public final class AnchorMacroController {
 			phase = Phase.PLACE_ANCHOR;
 		}
 		armDeadline();
+	}
+
+	/**
+	 * The empty cell the crosshair is pointing into, for placing with nothing to
+	 * click. Walks outward and keeps the furthest cell still in reach, so aiming
+	 * into a crater targets the crater rather than the air just off your nose.
+	 */
+	private BlockPos airPlaceTarget(MinecraftClient client) {
+		if (!config.anchorAirPlace) return null;
+		ClientPlayerEntity player = client.player;
+		Vec3d eye = player.getEyePos();
+		Vec3d look = player.getRotationVec(1.0F);
+		BlockPos best = null;
+		for (double distance = 1.0D; distance <= 5.0D; distance += 0.25D) {
+			Vec3d point = eye.add(look.multiply(distance));
+			if (!withinReach(client, point)) break;
+			BlockPos cell = BlockPos.ofFloored(point);
+			if (!client.world.getBlockState(cell).isReplaceable()) break; // a real block; stop here
+			if (new net.minecraft.util.math.Box(cell).intersects(player.getBoundingBox())) continue;
+			best = cell.toImmutable();
+		}
+		return best;
 	}
 
 	private void placeAnchor(MinecraftClient client) {
@@ -571,15 +609,18 @@ public final class AnchorMacroController {
 	}
 
 	/**
-	 * Cover the macro can actually click, not merely cover that exists.
+	 * A cell to put cover in, between the player and the anchor.
 	 *
-	 * <p>The search used to accept any cell with a legal support in reach, but a
-	 * support being in reach says nothing about whether the line to it is clear.
-	 * The aim step then failed on a position the search had already committed to,
-	 * and retried the same doomed cell for several ticks before giving up — which
-	 * is the pause before the blast that felt like scanning. Proving the exact
-	 * click here means a position is either usable straight away or skipped for
-	 * the next candidate in the same pass, and the macro never waits on one.
+	 * <p>The old search gave up outright whenever the anchor was closer than 1.5
+	 * blocks, and then swept a line starting 0.8 blocks out. In an actual anchor
+	 * fight the anchor is placed right beside you, so the distance test alone
+	 * rejected essentially every real use — Safe Anchor looked enabled and never
+	 * placed a single glowstone. Cover at that range is not "somewhere along a
+	 * long ray" either; it is the cell you would slap a block into, right next to
+	 * your own body on the side the blast is coming from.
+	 *
+	 * <p>So the cells beside the player are tried first, at feet and head height,
+	 * and only then the line out toward the anchor for the longer-range case.
 	 */
 	private BlockPos findShieldPosition(MinecraftClient client) {
 		Vec3d from = new Vec3d(client.player.getX(), client.player.getY() + 0.5D, client.player.getZ());
@@ -587,10 +628,24 @@ public final class AnchorMacroController {
 		if (to == null) to = Vec3d.ofCenter(anchorPos);
 		Vec3d delta = to.subtract(from);
 		double distance = delta.length();
-		if (distance < 1.5D) return null;
+		if (distance < 0.1D) return null;
 		Vec3d direction = delta.normalize();
 		java.util.Set<BlockPos> checked = new java.util.HashSet<>();
-		for (double offset = 0.8D; offset < distance - 0.35D; offset += 0.25D) {
+
+		// Point-blank cover: the cell adjacent to the body facing the blast, at
+		// both the feet and the head, which is the only cover that exists when
+		// the anchor is a block or two away.
+		BlockPos feet = client.player.getBlockPos();
+		Direction toward = Direction.getFacing(direction.x, 0.0D, direction.z);
+		for (BlockPos pos : new BlockPos[]{feet.offset(toward), feet.offset(toward).up(),
+				feet.up().offset(toward)}) {
+			if (!checked.add(pos) || pos.equals(anchorPos)
+					|| !client.world.getBlockState(pos).isReplaceable()) continue;
+			if (new net.minecraft.util.math.Box(pos).intersects(client.player.getBoundingBox())) continue;
+			if (placementFor(client, pos, true) != null) return pos.toImmutable();
+		}
+
+		for (double offset = 0.6D; offset < Math.max(0.9D, distance - 0.35D); offset += 0.25D) {
 			BlockPos base = BlockPos.ofFloored(from.add(direction.multiply(offset)));
 			// Try the direct blast line first, then nearby supported cells. Head-height
 			// anchors often have no legal support at the exact sampled block even though
