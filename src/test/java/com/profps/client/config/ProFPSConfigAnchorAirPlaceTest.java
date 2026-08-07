@@ -23,7 +23,7 @@ final class ProFPSConfigAnchorAirPlaceTest {
 		// crosshair confirming the face, so a placement the server would have
 		// accepted was refused whenever the view happened to be blocked.
 		assertAll(
-				() -> assertEquals(96, config.configVersion),
+				() -> assertEquals(97, config.configVersion),
 				() -> assertTrue(config.anchorAirPlace));
 	}
 
@@ -35,7 +35,7 @@ final class ProFPSConfigAnchorAirPlaceTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(96, config.configVersion),
+				() -> assertEquals(97, config.configVersion),
 				() -> assertFalse(config.anchorAirPlace,
 						"a re-run must not re-stamp the user's own choice"));
 	}

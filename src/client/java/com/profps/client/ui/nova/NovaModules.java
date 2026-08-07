@@ -535,8 +535,6 @@ public final class NovaModules {
 				() -> cfg.anchorMacro, v -> cfg.anchorMacro = v,
 				new ChoiceSetting("Mode", new String[] {"On bind", "On place"}, () -> cfg.anchorMode, v -> cfg.anchorMode = v),
 				new BoolSetting("Detonate", () -> cfg.anchorDetonate, v -> cfg.anchorDetonate = v),
-				new BoolSetting("Double anchor", () -> cfg.anchorDouble, v -> cfg.anchorDouble = v)
-						.when(() -> cfg.anchorDetonate),
 				new BoolSetting("Air place", () -> cfg.anchorAirPlace, v -> cfg.anchorAirPlace = v),
 				new BoolSetting("Safe anchor", () -> cfg.anchorSafe, v -> cfg.anchorSafe = v),
 				new BoolSetting("Use item whitelist", () -> cfg.anchorExplosionItemWhitelist,

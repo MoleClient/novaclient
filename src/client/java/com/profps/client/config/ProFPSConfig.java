@@ -390,7 +390,6 @@ public final class ProFPSConfig {
 	public int anchorMode = 1;
 	/** When false, stop after charging and finish on a safe/whitelisted hotbar item. */
 	public boolean anchorDetonate = true;
-	public boolean anchorDouble = false;
 	public boolean anchorSafe = false;
 	public boolean anchorExplosionItemWhitelist = false;
 	public java.util.List<String> anchorExplosionItems = new java.util.ArrayList<>(java.util.List.of("minecraft:totem_of_undying"));
@@ -549,7 +548,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 96;
+	public int configVersion = 97;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1646,7 +1645,6 @@ public final class ProFPSConfig {
 			crystalManualPlaceObsidian = false;
 			crystalManualShowTargetBlock = true;
 			anchorMode = 1;
-			anchorDouble = false;
 			anchorSafe = false;
 			anchorExplosionItemWhitelist = false;
 			anchorAimAssist = true;
@@ -1802,6 +1800,14 @@ public final class ProFPSConfig {
 			// would have taken was refused whenever the view was blocked.
 			anchorAirPlace = true;
 			configVersion = 96;
+			changed = true;
+		}
+		if (configVersion < 97) {
+			// Double Anchor removed. Air place covers what it was for — putting a
+			// second anchor into the crater — without a separate mode, and it does
+			// it whether or not the first one was placed by the macro.
+			anchorAirPlace = true;
+			configVersion = 97;
 			changed = true;
 		}
 		return changed;

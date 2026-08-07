@@ -27,7 +27,17 @@ import net.minecraft.world.World;
 
 import java.security.SecureRandom;
 
-/** Vape-style AutoAnchor: On Bind / On Place, Double Anchor, Safe Anchor and item selection. */
+/**
+ * AutoAnchor: On Bind / On Place, Safe Anchor, air place, and item selection.
+ *
+ * <p>Air place is what lets the anchor go back into the crater. A detonation
+ * takes the surrounding blocks with it, so the cell it left behind usually has
+ * no neighbouring face to build against at all — and an ordinary placement needs
+ * one. Clicking the empty cell itself instead is what puts the next anchor
+ * exactly where the last one blew up: air is replaceable, so vanilla's placement
+ * context resolves to the clicked cell rather than offsetting off a face, and a
+ * respawn anchor requires no support of its own.
+ */
 public final class AnchorMacroController {
 	private static final long SEQUENCE_TIMEOUT_NS = 4_000_000_000L;
 	private static final long CONFIRM_GRACE_NS = 150_000_000L;
@@ -65,7 +75,6 @@ public final class AnchorMacroController {
 	private int aimReadyAge = -1;
 	private boolean selfInteracting;
 	private boolean bindStarted;
-	private boolean doubleDone;
 	private boolean shieldDone;
 	private int placeAttempts;
 	private int shieldAttempts;
@@ -476,23 +485,7 @@ public final class AnchorMacroController {
 	private void waitDetonate(MinecraftClient client) {
 		if (!anchorPresent(client)) {
 			detonateConfirmStartedNanos = 0L;
-			if (config.anchorDouble && !doubleDone) {
-				// Only prepare the second placement after the server-confirmed removal.
-				// Recompute support because the explosion may have changed nearby blocks.
-				// Same cell, support resolved by placeAnchor as the explosion's block updates land.
-				supportPos = null;
-				supportFace = null;
-				doubleDone = true;
-				shieldDone = false;
-				shieldPos = null;
-				placeAttempts = 0;
-				phase = Phase.PLACE_ANCHOR;
-				aimReadyAge = -1;
-				renewDeadline();
-				schedule();
-				status = "Placing second anchor";
-				return;
-			} else {
+			{
 				phase = Phase.RESTORE;
 				schedule();
 			}
@@ -608,11 +601,12 @@ public final class AnchorMacroController {
 				if (!checked.add(pos) || pos.equals(anchorPos)
 						|| !client.world.getBlockState(pos).isReplaceable()) continue;
 				if (new net.minecraft.util.math.Box(pos).intersects(client.player.getBoundingBox())) continue;
-				Placement candidate = placementFor(client, pos, true);
-				if (candidate == null) continue;
-				// The click has to be provable now, or this cell is not cover.
-				if (exactBlockHit(client, candidate.support(), candidate.face(), candidate.point()) == null) continue;
-				return pos.toImmutable();
+				// Deliberately only a reach/support test. Proving the exact click
+				// here would mean calling the aim path, which turns the player
+				// toward every candidate it tries — the search would spin you
+				// around and reset the aim it had already settled. An unusable
+				// cell is cheap now that the failure path retries in the same tick.
+				if (placementFor(client, pos, true) != null) return pos.toImmutable();
 			}
 		}
 		return null;
@@ -626,6 +620,20 @@ public final class AnchorMacroController {
 			Vec3d point = facePoint(support, face);
 			if (withinReach(client, point))
 				return new Placement(support.toImmutable(), face, point);
+		}
+		// Nothing borders the cell. That is the normal state of a crater the
+		// instant after a detonation — the blast took the neighbours with it —
+		// and it is exactly when the anchor needs to go back in the same hole.
+		// Clicking the empty cell itself is what does that: air is replaceable,
+		// so vanilla's placement context resolves to the clicked cell rather
+		// than offsetting off a face, and the anchor lands precisely there. A
+		// respawn anchor needs no support of its own, so nothing else is
+		// required for the placement to be legal.
+		if (config.anchorAirPlace && client.world.getBlockState(placeAt).isReplaceable()) {
+			Vec3d point = Vec3d.ofCenter(placeAt);
+			if (withinReach(client, point)) {
+				return new Placement(placeAt.toImmutable(), Direction.UP, point);
+			}
 		}
 		return null;
 	}
@@ -912,7 +920,6 @@ public final class AnchorMacroController {
 	private void armDeadline() {
 		deadlineNanos = System.nanoTime() + SEQUENCE_TIMEOUT_NS;
 		nextActionNanos = System.nanoTime();
-		doubleDone = false;
 		shieldDone = false;
 		placeAttempts = 0;
 		shieldAttempts = 0;
@@ -953,7 +960,6 @@ public final class AnchorMacroController {
 		chargeConfirmStartedNanos = 0L;
 		detonateConfirmStartedNanos = 0L;
 		aimReadyAge = -1;
-		doubleDone = false;
 		shieldDone = false;
 		placeAttempts = 0;
 		shieldAttempts = 0;
