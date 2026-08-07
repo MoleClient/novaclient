@@ -393,13 +393,6 @@ public final class ProFPSConfig {
 	public boolean anchorSafe = false;
 	public boolean anchorExplosionItemWhitelist = false;
 	public java.util.List<String> anchorExplosionItems = new java.util.ArrayList<>(java.util.List.of("minecraft:totem_of_undying"));
-	/**
-	 * Place from the geometry instead of waiting for the crosshair to confirm the
-	 * face. Reaches faces that are real and in range but not visible — behind an
-	 * entity, around a corner, not centred yet. Servers that validate line of
-	 * sight on placement will reject these, so turn it off there.
-	 */
-	public boolean anchorAirPlace = true;
 	public boolean anchorAimAssist = true;
 	public boolean anchorSilentAim = true;
 	public int anchorAimSpeedTenths = 120;
@@ -548,7 +541,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 97;
+	public int configVersion = 98;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1794,20 +1787,13 @@ public final class ProFPSConfig {
 			configVersion = 95;
 			changed = true;
 		}
-		if (configVersion < 96) {
-			// Anchor Macro had no air place at all: every click waited on the
-			// crosshair confirming the face, so a legal placement the server
-			// would have taken was refused whenever the view was blocked.
-			anchorAirPlace = true;
-			configVersion = 96;
-			changed = true;
-		}
-		if (configVersion < 97) {
-			// Double Anchor removed. Air place covers what it was for — putting a
-			// second anchor into the crater — without a separate mode, and it does
-			// it whether or not the first one was placed by the macro.
-			anchorAirPlace = true;
-			configVersion = 97;
+		if (configVersion < 98) {
+			// Anchor Macro settles back to one sequence: place, charge, detonate,
+			// stop. Double Anchor and the short-lived air place are both gone, so
+			// nothing chains a second anchor and nothing clicks an empty cell.
+			// Their fields are dropped rather than migrated — an absent field just
+			// reads as the default, so an old config needs no rewriting.
+			configVersion = 98;
 			changed = true;
 		}
 		return changed;

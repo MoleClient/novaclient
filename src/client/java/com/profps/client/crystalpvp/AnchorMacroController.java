@@ -27,17 +27,7 @@ import net.minecraft.world.World;
 
 import java.security.SecureRandom;
 
-/**
- * AutoAnchor: On Bind / On Place, Safe Anchor, air place, and item selection.
- *
- * <p>Air place is what lets the anchor go back into the crater. A detonation
- * takes the surrounding blocks with it, so the cell it left behind usually has
- * no neighbouring face to build against at all — and an ordinary placement needs
- * one. Clicking the empty cell itself instead is what puts the next anchor
- * exactly where the last one blew up: air is replaceable, so vanilla's placement
- * context resolves to the clicked cell rather than offsetting off a face, and a
- * respawn anchor requires no support of its own.
- */
+/** AutoAnchor: On Bind / On Place, Safe Anchor and item selection. */
 public final class AnchorMacroController {
 	private static final long SEQUENCE_TIMEOUT_NS = 4_000_000_000L;
 	private static final long CONFIRM_GRACE_NS = 150_000_000L;
@@ -76,8 +66,6 @@ public final class AnchorMacroController {
 	private boolean selfInteracting;
 	private boolean bindStarted;
 	private boolean shieldDone;
-	/** One crater re-anchor per sequence: explode, refill the hole, explode, stop. */
-	private boolean rechained;
 	private int placeAttempts;
 	private int shieldAttempts;
 	private float silentYaw = Float.NaN;
@@ -195,23 +183,7 @@ public final class AnchorMacroController {
 
 	private void startOnBind(MinecraftClient client) {
 		HitResult fresh = freshHit(client);
-		if (!(fresh instanceof BlockHitResult hit)) {
-			// Nothing under the crosshair. That is the crater: the blast removed
-			// the anchor and everything around it, so there is no block left to
-			// aim at even though the cell is exactly where the next anchor
-			// belongs. Refusing here is what made air place look dead — the
-			// placement code below was never reached at all.
-			BlockPos airCell = airPlaceTarget(client);
-			if (airCell == null) { finish(client, "Aim at a block", true); return; }
-			releaseHeldUse(client);
-			previousSlot = client.player.getInventory().getSelectedSlot();
-			anchorPos = airCell;
-			supportPos = airCell;
-			supportFace = Direction.UP;
-			phase = Phase.PLACE_ANCHOR;
-			armDeadline();
-			return;
-		}
+		if (!(fresh instanceof BlockHitResult hit)) { finish(client, "Aim at a block", true); return; }
 		releaseHeldUse(client);
 		previousSlot = client.player.getInventory().getSelectedSlot();
 		BlockState clicked = client.world.getBlockState(hit.getBlockPos());
@@ -225,28 +197,6 @@ public final class AnchorMacroController {
 			phase = Phase.PLACE_ANCHOR;
 		}
 		armDeadline();
-	}
-
-	/**
-	 * The empty cell the crosshair is pointing into, for placing with nothing to
-	 * click. Walks outward and keeps the furthest cell still in reach, so aiming
-	 * into a crater targets the crater rather than the air just off your nose.
-	 */
-	private BlockPos airPlaceTarget(MinecraftClient client) {
-		if (!config.anchorAirPlace) return null;
-		ClientPlayerEntity player = client.player;
-		Vec3d eye = player.getEyePos();
-		Vec3d look = player.getRotationVec(1.0F);
-		BlockPos best = null;
-		for (double distance = 1.0D; distance <= 5.0D; distance += 0.25D) {
-			Vec3d point = eye.add(look.multiply(distance));
-			if (!withinReach(client, point)) break;
-			BlockPos cell = BlockPos.ofFloored(point);
-			if (!client.world.getBlockState(cell).isReplaceable()) break; // a real block; stop here
-			if (new net.minecraft.util.math.Box(cell).intersects(player.getBoundingBox())) continue;
-			best = cell.toImmutable();
-		}
-		return best;
 	}
 
 	private void placeAnchor(MinecraftClient client) {
@@ -284,13 +234,7 @@ public final class AnchorMacroController {
 		if (placeAttempts >= MAX_PLACE_ATTEMPTS) {
 			finish(client, "Anchor placement kept failing", true); return;
 		}
-		// Clicking the empty cell itself (the crater) aims at its centre; clicking
-		// a real neighbour aims at the shared face. A face point on an air cell
-		// sits on the boundary with whatever is next to it, which is the wrong
-		// cell for the server to resolve the placement into.
-		Vec3d point = supportPos.equals(anchorPos)
-				? Vec3d.ofCenter(anchorPos)
-				: facePoint(supportPos, supportFace);
+		Vec3d point = facePoint(supportPos, supportFace);
 		BlockHitResult hit = exactBlockHit(client, supportPos, supportFace, point);
 		if (hit == null) return;
 		int slot = findHotbarSlot(client, Items.RESPAWN_ANCHOR);
@@ -531,29 +475,6 @@ public final class AnchorMacroController {
 	private void waitDetonate(MinecraftClient client) {
 		if (!anchorPresent(client)) {
 			detonateConfirmStartedNanos = 0L;
-			if (config.anchorAirPlace && !rechained) {
-				// This is what air place is for. The blast leaves the cell empty
-				// and takes its neighbours with it, so the next anchor has no face
-				// to build against — but that empty cell is exactly where it
-				// belongs. Click the crater itself and go again, once, then stop.
-				//
-				// Only after the server has confirmed the removal: re-clicking a
-				// cell the server still thinks is occupied is what used to stack
-				// anchors on top of each other.
-				rechained = true;
-				supportPos = anchorPos;
-				supportFace = Direction.UP;
-				shieldDone = false;
-				shieldPos = null;
-				placeAttempts = 0;
-				shieldAttempts = 0;
-				aimReadyAge = -1;
-				phase = Phase.PLACE_ANCHOR;
-				renewDeadline();
-				schedule();
-				status = "Re-anchoring the crater";
-				return;
-			}
 			phase = Phase.RESTORE;
 			schedule();
 			return;
@@ -594,16 +515,6 @@ public final class AnchorMacroController {
 
 	private BlockHitResult exactBlockHit(MinecraftClient client, BlockPos block, Direction face, Vec3d point) {
 		if (config.anchorAimAssist) turnToward(client.player, point);
-		if (config.anchorAirPlace) {
-			// Air place: build the click from the geometry rather than waiting for
-			// the crosshair to agree with it. The support and the face are real
-			// and in reach — the only thing being skipped is the client's own
-			// line-of-sight confirmation, which is what stopped placements the
-			// server would have accepted: a face behind an entity, around a
-			// corner, or simply not centred yet. It also drops the settle tick,
-			// because there is no longer an aim to settle.
-			return withinReach(client, point) ? new BlockHitResult(point, face, block.toImmutable(), false) : null;
-		}
 		HitResult fresh = config.anchorAimAssist && config.anchorSilentAim ? silentBlockHit(client) : freshHit(client);
 		if (!(fresh instanceof BlockHitResult hit) || !hit.getBlockPos().equals(block) || hit.getSide() != face
 				|| !withinReach(client, hit.getPos())) {
@@ -704,20 +615,6 @@ public final class AnchorMacroController {
 			Vec3d point = facePoint(support, face);
 			if (withinReach(client, point))
 				return new Placement(support.toImmutable(), face, point);
-		}
-		// Nothing borders the cell. That is the normal state of a crater the
-		// instant after a detonation — the blast took the neighbours with it —
-		// and it is exactly when the anchor needs to go back in the same hole.
-		// Clicking the empty cell itself is what does that: air is replaceable,
-		// so vanilla's placement context resolves to the clicked cell rather
-		// than offsetting off a face, and the anchor lands precisely there. A
-		// respawn anchor needs no support of its own, so nothing else is
-		// required for the placement to be legal.
-		if (config.anchorAirPlace && client.world.getBlockState(placeAt).isReplaceable()) {
-			Vec3d point = Vec3d.ofCenter(placeAt);
-			if (withinReach(client, point)) {
-				return new Placement(placeAt.toImmutable(), Direction.UP, point);
-			}
 		}
 		return null;
 	}
@@ -1005,7 +902,6 @@ public final class AnchorMacroController {
 		deadlineNanos = System.nanoTime() + SEQUENCE_TIMEOUT_NS;
 		nextActionNanos = System.nanoTime();
 		shieldDone = false;
-		rechained = false;
 		placeAttempts = 0;
 		shieldAttempts = 0;
 		silentYaw = Float.NaN;
@@ -1046,7 +942,6 @@ public final class AnchorMacroController {
 		detonateConfirmStartedNanos = 0L;
 		aimReadyAge = -1;
 		shieldDone = false;
-		rechained = false;
 		placeAttempts = 0;
 		shieldAttempts = 0;
 		status = finalStatus;

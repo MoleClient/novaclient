@@ -19,7 +19,7 @@ final class ProFPSConfigEspSplitTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(97, config.configVersion),
+				() -> assertEquals(98, config.configVersion),
 				// Both new overlays draw through terrain, so neither may switch
 				// itself on for somebody who never asked for it.
 				() -> assertFalse(config.donutStorageEsp),
