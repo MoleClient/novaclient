@@ -6,37 +6,37 @@ import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Version 94: Auto Lunge becomes Auto Lunge Swap, humanized by default. */
-final class ProFPSConfigLungeSwapTest {
+/** Version 96: Anchor Macro gains a real air place. */
+final class ProFPSConfigAnchorAirPlaceTest {
 	@Test
-	void migrationTurnsHumanizationOnByDefault() throws Exception {
+	void migrationTurnsAirPlaceOn() throws Exception {
 		ProFPSConfig config = new ProFPSConfig();
-		config.configVersion = 93;
-		config.lungeSwapHumanize = false;
+		config.configVersion = 95;
+		config.anchorAirPlace = false;
 
 		sanitize(config);
 
+		// There was no air place at all before this: every click waited on the
+		// crosshair confirming the face, so a placement the server would have
+		// accepted was refused whenever the view happened to be blocked.
 		assertAll(
 				() -> assertEquals(96, config.configVersion),
-				// A swap that fires on the same frame offset every time is a
-				// stronger tell than the swap itself, so the sampled delays are
-				// the default rather than an opt-in.
-				() -> assertTrue(config.lungeSwapHumanize),
-				() -> assertTrue(config.lungeSpamScaling));
+				() -> assertTrue(config.anchorAirPlace));
 	}
 
 	@Test
 	void aCurrentConfigKeepsAnIntentionalOptOut() throws Exception {
 		ProFPSConfig config = new ProFPSConfig();
-		config.lungeSwapHumanize = false;   // deliberately turned off after the migration
+		config.anchorAirPlace = false;   // turned off deliberately, e.g. on a strict server
 
 		sanitize(config);
 
 		assertAll(
 				() -> assertEquals(96, config.configVersion),
-				() -> org.junit.jupiter.api.Assertions.assertFalse(config.lungeSwapHumanize,
+				() -> assertFalse(config.anchorAirPlace,
 						"a re-run must not re-stamp the user's own choice"));
 	}
 

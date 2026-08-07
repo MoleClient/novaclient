@@ -394,6 +394,13 @@ public final class ProFPSConfig {
 	public boolean anchorSafe = false;
 	public boolean anchorExplosionItemWhitelist = false;
 	public java.util.List<String> anchorExplosionItems = new java.util.ArrayList<>(java.util.List.of("minecraft:totem_of_undying"));
+	/**
+	 * Place from the geometry instead of waiting for the crosshair to confirm the
+	 * face. Reaches faces that are real and in range but not visible — behind an
+	 * entity, around a corner, not centred yet. Servers that validate line of
+	 * sight on placement will reject these, so turn it off there.
+	 */
+	public boolean anchorAirPlace = true;
 	public boolean anchorAimAssist = true;
 	public boolean anchorSilentAim = true;
 	public int anchorAimSpeedTenths = 120;
@@ -542,7 +549,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 95;
+	public int configVersion = 96;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1787,6 +1794,14 @@ public final class ProFPSConfig {
 			autoSpearAutoSwitch = true;
 			autoSpearSilentAim = false;
 			configVersion = 95;
+			changed = true;
+		}
+		if (configVersion < 96) {
+			// Anchor Macro had no air place at all: every click waited on the
+			// crosshair confirming the face, so a legal placement the server
+			// would have taken was refused whenever the view was blocked.
+			anchorAirPlace = true;
+			configVersion = 96;
 			changed = true;
 		}
 		return changed;

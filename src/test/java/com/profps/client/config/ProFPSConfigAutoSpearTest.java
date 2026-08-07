@@ -19,7 +19,7 @@ final class ProFPSConfigAutoSpearTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(95, config.configVersion),
+				() -> assertEquals(96, config.configVersion),
 				() -> assertFalse(config.autoSpearEnabled, "a module that aims for you is opt-in"),
 				// Silent aim decouples the camera from the body; it must never be
 				// switched on for somebody who did not choose it.

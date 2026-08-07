@@ -185,6 +185,7 @@ public final class AnchorMacroController {
 	private void startOnBind(MinecraftClient client) {
 		HitResult fresh = freshHit(client);
 		if (!(fresh instanceof BlockHitResult hit)) { finish(client, "Aim at a block", true); return; }
+		releaseHeldUse(client);
 		previousSlot = client.player.getInventory().getSelectedSlot();
 		BlockState clicked = client.world.getBlockState(hit.getBlockPos());
 		if (clicked.isOf(Blocks.RESPAWN_ANCHOR)) {
@@ -295,23 +296,36 @@ public final class AnchorMacroController {
 		if (!anchorPresent(client)) { finish(client, "Anchor gone", true); return; }
 		if (shieldPos == null) shieldPos = findShieldPosition(client);
 		if (shieldPos == null) {
-			// Safe Anchor is best-effort like Vape: if no legal obstruction exists, continue
-			// instead of wedging the sequence permanently.
+			// Safe Anchor is best-effort: with no legal cover, go straight on to
+			// the charge in this tick rather than scheduling another one. The
+			// scheduled hop is what put a visible pause in front of every blast
+			// that could not be shielded.
 			shieldDone = true;
 			phase = Phase.CHARGE;
-			schedule();
+			charge(client);
 			return;
 		}
 		Placement placement = placementFor(client, shieldPos, true);
-		if (placement == null) { shieldDone = true; phase = Phase.CHARGE; schedule(); return; }
-		BlockHitResult hit = exactBlockHit(client, placement.support(), placement.face(), placement.point());
-		if (hit == null) {
-			// Cover that cannot actually be aimed at is simply skipped. Retrying until the sequence
-			// times out was the other way Safe Anchor stopped the macro from ever exploding.
-			if (shieldAttempts++ < MAX_SHIELD_TICKS) return;
+		if (placement == null) {
 			shieldDone = true;
 			phase = Phase.CHARGE;
-			schedule();
+			charge(client);
+			return;
+		}
+		BlockHitResult hit = exactBlockHit(client, placement.support(), placement.face(), placement.point());
+		if (hit == null) {
+			// The chosen cover stopped being clickable between choosing it and
+			// now. Look once for another and carry on in this same tick — cover
+			// is a bonus, and making the blast wait on it is worse than going
+			// without it.
+			shieldPos = shieldAttempts++ < MAX_SHIELD_TICKS ? findShieldPosition(client) : null;
+			if (shieldPos != null) {
+				placeShield(client);
+				return;
+			}
+			shieldDone = true;
+			phase = Phase.CHARGE;
+			charge(client);
 			return;
 		}
 		int slot = findHotbarSlot(client, Items.GLOWSTONE);
@@ -520,6 +534,16 @@ public final class AnchorMacroController {
 
 	private BlockHitResult exactBlockHit(MinecraftClient client, BlockPos block, Direction face, Vec3d point) {
 		if (config.anchorAimAssist) turnToward(client.player, point);
+		if (config.anchorAirPlace) {
+			// Air place: build the click from the geometry rather than waiting for
+			// the crosshair to agree with it. The support and the face are real
+			// and in reach — the only thing being skipped is the client's own
+			// line-of-sight confirmation, which is what stopped placements the
+			// server would have accepted: a face behind an entity, around a
+			// corner, or simply not centred yet. It also drops the settle tick,
+			// because there is no longer an aim to settle.
+			return withinReach(client, point) ? new BlockHitResult(point, face, block.toImmutable(), false) : null;
+		}
 		HitResult fresh = config.anchorAimAssist && config.anchorSilentAim ? silentBlockHit(client) : freshHit(client);
 		if (!(fresh instanceof BlockHitResult hit) || !hit.getBlockPos().equals(block) || hit.getSide() != face
 				|| !withinReach(client, hit.getPos())) {
@@ -553,6 +577,17 @@ public final class AnchorMacroController {
 		player.headYaw = player.getYaw();
 	}
 
+	/**
+	 * Cover the macro can actually click, not merely cover that exists.
+	 *
+	 * <p>The search used to accept any cell with a legal support in reach, but a
+	 * support being in reach says nothing about whether the line to it is clear.
+	 * The aim step then failed on a position the search had already committed to,
+	 * and retried the same doomed cell for several ticks before giving up — which
+	 * is the pause before the blast that felt like scanning. Proving the exact
+	 * click here means a position is either usable straight away or skipped for
+	 * the next candidate in the same pass, and the macro never waits on one.
+	 */
 	private BlockPos findShieldPosition(MinecraftClient client) {
 		Vec3d from = new Vec3d(client.player.getX(), client.player.getY() + 0.5D, client.player.getZ());
 		Vec3d to = bestAnchorAimPoint(client);
@@ -573,7 +608,11 @@ public final class AnchorMacroController {
 				if (!checked.add(pos) || pos.equals(anchorPos)
 						|| !client.world.getBlockState(pos).isReplaceable()) continue;
 				if (new net.minecraft.util.math.Box(pos).intersects(client.player.getBoundingBox())) continue;
-				if (placementFor(client, pos, true) != null) return pos.toImmutable();
+				Placement candidate = placementFor(client, pos, true);
+				if (candidate == null) continue;
+				// The click has to be provable now, or this cell is not cover.
+				if (exactBlockHit(client, candidate.support(), candidate.face(), candidate.point()) == null) continue;
+				return pos.toImmutable();
 			}
 		}
 		return null;
@@ -927,10 +966,28 @@ public final class AnchorMacroController {
 		return status;
 	}
 
+	/**
+	 * Deliberately does not refuse while an item is being used.
+	 *
+	 * <p>It used to, and that is why spamming right-click could stop the anchor
+	 * being placed at all: any held use — a shield, a totem, food, a spear charge,
+	 * or just the tail of your own click — made the whole macro stand down for as
+	 * long as it lasted. The macro places through {@code interactionManager}
+	 * directly, so an in-progress use never actually blocked the placement; it
+	 * only blocked us from trying. Any real use is ended once at the start of a
+	 * sequence instead, which is what a player does by letting go.
+	 */
 	private boolean allowed(MinecraftClient client) {
 		return client != null && client.player != null && client.world != null && client.interactionManager != null
 				&& client.currentScreen == null && client.isWindowFocused() && client.player.isAlive()
-				&& !client.player.isUsingItem() && client.interactionManager.getCurrentGameMode() != GameMode.SPECTATOR;
+				&& client.interactionManager.getCurrentGameMode() != GameMode.SPECTATOR;
+	}
+
+	/** Lets go of whatever the player is holding down so the first click is not swallowed. */
+	private void releaseHeldUse(MinecraftClient client) {
+		if (client.player != null && client.player.isUsingItem()) {
+			client.interactionManager.stopUsingItem(client.player);
+		}
 	}
 
 	private enum Phase {

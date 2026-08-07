@@ -537,6 +537,7 @@ public final class NovaModules {
 				new BoolSetting("Detonate", () -> cfg.anchorDetonate, v -> cfg.anchorDetonate = v),
 				new BoolSetting("Double anchor", () -> cfg.anchorDouble, v -> cfg.anchorDouble = v)
 						.when(() -> cfg.anchorDetonate),
+				new BoolSetting("Air place", () -> cfg.anchorAirPlace, v -> cfg.anchorAirPlace = v),
 				new BoolSetting("Safe anchor", () -> cfg.anchorSafe, v -> cfg.anchorSafe = v),
 				new BoolSetting("Use item whitelist", () -> cfg.anchorExplosionItemWhitelist,
 						v -> cfg.anchorExplosionItemWhitelist = v),
