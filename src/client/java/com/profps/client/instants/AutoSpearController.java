@@ -56,6 +56,10 @@ public final class AutoSpearController {
 	private static final int OVERRUN_GRACE_TICKS = 8;
 	/** Re-check for a lapsed use no more often than this. */
 	private static final int REARM_INTERVAL_TICKS = 2;
+	/** Nobody travels in a straight line for a second, so a longer lead is noise. */
+	private static final double MAX_LEAD_TICKS = 8.0D;
+	/** Ceiling on the vertical part of the lead, in blocks. */
+	private static final double MAX_VERTICAL_LEAD = 1.0D;
 
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
@@ -159,7 +163,10 @@ public final class AutoSpearController {
 	public boolean frame(MinecraftClient client) {
 		ownsRotation = false;
 		if (!allowed(client) || !engaged) {
-			SilentAimController.instance().release();
+			// Only ever release an engagement this module actually made. Silent
+			// aim is shared, so releasing unconditionally would hand back a
+			// camera the mace was still holding.
+			if (config.autoSpearSilentAim) SilentAimController.instance().release();
 			return false;
 		}
 		ClientPlayerEntity player = client.player;
@@ -224,12 +231,29 @@ public final class AutoSpearController {
 	/** Where to point so the hitboxes meet, accounting for both of you moving. */
 	private Vec3d interceptPoint(ClientPlayerEntity player, PlayerEntity target) {
 		Vec3d self = player.getEyePos();
-		Vec3d other = target.getBoundingBox().getCenter();
-		double distance = other.subtract(self).length();
+		Vec3d centre = target.getBoundingBox().getCenter();
+		Vec3d toTarget = centre.subtract(self);
+		double distance = toTarget.length();
+		if (distance < 1.0E-4D) return centre;
+
+		// Time to contact from the component of relative velocity along the line
+		// between us. Using the raw magnitude instead counts sideways drift as
+		// closing speed, which under-reads the time and inflates the lead.
 		Vec3d relative = player.getVelocity().subtract(target.getVelocity());
-		double closing = Math.max(MIN_CLOSING_SPEED, relative.length());
-		double ticks = MathHelper.clamp(distance / closing, 0.0D, 20.0D);
-		return other.add(target.getVelocity().multiply(ticks));
+		double closing = relative.dotProduct(toTarget.normalize());
+		if (closing < MIN_CLOSING_SPEED) return centre;
+		double ticks = MathHelper.clamp(distance / closing, 0.0D, MAX_LEAD_TICKS);
+
+		Vec3d velocity = target.getVelocity();
+		// Vertical velocity is the noisiest channel a remote player has: gravity
+		// oscillates it every tick, a jump spikes it to about +0.42, and a stale
+		// knockback packet can leave it large long after the motion stopped.
+		// Extrapolating that for a whole second was aiming several blocks over
+		// their head. Lead horizontally, where the motion is actually sustained,
+		// and allow only a token vertical correction.
+		double verticalLead = target.isOnGround() ? 0.0D
+				: MathHelper.clamp(velocity.y * ticks, -MAX_VERTICAL_LEAD, MAX_VERTICAL_LEAD);
+		return centre.add(velocity.x * ticks, verticalLead, velocity.z * ticks);
 	}
 
 	private record Approach(int ticksToContact, double distance) {}
@@ -307,7 +331,8 @@ public final class AutoSpearController {
 				select(client, client.player, returnSlot);
 			}
 		}
-		SilentAimController.instance().release();
+		// Same rule as in frame(): never hand back a camera this module did not take.
+		if (config.autoSpearSilentAim) SilentAimController.instance().release();
 		engaged = false;
 		holding = false;
 		returnSlot = -1;
