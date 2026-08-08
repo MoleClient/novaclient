@@ -675,7 +675,7 @@ public final class NovaModules {
 		m.put("autoclicker", new Module("autoclicker", "Auto Clicker", Items.GOLDEN_HOE,
 				() -> cfg.instantAutoClicker, v -> cfg.instantAutoClicker = v,
 				new BoolSetting("Hold to click", () -> cfg.instantClickHoldToClick, v -> cfg.instantClickHoldToClick = v),
-				new BoolSetting("Trigger mode", () -> cfg.instantClickTargetOnly, v -> cfg.instantClickTargetOnly = v),
+				new BoolSetting("Only on targets", () -> cfg.instantClickTargetOnly, v -> cfg.instantClickTargetOnly = v),
 				new IntSetting("CPS min", "", 1, 20, 1, () -> cfg.instantClickMinCps,
 						v -> cfg.instantClickMinCps = Math.min(v, cfg.instantClickCps)),
 				new IntSetting("CPS max", "", 1, 20, 1, () -> cfg.instantClickCps,

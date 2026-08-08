@@ -541,7 +541,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 98;
+	public int configVersion = 99;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1794,6 +1794,14 @@ public final class ProFPSConfig {
 			// Their fields are dropped rather than migrated — an absent field just
 			// reads as the default, so an old config needs no rewriting.
 			configVersion = 98;
+			changed = true;
+		}
+		if (configVersion < 99) {
+			// Auto Clicker clicks continuously once enabled, not only while the
+			// crosshair rests on somebody. "Only on targets" stays as the way to
+			// narrow it back down, but it is off unless it is asked for.
+			instantClickTargetOnly = false;
+			configVersion = 99;
 			changed = true;
 		}
 		return changed;

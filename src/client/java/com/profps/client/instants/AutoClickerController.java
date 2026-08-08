@@ -94,7 +94,15 @@ public final class AutoClickerController {
 		} else {
 			if (client.player.isUsingItem()
 					|| client.interactionManager.isBreakingBlock()) return;
-			if (client.crosshairTarget instanceof BlockHitResult) {
+			// The type check is the whole difference between "clicks constantly"
+			// and "clicks only on a player". A miss is reported as a
+			// BlockHitResult too — vanilla builds one through
+			// BlockHitResult.createMissed — so testing the class alone treats
+			// empty air as if the crosshair were resting on a block, takes the
+			// break-blocks path, and returns. That left an entity hit as the only
+			// case that ever reached a click.
+			if (client.crosshairTarget instanceof BlockHitResult blockHit
+					&& blockHit.getType() == HitResult.Type.BLOCK) {
 				long now = System.nanoTime();
 				if (blockHoverSinceNanos == 0L) blockHoverSinceNanos = now;
 				if (!config.instantClickBreakBlocks

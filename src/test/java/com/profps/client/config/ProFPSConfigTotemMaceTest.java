@@ -20,7 +20,7 @@ final class ProFPSConfigTotemMaceTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(98, config.configVersion),
+				() -> assertEquals(99, config.configVersion),
 				// The visible-inventory refill locks the player's own movement and
 				// clicks for as long as the screen is up, which is the worst moment
 				// to do it. Silent swap is the default the migration installs.
@@ -52,7 +52,7 @@ final class ProFPSConfigTotemMaceTest {
 		// Migrations are keyed on the version, so a config already at 92 must not
 		// have its settings re-stamped back to the defaults on every launch.
 		assertAll(
-				() -> assertEquals(98, config.configVersion),
+				() -> assertEquals(99, config.configVersion),
 				() -> assertTrue(config.totemOpenInventory, "a re-run must not undo the user's own choice"),
 				() -> assertTrue(config.maceSilentAim));
 	}
