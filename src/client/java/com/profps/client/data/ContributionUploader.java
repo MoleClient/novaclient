@@ -70,6 +70,49 @@ final class ContributionUploader {
 	private int sequence;
 	private int dropped;
 
+	// Observability. Telemetry that fails quietly is worse than none: without these the only
+	// symptom of a wrong endpoint is that nothing ever arrives, which looks identical to
+	// "nobody has played yet". Read out by /nova data.
+	private volatile int batchesSent;
+	private volatile int batchesFailed;
+	private volatile int rowsSent;
+	private volatile String lastStatus = "nothing sent yet";
+
+	int batchesSent() {
+		return batchesSent;
+	}
+
+	int batchesFailed() {
+		return batchesFailed;
+	}
+
+	int rowsSent() {
+		return rowsSent;
+	}
+
+	int queued() {
+		return outbound.size() + pending.size();
+	}
+
+	int dropped() {
+		return dropped;
+	}
+
+	String lastStatus() {
+		return lastStatus;
+	}
+
+	/** How many batches are sitting on disk waiting for the collector to come back. */
+	static int spooled() {
+		Path dir = spoolDir();
+		if (!Files.isDirectory(dir)) return 0;
+		try (Stream<Path> files = Files.list(dir)) {
+			return (int) files.filter(Files::isRegularFile).count();
+		} catch (IOException exception) {
+			return -1;
+		}
+	}
+
 	private volatile boolean running = true;
 	private Thread worker;
 
@@ -163,7 +206,7 @@ final class ContributionUploader {
 	 * The first line of every batch. It carries the schema so a reader never has to guess at
 	 * column order, and states plainly whether the location columns mean anything.
 	 */
-	private String header() {
+	String header() {
 		StringBuilder out = new StringBuilder(1024);
 		out.append("{\"t\":\"header\"");
 		out.append(",\"schema\":").append(DataContribution.SCHEMA);
@@ -199,9 +242,15 @@ final class ContributionUploader {
 	}
 
 	private static String version(String modId) {
-		return FabricLoader.getInstance().getModContainer(modId)
-				.map(container -> container.getMetadata().getVersion().getFriendlyString())
-				.orElse("unknown");
+		try {
+			return FabricLoader.getInstance().getModContainer(modId)
+					.map(container -> container.getMetadata().getVersion().getFriendlyString())
+					.orElse("unknown");
+		} catch (Throwable ignored) {
+			// No Fabric runtime — a unit test exercising the encoder. The version is a label on
+			// the batch, not something the format depends on.
+			return "unknown";
+		}
 	}
 
 	// ── Worker thread ────────────────────────────────────────────────────────────
@@ -224,8 +273,11 @@ final class ContributionUploader {
 				if (batch == null) continue;
 				byte[] body = compress(batch);
 				if (send(body)) {
+					batchesSent++;
+					rowsSent += batch.rows().size();
 					drainSpool();
 				} else {
+					batchesFailed++;
 					spool(body);
 				}
 			} catch (InterruptedException interrupted) {
@@ -237,7 +289,7 @@ final class ContributionUploader {
 		}
 	}
 
-	private static byte[] compress(Batch batch) throws IOException {
+	static byte[] compress(Batch batch) throws IOException {
 		ByteArrayOutputStream bytes = new ByteArrayOutputStream(64 * 1024);
 		try (GZIPOutputStream gzip = new GZIPOutputStream(bytes)) {
 			gzip.write(batch.header().getBytes(StandardCharsets.UTF_8));
@@ -262,8 +314,14 @@ final class ContributionUploader {
 					.POST(HttpRequest.BodyPublishers.ofByteArray(body))
 					.build();
 			HttpResponse<Void> response = http.send(request, HttpResponse.BodyHandlers.discarding());
-			return response.statusCode() >= 200 && response.statusCode() < 300;
+			boolean ok = response.statusCode() >= 200 && response.statusCode() < 300;
+			lastStatus = "HTTP " + response.statusCode();
+			return ok;
 		} catch (Exception exception) {
+			// The message, not the stack: this is read out in chat by /nova data, and
+			// "ConnectException: Connection refused" is exactly the useful part.
+			lastStatus = exception.getClass().getSimpleName()
+					+ (exception.getMessage() == null ? "" : ": " + exception.getMessage());
 			return false;
 		}
 	}
@@ -364,6 +422,6 @@ final class ContributionUploader {
 		return out.append('"').toString();
 	}
 
-	private record Batch(String header, List<String> rows) {
+	record Batch(String header, List<String> rows) {
 	}
 }

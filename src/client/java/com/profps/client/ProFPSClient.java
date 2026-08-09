@@ -366,6 +366,8 @@ public final class ProFPSClient implements ClientModInitializer {
 										.executes(context -> novaGoto.stop(MinecraftClient.getInstance()))))
 						.then(ClientCommandManager.literal("bases")
 								.executes(context -> listBases(MinecraftClient.getInstance(), chunkActivity)))
+						.then(ClientCommandManager.literal("data")
+								.executes(context -> reportDataContribution(MinecraftClient.getInstance())))
 		));
 
 		// Packet Utils: draw the in-GUI toolbar on every screen and reset its live state on
@@ -412,6 +414,24 @@ public final class ProFPSClient implements ClientModInitializer {
 							.withClickEvent(new net.minecraft.text.ClickEvent.CopyToClipboard(coords)))
 					.append(net.minecraft.text.Text.literal("  " + dist + "m · " + base.why())
 							.formatted(net.minecraft.util.Formatting.GRAY)), false);
+		}
+		return 1;
+	}
+
+	/** {@code /nova data} — whether the recorder is actually collecting and shipping anything. */
+	private static int reportDataContribution(MinecraftClient client) {
+		if (client.player == null) return 0;
+		com.profps.client.data.DataContribution recorder = com.profps.client.data.DataContribution.instance();
+		if (recorder == null) {
+			client.player.sendMessage(net.minecraft.text.Text.literal("Data contribution is not initialised.")
+					.formatted(net.minecraft.util.Formatting.RED), false);
+			return 1;
+		}
+		client.player.sendMessage(net.minecraft.text.Text.literal("Data contribution")
+				.formatted(net.minecraft.util.Formatting.AQUA), false);
+		for (String line : recorder.status()) {
+			client.player.sendMessage(net.minecraft.text.Text.literal("  " + line)
+					.formatted(net.minecraft.util.Formatting.GRAY), false);
 		}
 		return 1;
 	}

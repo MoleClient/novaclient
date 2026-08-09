@@ -115,6 +115,8 @@ public final class DataContribution {
 	private boolean lastBreaking;
 	private int lastHurtTime;
 	private int lastSlot = -1;
+	private long recorded;
+	private long skipped;
 	private final List<String> pendingEvents = new ArrayList<>(4);
 
 	private DataContribution(ProFPSConfig config) {
@@ -208,11 +210,13 @@ public final class DataContribution {
 		if (!gate.allows(activity.activity())) {
 			// Deliberately not recorded: a module is driving this. Advancing the deltas here is
 			// what keeps the next kept row honest instead of carrying a stale reference point.
+			skipped++;
 			lastPos = pos;
 			lastYaw = self.getYaw();
 			lastPitch = self.getPitch();
 			return;
 		}
+		recorded++;
 		uploader.submit(row(client, self, world, tracked, input, overridden, nowMs));
 	}
 
@@ -221,6 +225,27 @@ public final class DataContribution {
 		if (!config.dataContribution) return "Turned off";
 		String reason = gate.reason();
 		return reason == null ? null : reason + " is on";
+	}
+
+	/**
+	 * Live counters for {@code /nova data}. Telemetry that fails quietly is worse than none —
+	 * a wrong endpoint and an empty corpus look exactly the same from the outside — so the state
+	 * that decides whether anything is being collected is readable in-game.
+	 */
+	public List<String> status() {
+		String paused = pausedReason();
+		List<String> lines = new ArrayList<>();
+		lines.add(paused == null ? "Recording" : "Paused — " + paused);
+		lines.add("This session: " + recorded + " ticks kept, " + skipped + " skipped"
+				+ (skipped > 0 ? " (module active)" : ""));
+		lines.add("Activity: " + activity.activity() + " · segment " + activity.segment());
+		lines.add("Uploads: " + uploader.batchesSent() + " ok, " + uploader.batchesFailed()
+				+ " failed, " + uploader.rowsSent() + " rows sent");
+		lines.add("Queued: " + uploader.queued() + " · spooled: " + ContributionUploader.spooled()
+				+ " · dropped: " + uploader.dropped());
+		lines.add("Endpoint: " + config.dataContributionEndpoint + " → " + uploader.lastStatus());
+		lines.add("Location data: " + (config.dataContributionLocation ? "on" : "off"));
+		return lines;
 	}
 
 	private void beginSession(MinecraftClient client, ClientPlayerEntity self, ClientWorld world) {
@@ -475,7 +500,7 @@ public final class DataContribution {
 	 * out, so a field added to the name array but not written here fails loudly at the first tick
 	 * rather than silently shifting every later column in the corpus.
 	 */
-	private static final class RowWriter {
+	static final class RowWriter {
 		private final StringBuilder out = new StringBuilder(512);
 		private final ContributionUploader uploader;
 		private final int expected;

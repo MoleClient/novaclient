@@ -235,18 +235,10 @@ public final class NovaScreenV2 extends Screen {
 	// Clip rect applied to zones registered right now (w <= 0 = unclipped).
 	private float zcx, zcy, zcw, zch;
 
-	/**
-	 * The data-contribution notice, shown once. It rides above the wordmark as an overlay pinned to
-	 * the top of the viewport rather than taking a slot in the layout, so the grid underneath sits
-	 * exactly where it always does whether the card is up or not.
-	 */
-	private boolean contributionCard;
-
 	public NovaScreenV2(ProFPSConfig config, List<NovaModules.Category> categories) {
 		super(Text.literal("NovaClient"));
 		this.config = config;
 		this.categories = categories;
-		this.contributionCard = !config.dataContributionPromptSeen;
 	}
 
 	@Override
@@ -301,7 +293,6 @@ public final class NovaScreenV2 extends Screen {
 			matrices.translate(0.0F, (1.0F - open) * 8.0F);
 
 			drawWordmark(ctx, mx, my);
-			drawContributionCard(ctx, mx, my);
 			for (int i = 0; i < categories.size(); i++) {
 				drawColumn(ctx, mx, my, i);
 			}
@@ -425,61 +416,6 @@ public final class NovaScreenV2 extends Screen {
 			else closeSettings();
 			sound(settingsOpen ? 1.14F : 0.9F);
 		});
-	}
-
-	/**
-	 * The one-time data-contribution notice. Pinned to the top of the viewport rather than
-	 * inserted above the wordmark, because taking a layout slot would push the whole grid down on
-	 * first open and then jump it back up forever after. It states what leaves the machine in the
-	 * card itself — a toggle nobody read is not a choice — and dismissing it is what marks it seen.
-	 */
-	private void drawContributionCard(DrawContext ctx, float mx, float my) {
-		if (!contributionCard) return;
-		float h = 26.0F;
-		float w = Math.min(vw - 24.0F, Math.max(360.0F, gridWidth()));
-		float x = (vw - w) / 2.0F;
-		float y = 4.0F;
-		boolean on = config.dataContribution;
-		float en = anim("contrib_on", on ? 1.0F : 0.0F, 12.0F);
-
-		NovaRender.roundRectGradient(ctx, x, y, w, h, 8, 0xFF1B1E24, 0xFF15171C);
-		NovaRender.roundRectBorder(ctx, x, y, w, h, 8, NovaRender.lerpColor(en, ROW_LINE, accentA(0x66)));
-
-		textScaled(ctx, bold("Make NovaClient Better"), x + 12.0F, y + 9.5F, TEXT, T_SET);
-		float titleW = textRenderer.getWidth(bold("Make NovaClient Better")) * T_SET;
-
-		float pillW = 24.0F;
-		float closeW = 14.0F;
-		float right = x + w - 10.0F;
-		float descX = x + 12.0F + titleW + 12.0F;
-		float descW = right - closeW - 8.0F - pillW - 12.0F - descX;
-		if (descW > 40.0F) {
-			textScaled(ctx, regular(trimToWidth("Sends anonymous tick-by-tick movement to train the "
-					+ "movement AI. No coordinates, no account, no chat.", descW / T_VAL)),
-					descX, y + 10.0F, FAINT, T_VAL);
-		}
-
-		float pillX = right - closeW - 8.0F - pillW;
-		drawTogglePill(ctx, en, pillX, y + (h - 12.0F) / 2.0F, pillW, 12.0F, accent());
-		zone(pillX - 6.0F, y, pillW + 12.0F, h, click -> {
-			config.dataContribution = !config.dataContribution;
-			config.save();
-			sound(config.dataContribution ? 1.15F : 0.85F);
-		});
-
-		boolean closeHover = inside(mx, my, right - closeW, y + (h - closeW) / 2.0F, closeW, closeW);
-		textScaled(ctx, bold("✕"), right - closeW + 3.5F, y + h / 2.0F - 3.0F,
-				closeHover ? TEXT : GHOST, T_VAL);
-		zone(right - closeW, y + (h - closeW) / 2.0F, closeW, closeW, click -> dismissContributionCard());
-	}
-
-	/** Seen once is seen for good; after this the switch lives only on the Data settings page. */
-	private void dismissContributionCard() {
-		if (!contributionCard) return;
-		contributionCard = false;
-		config.dataContributionPromptSeen = true;
-		config.save();
-		sound(0.95F);
 	}
 
 	private float gridWidth() {
@@ -1542,10 +1478,10 @@ public final class NovaScreenV2 extends Screen {
 	}
 
 	/**
-	 * Where the contribution switches live once the first-open card is gone. The page spells out
-	 * what actually leaves the machine rather than leaning on the word "anonymous", and keeps
-	 * location data on its own switch: the movement corpus does not want world coordinates, and
-	 * they are the one field that could tell somebody where a contributor's base is.
+	 * The only place the contribution switches live. Both ship on, so this page is the whole of
+	 * the disclosure — it spells out what actually leaves the machine rather than leaning on the
+	 * word "anonymous", and keeps location on its own switch since that is the part with a real
+	 * cost to the contributor.
 	 */
 	private float drawDataPage(DrawContext ctx, float mx, float my, float x, float y, float w, boolean live) {
 		y = sLabel(ctx, "CONTRIBUTE", x, y);
@@ -1564,22 +1500,22 @@ public final class NovaScreenV2 extends Screen {
 			y += 10.0F;
 		}
 		y += 4.0F;
-		for (String line : wrapText("What never goes: your username or UUID, chat, inventory contents, "
-				+ "and — unless you turn it on below — world coordinates and the server you are on.",
-				(int) (w / T_VAL))) {
+		for (String line : wrapText("What never goes: your username or UUID, chat, and inventory "
+				+ "contents. Nothing is recorded at all while a NovaClient module is running — only "
+				+ "real, unassisted play.", (int) (w / T_VAL))) {
 			textScaled(ctx, regular(line), x + 1.0F, y, FAINT, T_VAL);
 			y += 10.0F;
 		}
 
 		y = sLabel(ctx, "LOCATION", x, y + 8.0F);
 		y = sToggle(ctx, mx, my, "Include Location Data",
-				"Real coordinates and server address. Off unless you want map-aware models.",
+				"Your real coordinates and the server address, on top of the above.",
 				config.dataContributionLocation,
 				() -> config.dataContributionLocation = !config.dataContributionLocation, x, y, w, live);
 		y += 2.0F;
-		for (String line : wrapText("Leave this off for movement training — a model learns motion "
-				+ "better from relative positions anyway. Turning it on means the coordinates you "
-				+ "play at, including your base, are in the uploads.", (int) (w / T_VAL))) {
+		for (String line : wrapText("This one says where you play, base included. Turn it off and "
+				+ "you still contribute everything the movement model actually learns from — "
+				+ "positions stay relative to wherever the session began.", (int) (w / T_VAL))) {
 			textScaled(ctx, regular(line), x + 1.0F, y, GHOST, T_VAL);
 			y += 10.0F;
 		}
@@ -2513,9 +2449,6 @@ public final class NovaScreenV2 extends Screen {
 
 	@Override
 	public void close() {
-		// Closing the screen counts as having seen the notice, whether it was dismissed with the
-		// ✕ or just read and walked away from.
-		dismissContributionCard();
 		config.save();
 		if (client != null) {
 			client.setScreen(client.world == null ? new net.minecraft.client.gui.screen.TitleScreen() : null);

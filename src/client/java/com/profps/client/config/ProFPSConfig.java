@@ -555,14 +555,12 @@ public final class ProFPSConfig {
 	// in a card above the wordmark, and after that it lives only on the Data page.
 	public boolean dataContribution = true;
 	/**
-	 * Absolute world coordinates, dimension and server address. Deliberately OFF by default
-	 * and kept separate from the master switch: the model wants translation-invariant motion,
-	 * so world coordinates buy nothing for training while being the one field that could
-	 * expose where somebody's base is. Only turn this on for map-aware work.
+	 * Absolute world coordinates, dimension and server address, on top of the relative motion the
+	 * master switch already sends. Kept as its own switch because it is the one field with a real
+	 * cost to the contributor — it says where they play, base included — and because a movement
+	 * model does not want it: motion generalises, map positions do not.
 	 */
-	public boolean dataContributionLocation = false;
-	/** Set once the first-open card has been dismissed, so it never shows again. */
-	public boolean dataContributionPromptSeen = false;
+	public boolean dataContributionLocation = true;
 	/** Ingest host. A hostname, never a bare IP — it has to terminate real TLS. */
 	public String dataContributionEndpoint = "https://ingest.novaclient.app";
 	/**
@@ -573,6 +571,13 @@ public final class ProFPSConfig {
 	public String dataContributionSalt = "";
 
 	public int configVersion = 103;
+
+	/** Plain HTTP is tolerated only to your own machine, where there is nothing to intercept. */
+	static boolean isLoopback(String endpoint) {
+		return endpoint.startsWith("http://127.0.0.1")
+				|| endpoint.startsWith("http://localhost")
+				|| endpoint.startsWith("http://[::1]");
+	}
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1854,17 +1859,16 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 103) {
-			// Data contribution arrives on by default, but the prompt flag stays false so
-			// every existing install is told about it the next time the GUI opens rather
-			// than being enrolled silently. Location data stays off; it is opt-in only.
-			dataContributionPromptSeen = false;
+			// Data contribution arrives on, both switches, changeable on the Data page.
 			configVersion = 103;
 			changed = true;
 		}
 
-		// An endpoint that is not plain HTTPS is refused rather than repaired: a hand-edited
-		// http:// or bare-IP host would ship the recordings unencrypted or unauthenticated.
-		if (dataContributionEndpoint == null || !dataContributionEndpoint.startsWith("https://")) {
+		// HTTPS or loopback, nothing else. A hand-edited http:// host would ship the recordings
+		// in the clear; loopback is exempt because those bytes never leave the machine, and
+		// without the exemption there is no way to point a build at a local collector to test it.
+		if (dataContributionEndpoint == null
+				|| !(dataContributionEndpoint.startsWith("https://") || isLoopback(dataContributionEndpoint))) {
 			dataContributionEndpoint = new ProFPSConfig().dataContributionEndpoint;
 			changed = true;
 		}
@@ -1873,6 +1877,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (dataContributionSalt == null || dataContributionSalt.length() < 32) {
+			// Rolled once per install, then left alone.
 			dataContributionSalt = java.util.UUID.randomUUID().toString().replace("-", "")
 					+ java.util.UUID.randomUUID().toString().replace("-", "");
 			changed = true;
