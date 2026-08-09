@@ -31,7 +31,8 @@ public final class CombatModeRuntime {
 		AUTO_ANCHOR,
 		AUTO_LUNGE,
 		ANTI_FIREBALL,
-		KB_DISPLACE
+		KB_DISPLACE,
+		AUTO_TOTEM
 	}
 
 	/** How long a published Breach Swap setup keeps the hotbar (a handful of client ticks). */

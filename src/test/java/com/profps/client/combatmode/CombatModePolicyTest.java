@@ -18,7 +18,7 @@ class CombatModePolicyTest {
 		ProFPSConfig config = new ProFPSConfig();
 
 		assertAll(
-					() -> assertEquals(99, config.configVersion),
+					() -> assertEquals(100, config.configVersion),
 				() -> assertEquals(CombatMode.OFF, CombatModePolicy.mode(config)),
 				() -> assertEquals(CombatTier.HT4, CombatTier.fromIndex(config.swordModeTier)),
 				() -> assertEquals(CombatTier.LT4, CombatTier.fromIndex(config.axeModeTier)),

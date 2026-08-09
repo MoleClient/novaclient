@@ -9,22 +9,24 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Version 92: Auto Totem silent-by-default, silent aim, lunge spam scaling, crit sprint release. */
+/** Auto Totem, silent aim, lunge spam scaling and crit sprint release defaults. */
 final class ProFPSConfigTotemMaceTest {
 	@Test
-	void migrationMovesAutoTotemOffTheInventoryScreen() throws Exception {
+	void inventoryIsKeptOnlyAsAFallbackForATotemOutsideTheHotbar() throws Exception {
 		ProFPSConfig config = new ProFPSConfig();
 		config.configVersion = 91;
-		config.totemOpenInventory = true;
+		config.totemOpenInventory = false;
 
 		sanitize(config);
 
+		// The refill itself no longer uses a screen: a hotbar totem goes to the
+		// offhand with the swap-hands key, which needs none. This flag now only
+		// governs whether a totem stored deeper than the hotbar may be staged
+		// through a real inventory, so leaving it on costs nothing in the normal
+		// case and is the only way to recover in the abnormal one.
 		assertAll(
-				() -> assertEquals(99, config.configVersion),
-				// The visible-inventory refill locks the player's own movement and
-				// clicks for as long as the screen is up, which is the worst moment
-				// to do it. Silent swap is the default the migration installs.
-				() -> assertFalse(config.totemOpenInventory),
+				() -> assertEquals(100, config.configVersion),
+				() -> assertTrue(config.totemOpenInventory),
 				() -> assertTrue(config.lungeSpamScaling),
 				() -> assertTrue(config.hitCritSprintRelease));
 	}
@@ -52,7 +54,7 @@ final class ProFPSConfigTotemMaceTest {
 		// Migrations are keyed on the version, so a config already at 92 must not
 		// have its settings re-stamped back to the defaults on every launch.
 		assertAll(
-				() -> assertEquals(99, config.configVersion),
+				() -> assertEquals(100, config.configVersion),
 				() -> assertTrue(config.totemOpenInventory, "a re-run must not undo the user's own choice"),
 				() -> assertTrue(config.maceSilentAim));
 	}
