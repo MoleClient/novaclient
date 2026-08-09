@@ -295,16 +295,25 @@ public final class ProFPSClient implements ClientModInitializer {
 					schematicBuild.frame(mc);
 				}
 				boolean schematicOwnsRotation = schematicBuild.ownsRotation();
+				// The pot flick has to own the view outright for the ~400ms it runs.
+				// It used to be sandwiched between the two aim blocks below, so an
+				// aim assist dragged the head back toward the opponent on the very
+				// same frames the flick was turning away — and since the throw was
+				// released on the flick's own clock rather than on where the view
+				// had actually ended up, the pot went out at whatever half-turned
+				// angle that fight happened to leave. Hence "sometimes down,
+				// sometimes straight at them".
+				boolean potOwnsRotation = autoPot.ownsRotation();
+				if (!schematicOwnsRotation) {
+					autoPot.frame(mc);
+					tunnel.frame(mc);
+				}
 				boolean modeRotationBlocked = pearlOwnsRotation || expandedOwnsRotation || creeperOwnsRotation
-						|| spearOwnsRotation || schematicOwnsRotation;
+						|| spearOwnsRotation || schematicOwnsRotation || potOwnsRotation;
 				if (!modeRotationBlocked) {
 					aimImprovements.frame(mc);
 					strafeImprovements.frame(mc);
 					hitImprovements.frame(mc);
-				}
-				if (!schematicOwnsRotation) {
-					autoPot.frame(mc);
-					tunnel.frame(mc);
 				}
 				if (!modeRotationBlocked) {
 					autoMace.frame(mc);
