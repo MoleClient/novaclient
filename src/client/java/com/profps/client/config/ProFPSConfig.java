@@ -562,7 +562,7 @@ public final class ProFPSConfig {
 	 */
 	public boolean dataContributionLocation = true;
 	/** Ingest host. A hostname, never a bare IP — it has to terminate real TLS. */
-	public String dataContributionEndpoint = "https://ingest.novaclient.app";
+	public String dataContributionEndpoint = "https://ingest.goatmath.org";
 	/**
 	 * Random per-install salt. The uploaded pseudonym is a hash of the account UUID and this
 	 * salt, so recordings from one install group together for train/test splits without the
@@ -570,7 +570,7 @@ public final class ProFPSConfig {
 	 */
 	public String dataContributionSalt = "";
 
-	public int configVersion = 103;
+	public int configVersion = 104;
 
 	/** Plain HTTP is tolerated only to your own machine, where there is nothing to intercept. */
 	static boolean isLoopback(String endpoint) {
@@ -1861,6 +1861,14 @@ public final class ProFPSConfig {
 		if (configVersion < 103) {
 			// Data contribution arrives on, both switches, changeable on the Data page.
 			configVersion = 103;
+			changed = true;
+		}
+		if (configVersion < 104) {
+			// The collector moved off its placeholder hostname. load() keeps whatever is already
+			// in profps.json, so without this every install that ran an earlier build stays
+			// pinned to an endpoint that does not exist and silently never uploads.
+			dataContributionEndpoint = new ProFPSConfig().dataContributionEndpoint;
+			configVersion = 104;
 			changed = true;
 		}
 

@@ -116,6 +116,11 @@ class Handler(BaseHTTPRequestHandler):
         if payload:
             self.wfile.write(payload)
 
+    def do_HEAD(self) -> None:  # noqa: N802 - stdlib signature
+        # Without this the base handler answers 501, which makes `curl -I` on the health
+        # endpoint look like a broken tunnel rather than a working one.
+        self._reply(200 if self.path == "/healthz" else 404)
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib signature
         if self.path != "/healthz":
             self._reply(404)

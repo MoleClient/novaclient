@@ -131,12 +131,39 @@ else
 fi
 
 step "5/6  Tunnel service"
+CF_PLIST="$AGENTS/com.cloudflare.cloudflared.plist"
 if (( DRY_RUN )); then
-	printf '   would run: cloudflared service install\n'
+	printf '   would run: cloudflared service install, then patch its plist to "tunnel run"\n'
 else
-	cloudflared service install 2>/dev/null || ok "already installed"
-	sleep 6
-	ok "installed (user LaunchAgent — runs while you are logged in)"
+	cloudflared service install 2>/dev/null || true
+	[[ -f "$CF_PLIST" ]] || die "cloudflared service install did not write $CF_PLIST"
+
+	# The installer writes a plist whose ProgramArguments is just the binary. With a named
+	# tunnel in config.yml that is not enough: bare cloudflared prints "Use `cloudflared
+	# tunnel run`" and exits 1, and KeepAlive spins it forever. Rewrite the args so the
+	# service actually runs the tunnel.
+	launchctl unload "$CF_PLIST" 2>/dev/null || true
+	/usr/libexec/PlistBuddy -c "Delete :ProgramArguments" "$CF_PLIST" 2>/dev/null || true
+	/usr/libexec/PlistBuddy \
+		-c "Add :ProgramArguments array" \
+		-c "Add :ProgramArguments:0 string $(command -v cloudflared)" \
+		-c "Add :ProgramArguments:1 string --config" \
+		-c "Add :ProgramArguments:2 string $CF_DIR/config.yml" \
+		-c "Add :ProgramArguments:3 string tunnel" \
+		-c "Add :ProgramArguments:4 string run" \
+		"$CF_PLIST" >/dev/null
+	launchctl load "$CF_PLIST"
+	ok "installed and patched to 'tunnel run' (user LaunchAgent — runs while you are logged in)"
+
+	printf '   waiting for the tunnel to register'
+	for _ in $(seq 1 20); do
+		cloudflared tunnel info "$TUNNEL_NAME" 2>/dev/null | grep -q "CONNECTOR ID" && break
+		printf '.'; sleep 3
+	done
+	printf '\n'
+	cloudflared tunnel info "$TUNNEL_NAME" 2>/dev/null | grep -q "CONNECTOR ID" \
+		|| die "the tunnel never connected — see ~/Library/Logs/com.cloudflare.cloudflared.err.log"
+	ok "connected to the Cloudflare edge"
 fi
 
 # ── verify ───────────────────────────────────────────────────────────────────
@@ -161,24 +188,29 @@ curl -fsS --max-time 10 "https://$HOSTNAME_ARG/healthz" >/dev/null 2>&1 \
 ok "https://$HOSTNAME_ARG/healthz answered"
 
 # A real batch through the public hostname — the only check that exercises every hop.
+# The batch is built by python but sent by curl: a Homebrew/framework python often has no CA
+# bundle and fails TLS verification against a perfectly good certificate, and that failure looks
+# exactly like a broken tunnel. curl uses the system trust store.
 BEFORE="$(curl -fsS "http://127.0.0.1:$PORT/healthz" | python3 -c 'import sys,json;print(json.load(sys.stdin)["batches"])')"
-python3 - "$HOSTNAME_ARG" "$TOKEN" <<'PY'
-import gzip, io, json, sys, urllib.request, uuid
-host, token = sys.argv[1], sys.argv[2]
+CHECK_GZ="$(mktemp -t nova-check).gz"
+# The pseudonym must be hex — the collector validates it before it goes near a file path.
+python3 - "$CHECK_GZ" <<'PY'
+import gzip, io, json, sys, uuid
 header = {"t": "header", "schema": 2, "seq": 0, "session": str(uuid.uuid4()),
-          "pseudonym": "00tunnelcheck00", "location": False,
+          "pseudonym": "deadbeefdeadbeef", "location": False,
           "fields": ["tick"], "entity_fields": [], "dict": []}
 buf = io.BytesIO()
 with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
     gz.write((json.dumps(header) + "\n").encode())
     gz.write(b'{"n":0,"f":[0]}\n')
-req = urllib.request.Request(f"https://{host}/v1/ticks", data=buf.getvalue(), method="POST",
-                             headers={"Content-Type": "application/x-ndjson",
-                                      "Content-Encoding": "gzip",
-                                      "Authorization": f"Bearer {token}"})
-with urllib.request.urlopen(req, timeout=20) as r:
-    print(f"   test batch through the public hostname -> HTTP {r.status}")
+open(sys.argv[1], "wb").write(buf.getvalue())
 PY
+CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 -X POST "https://$HOSTNAME_ARG/v1/ticks" \
+	-H 'Content-Type: application/x-ndjson' -H 'Content-Encoding: gzip' \
+	-H "Authorization: Bearer $TOKEN" --data-binary "@$CHECK_GZ")"
+rm -f "$CHECK_GZ"
+printf '   test batch through the public hostname -> HTTP %s\n' "$CODE"
+[[ "$CODE" == "204" ]] || die "expected 204, got $CODE (401 = token mismatch between jar and collector)"
 AFTER="$(curl -fsS "http://127.0.0.1:$PORT/healthz" | python3 -c 'import sys,json;print(json.load(sys.stdin)["batches"])')"
 [[ "$AFTER" -gt "$BEFORE" ]] \
 	|| die "the POST was accepted but the collector's batch count did not move ($BEFORE -> $AFTER)"
@@ -193,5 +225,5 @@ Still to do by hand:
      plus a configVersion migration, or existing installs keep the old one — see SETUP.md
   2. Change CLIENT_TOKEN in ContributionUploader.java before publishing a build
   3. Cloudflare dashboard: rate-limit /v1/ticks and block non-POST — see SETUP.md
-  4. Delete the tunnel-check session: rm -rf $DATA_ROOT/*/00tunnelcheck00
+  4. Delete the tunnel-check session: rm -rf $DATA_ROOT/*/deadbeefdeadbeef
 EOF
