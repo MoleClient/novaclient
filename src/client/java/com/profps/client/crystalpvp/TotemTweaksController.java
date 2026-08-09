@@ -40,10 +40,14 @@ import java.security.SecureRandom;
  * can be in, and that contradiction — not the speed — is what an anti-cheat has
  * to work with. Swapping hands introduces no such contradiction at any speed.
  *
- * <p>The inventory path is kept only for a totem that is not in the hotbar, where
- * no legal alternative exists. It first stops the sprint, because that is what
- * opening a screen does to a real player, and it takes the shared combat action
- * claim so it can never emit a slot change in the same tick as another module.
+ * <p>A totem stored deeper than the hotbar has no legal alternative, so that case
+ * still opens a real inventory — but only to stage one totem up into the hotbar,
+ * after which every refill is the swap again. There is no setting for it: with a
+ * hotbar totem the screen is never reached, and without one the only other
+ * outcome is doing nothing at all, which is not a choice worth offering. It stops
+ * the sprint first, because that is what opening a screen does to a real player,
+ * and it takes the shared combat action claim so it can never emit a slot change
+ * in the same tick as another module.
  *
  * <p>The swap is not predicted locally — vanilla does not predict it either, the
  * server performs it and syncs back — so the offhand only shows the totem a
@@ -135,10 +139,6 @@ public final class TotemTweaksController {
 				swapHands(client, hotbar, now);
 				return;
 			}
-			if (!config.totemOpenInventory) {
-				status = "Totem not in hotbar";
-				return;
-			}
 			if (attempts >= MAX_ATTEMPTS_PER_EPISODE) {
 				nextActionNanos = now + BACKOFF_NANOS;
 				attempts = 0;
@@ -158,7 +158,7 @@ public final class TotemTweaksController {
 			status = "Ready";
 			return;
 		}
-		if (!config.totemOpenInventory || findTotem(client, 9, 36) < 0) {
+		if (findTotem(client, 9, 36) < 0) {
 			status = "Ready";
 			return;
 		}

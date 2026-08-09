@@ -405,7 +405,6 @@ public final class ProFPSConfig {
 	 * swap-hands key, which needs no screen; a slot click implies an open inventory,
 	 * and an open inventory implies a player who is not sprinting or swinging.
 	 */
-	public boolean totemOpenInventory = true; // open the inventory GUI to refill (vs. a silent offhand swap)
 	public boolean autoCrystal = false;
 	/** Crystal Aura modes: 0 Auto, 1 Manual. */
 	public int crystalAuraMode = 0;
@@ -546,7 +545,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 100;
+	public int configVersion = 101;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1364,7 +1363,6 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 56) {
-			totemOpenInventory = true; // Auto Totem opens the inventory to refill, on by default
 			configVersion = 56;
 			changed = true;
 		}
@@ -1740,7 +1738,6 @@ public final class ProFPSConfig {
 			// clicks for as long as the screen is up, which is the worst thing
 			// to do in the fight that just cost a totem. The GUI mode is still
 			// available for anyone who prefers to see the refill happen.
-			totemOpenInventory = false;
 			maceSilentAim = false;
 			lungeSpamScaling = true;
 			hitCritSprintRelease = true;
@@ -1813,8 +1810,14 @@ public final class ProFPSConfig {
 			// Auto Totem refills with the swap-hands key now, so it needs no screen
 			// at all when the totem is in the hotbar. The inventory route survives
 			// only as a fallback for a totem stored deeper than that.
-			totemOpenInventory = true;
 			configVersion = 100;
+			changed = true;
+		}
+		if (configVersion < 101) {
+			// The inventory fallback stopped being optional. It is only reached for
+			// a totem stored outside the hotbar, and the alternative there is doing
+			// nothing at all, so the field is dropped rather than migrated.
+			configVersion = 101;
 			changed = true;
 		}
 		return changed;

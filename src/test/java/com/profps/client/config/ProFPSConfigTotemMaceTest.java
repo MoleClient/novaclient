@@ -12,21 +12,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /** Auto Totem, silent aim, lunge spam scaling and crit sprint release defaults. */
 final class ProFPSConfigTotemMaceTest {
 	@Test
-	void inventoryIsKeptOnlyAsAFallbackForATotemOutsideTheHotbar() throws Exception {
+	void oldAutoTotemDefaultsMigrateForward() throws Exception {
 		ProFPSConfig config = new ProFPSConfig();
 		config.configVersion = 91;
-		config.totemOpenInventory = false;
 
 		sanitize(config);
 
-		// The refill itself no longer uses a screen: a hotbar totem goes to the
-		// offhand with the swap-hands key, which needs none. This flag now only
-		// governs whether a totem stored deeper than the hotbar may be staged
-		// through a real inventory, so leaving it on costs nothing in the normal
-		// case and is the only way to recover in the abnormal one.
+		// Auto Totem no longer has an inventory setting at all. A hotbar totem
+		// reaches the offhand with the swap-hands key, which needs no screen; a
+		// totem stored deeper leaves no legal alternative to a real inventory,
+		// and the only other outcome there is doing nothing — not a choice worth
+		// offering, so the field is gone rather than defaulted.
 		assertAll(
-				() -> assertEquals(100, config.configVersion),
-				() -> assertTrue(config.totemOpenInventory),
+				() -> assertEquals(101, config.configVersion),
 				() -> assertTrue(config.lungeSpamScaling),
 				() -> assertTrue(config.hitCritSprintRelease));
 	}
@@ -46,7 +44,6 @@ final class ProFPSConfigTotemMaceTest {
 	@Test
 	void anAlreadyCurrentConfigKeepsTheUsersOwnChoices() throws Exception {
 		ProFPSConfig config = new ProFPSConfig();
-		config.totemOpenInventory = true;   // a deliberate opt-in after the migration
 		config.maceSilentAim = true;
 
 		sanitize(config);
@@ -54,8 +51,7 @@ final class ProFPSConfigTotemMaceTest {
 		// Migrations are keyed on the version, so a config already at 92 must not
 		// have its settings re-stamped back to the defaults on every launch.
 		assertAll(
-				() -> assertEquals(100, config.configVersion),
-				() -> assertTrue(config.totemOpenInventory, "a re-run must not undo the user's own choice"),
+				() -> assertEquals(101, config.configVersion),
 				() -> assertTrue(config.maceSilentAim));
 	}
 

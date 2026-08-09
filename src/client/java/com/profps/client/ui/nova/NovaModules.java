@@ -557,8 +557,7 @@ public final class NovaModules {
 				new BoolSetting("Stop When No Totem", () -> cfg.anchorStopWhenNoTotem,
 						v -> cfg.anchorStopWhenNoTotem = v).when(() -> cfg.anchorDetonate)));
 		m.put("totem", new Module("totem", "Auto Totem", Items.TOTEM_OF_UNDYING,
-				() -> cfg.totemTweaks, v -> cfg.totemTweaks = v,
-				new BoolSetting("Inventory fallback", () -> cfg.totemOpenInventory, v -> cfg.totemOpenInventory = v)));
+				() -> cfg.totemTweaks, v -> cfg.totemTweaks = v));
 		m.put("autocrystal", new Module("autocrystal", "Auto Crystal", Items.END_CRYSTAL,
 				() -> cfg.autoCrystal, v -> cfg.autoCrystal = v));
 		m.put("fastuse", new Module("fastuse", "Fast Use", Items.SUGAR,
