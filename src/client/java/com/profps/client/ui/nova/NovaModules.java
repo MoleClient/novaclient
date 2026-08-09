@@ -330,7 +330,7 @@ public final class NovaModules {
 		d.put("autospear", "Times the spear charge so flying through a player lands the kinetic hit.");
 		d.put("anchor", "Reliably places and charges an anchor, with optional detonation or safe-item finish.");
 		d.put("totem", "Rapidly refills your offhand and prepares a hotbar backup after a pop.");
-		d.put("autocrystal", "Right-click obsidian or bedrock to place and quickly break a crystal.");
+		d.put("autocrystal", "Hold right click on obsidian to place and break crystals in a loop.");
 		d.put("fastuse", "Removes the right-click use delay.");
 		d.put("autoxp", "Throws XP bottles until your Mending armour is full.");
 		d.put("autosign", "Writes your configured text onto every sign you place.");
@@ -559,7 +559,8 @@ public final class NovaModules {
 		m.put("totem", new Module("totem", "Auto Totem", Items.TOTEM_OF_UNDYING,
 				() -> cfg.totemTweaks, v -> cfg.totemTweaks = v));
 		m.put("autocrystal", new Module("autocrystal", "Auto Crystal", Items.END_CRYSTAL,
-				() -> cfg.autoCrystal, v -> cfg.autoCrystal = v));
+				() -> cfg.autoCrystal, v -> cfg.autoCrystal = v,
+				new IntSetting("Speed", "", 1, 10, 1, () -> cfg.autoCrystalSpeed, v -> cfg.autoCrystalSpeed = v)));
 		m.put("fastuse", new Module("fastuse", "Fast Use", Items.SUGAR,
 				() -> cfg.fastUse, v -> cfg.fastUse = v,
 				new IntSetting("Speed", "", 1, 10, 1, () -> cfg.fastUseLevel, v -> cfg.fastUseLevel = v)));

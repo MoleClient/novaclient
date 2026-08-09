@@ -2,15 +2,12 @@ package com.profps.client.crystalpvp;
 
 import com.profps.client.combatmode.CombatModeRuntime;
 import com.profps.client.config.ProFPSConfig;
-import com.profps.client.mixin.ClientPlayerInteractionManagerAccessor;
 import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.decoration.EndCrystalEntity;
-import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
@@ -18,209 +15,137 @@ import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.GameMode;
 import net.minecraft.world.World;
 
-import java.util.List;
+import java.security.SecureRandom;
 
-/** Quick manual crystal placement/break helper for obsidian and bedrock. */
+/**
+ * Hold right-click on obsidian to place a crystal and break it, over and over.
+ *
+ * <p>There is no state machine here, and that is the point. The previous version
+ * tracked a base position, a pending entity id, a saved hotbar slot and five
+ * phases with confirmation timeouts — and it switched your hotbar slot for you,
+ * which is what produced towers of obsidian: holding right-click with obsidian
+ * selected let vanilla place a block on every beat while the module was still
+ * trying to arrange a crystal on the same spot.
+ *
+ * <p>What replaces it is the observation that the crosshair already carries all
+ * the state needed. Look at obsidian and there is no crystal yet, so place one;
+ * the crystal you just placed is now the thing under the crosshair, so break it;
+ * breaking it puts the obsidian back under the crosshair. The alternation falls
+ * out of what you are looking at, needs nothing remembered between actions, and
+ * cannot desynchronise from the world.
+ *
+ * <p>It never changes your hotbar slot. Crystals have to be in hand, which is
+ * both simpler and the actual fix for the obsidian towers: with anything else
+ * held the module does nothing at all and your clicks stay your own.
+ *
+ * <p>Both actions are the ones vanilla sends for a real click — {@code
+ * interactBlock} against the live ray, {@code attackEntity} on a crystal the ray
+ * genuinely hits — spaced by a sampled interval rather than fired every tick, so
+ * the rhythm is a fast player's rather than a machine's.
+ */
 public final class AutoCrystalController {
 	private static final double REACH_SQUARED = 4.5D * 4.5D;
-	private static final int CONFIRM_TIMEOUT_TICKS = 20;
-	private final ProFPSConfig config;
 
-	private Phase phase = Phase.IDLE;
-	private BlockPos basePos;
-	private int pendingCrystalId = -1;
-	private int previousSlot = -1;
-	private int deadlineTick;
-	private boolean useReleased = true;
-	private boolean selfInteracting;
-	private String status = "Aim at obsidian";
+	private final ProFPSConfig config;
+	private final SecureRandom rng = new SecureRandom();
+	private long nextActionNanos;
+	private String status = "Hold right click on obsidian";
 
 	public AutoCrystalController(ProFPSConfig config) {
 		this.config = config;
 	}
 
-	/** Records the real crystal click, then lets vanilla place it exactly once. */
-	public ActionResult onUseBlock(PlayerEntity player, World world, Hand hand, BlockHitResult hit) {
-		if (!config.autoCrystal || !world.isClient() || selfInteracting || player == null
-				|| !player.getStackInHand(hand).isOf(Items.END_CRYSTAL)) return ActionResult.PASS;
-		if (!isCrystalBase(world, hit.getBlockPos())) return ActionResult.PASS;
-		if (phase != Phase.IDLE) return ActionResult.FAIL;
-
-		begin(player, hit.getBlockPos());
-		phase = Phase.WAIT_CRYSTAL;
-		status = "Confirming crystal";
+	/**
+	 * Kept so the module can stay registered on the use-block event, but it no
+	 * longer intercepts anything: the loop below drives itself from the crosshair,
+	 * and letting a real click through unchanged is what keeps the two in step.
+	 */
+	public ActionResult onUseBlock(net.minecraft.entity.player.PlayerEntity player, World world,
+			Hand hand, BlockHitResult hit) {
 		return ActionResult.PASS;
 	}
 
 	public void tick(MinecraftClient client) {
 		if (!allowed(client)) {
-			reset(client, true);
+			status = "Off";
 			return;
 		}
-
 		ClientPlayerEntity player = client.player;
-		if (!client.options.useKey.isPressed()) useReleased = true;
-		if (phase != Phase.IDLE && player.age > deadlineTick) {
-			reset(client, true);
-			status = "Timed out";
+		if (!client.options.useKey.isPressed()) {
+			status = "Hold right click on obsidian";
 			return;
 		}
-
-		switch (phase) {
-			case IDLE -> startFromHeldClick(client, player);
-			case PLACE_CRYSTAL -> placeCrystal(client, player);
-			case WAIT_CRYSTAL -> waitCrystal(client, player);
-			case BREAK_CRYSTAL -> breakCrystal(client, player);
-			case WAIT_BREAK -> waitBreak(client);
-		}
-	}
-
-	private void startFromHeldClick(MinecraftClient client, ClientPlayerEntity player) {
-		if (!client.options.useKey.isPressed() || !useReleased) {
-			status = "Aim at obsidian";
-			return;
-		}
-		HitResult fresh = freshHit(client, player);
-		if (!(fresh instanceof BlockHitResult hit) || !isCrystalBase(client.world, hit.getBlockPos())) {
-			status = "Aim at obsidian";
-			return;
-		}
-
-		begin(player, hit.getBlockPos());
-		EndCrystalEntity existing = crystalAbove(client, basePos);
-		if (existing != null) {
-			pendingCrystalId = existing.getId();
-			phase = Phase.BREAK_CRYSTAL;
-			status = "Breaking crystal";
-		} else {
-			phase = Phase.PLACE_CRYSTAL;
-			status = "Placing crystal";
-		}
-	}
-
-	private void begin(PlayerEntity player, BlockPos base) {
-		if (previousSlot < 0) previousSlot = player.getInventory().getSelectedSlot();
-		basePos = base.toImmutable();
-		pendingCrystalId = -1;
-		deadlineTick = player.age + CONFIRM_TIMEOUT_TICKS;
-		useReleased = false;
-	}
-
-	private void placeCrystal(MinecraftClient client, ClientPlayerEntity player) {
-		if (basePos == null || !isCrystalBase(client.world, basePos)) {
-			reset(client, true);
-			status = "Aim at obsidian";
-			return;
-		}
-		EndCrystalEntity existing = crystalAbove(client, basePos);
-		if (existing != null) {
-			pendingCrystalId = existing.getId();
-			phase = Phase.BREAK_CRYSTAL;
-			breakCrystal(client, player);
-			return;
-		}
-
-		HitResult fresh = freshHit(client, player);
-		if (!(fresh instanceof BlockHitResult hit) || !hit.getBlockPos().equals(basePos)) {
-			status = "Keep aim on obsidian";
-			return;
-		}
+		// Crystals in hand or nothing happens. Switching slots for you is what
+		// let a held right-click spam whatever else was selected.
 		Hand hand = crystalHand(player);
 		if (hand == null) {
-			int slot = findCrystalSlot(player);
-			if (slot < 0) {
-				reset(client, true);
-				status = "No crystals";
+			status = "Hold end crystals";
+			return;
+		}
+		long now = System.nanoTime();
+		if (now < nextActionNanos) return;
+
+		HitResult fresh = player.getCrosshairTarget(1.0F,
+				client.getCameraEntity() == null ? player : client.getCameraEntity());
+
+		// A crystal is in the way: that is the one just placed, so break it.
+		if (fresh instanceof EntityHitResult entityHit
+				&& entityHit.getEntity() instanceof EndCrystalEntity crystal && crystal.isAlive()) {
+			if (player.getEyePos().squaredDistanceTo(crystal.getBoundingBox().getCenter()) > REACH_SQUARED) {
+				status = "Crystal out of reach";
 				return;
 			}
-			selectSlot(client, slot);
-			hand = Hand.MAIN_HAND;
-		}
-		if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_CRYSTAL)) return;
-		ActionResult result;
-		selfInteracting = true;
-		try {
-			result = client.interactionManager.interactBlock(player, hand, hit);
-		} finally {
-			selfInteracting = false;
-		}
-		if (!result.isAccepted()) {
-			status = "Crystal refused";
+			if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_CRYSTAL)) return;
+			client.interactionManager.attackEntity(player, crystal);
+			player.swingHand(Hand.MAIN_HAND);
+			nextActionNanos = now + actionGapNanos();
+			status = "Breaking";
 			return;
 		}
-		player.swingHand(hand);
-		phase = Phase.WAIT_CRYSTAL;
-		deadlineTick = player.age + CONFIRM_TIMEOUT_TICKS;
-		status = "Confirming crystal";
+
+		// Otherwise a clear base under the crosshair: place one.
+		if (fresh instanceof BlockHitResult blockHit && blockHit.getType() == HitResult.Type.BLOCK
+				&& isCrystalBase(client.world, blockHit.getBlockPos())) {
+			if (crystalOn(client, blockHit.getBlockPos()) != null) {
+				// Occupied but not under the ray — aiming past it. Do not stack.
+				status = "Crystal already there";
+				return;
+			}
+			if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_CRYSTAL)) return;
+			ActionResult result = client.interactionManager.interactBlock(player, hand, blockHit);
+			if (!result.isAccepted()) {
+				status = "Placement refused";
+				nextActionNanos = now + actionGapNanos();
+				return;
+			}
+			player.swingHand(hand);
+			nextActionNanos = now + actionGapNanos();
+			status = "Placing";
+			return;
+		}
+		status = "Aim at obsidian";
 	}
 
-	private void waitCrystal(MinecraftClient client, ClientPlayerEntity player) {
-		EndCrystalEntity crystal = crystalAbove(client, basePos);
-		if (crystal == null) {
-			status = "Confirming crystal";
-			return;
-		}
-		pendingCrystalId = crystal.getId();
-		phase = Phase.BREAK_CRYSTAL;
-		deadlineTick = player.age + CONFIRM_TIMEOUT_TICKS;
-		breakCrystal(client, player);
+	/**
+	 * Gap before the next action, sampled every time. The speed setting sets the
+	 * pace; the spread around it is what stops the stream being a metronome,
+	 * which is the part of a fast rhythm that does not occur naturally.
+	 */
+	private long actionGapNanos() {
+		int speed = MathHelper.clamp(config.autoCrystalSpeed, 1, 10);
+		double base = 300.0D - (speed - 1) * 26.0D;      // 300ms at 1, ~66ms at 10
+		double jittered = base * (0.82D + rng.nextDouble() * 0.36D);
+		return (long) (jittered * 1_000_000D);
 	}
 
-	private void breakCrystal(MinecraftClient client, ClientPlayerEntity player) {
-		EndCrystalEntity crystal = pendingCrystal(client);
-		if (crystal == null) {
-			reset(client, true);
-			status = "Ready";
-			return;
-		}
-		if (player.getEyePos().squaredDistanceTo(crystal.getBoundingBox().getCenter()) > REACH_SQUARED) {
-			status = "Crystal out of reach";
-			return;
-		}
-		HitResult fresh = freshHit(client, player);
-		if (config.autoCrystalStrictRay
-				&& (!(fresh instanceof EntityHitResult entityHit) || entityHit.getEntity() != crystal)) {
-			status = "Keep aim on crystal";
-			return;
-		}
-		if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_CRYSTAL)) return;
-		client.crosshairTarget = fresh;
-		client.interactionManager.attackEntity(player, crystal);
-		player.swingHand(Hand.MAIN_HAND);
-		phase = Phase.WAIT_BREAK;
-		deadlineTick = player.age + CONFIRM_TIMEOUT_TICKS;
-		status = "Confirming break";
-	}
-
-	private void waitBreak(MinecraftClient client) {
-		EndCrystalEntity crystal = pendingCrystal(client);
-		if (crystal != null) {
-			status = "Confirming break";
-			return;
-		}
-		reset(client, true);
-		status = "Ready";
-	}
-
-	private EndCrystalEntity pendingCrystal(MinecraftClient client) {
-		Entity entity = pendingCrystalId < 0 ? null : client.world.getEntityById(pendingCrystalId);
-		if (entity instanceof EndCrystalEntity crystal && crystal.isAlive()) return crystal;
-		return crystalAbove(client, basePos);
-	}
-
-	private EndCrystalEntity crystalAbove(MinecraftClient client, BlockPos base) {
-		if (base == null) return null;
-		List<EndCrystalEntity> crystals = client.world.getEntitiesByClass(EndCrystalEntity.class,
-				new Box(base.up()).expand(0.75D, 1.25D, 0.75D), Entity::isAlive);
+	private EndCrystalEntity crystalOn(MinecraftClient client, BlockPos base) {
+		var crystals = client.world.getEntitiesByClass(EndCrystalEntity.class,
+				new Box(base.up()).expand(0.55D, 1.2D, 0.55D), Entity::isAlive);
 		return crystals.isEmpty() ? null : crystals.get(0);
-	}
-
-	private HitResult freshHit(MinecraftClient client, ClientPlayerEntity player) {
-		Entity camera = client.getCameraEntity();
-		return player.getCrosshairTarget(1.0F, camera == null ? player : camera);
 	}
 
 	private boolean isCrystalBase(World world, BlockPos pos) {
@@ -234,30 +159,6 @@ public final class AutoCrystalController {
 		return null;
 	}
 
-	private int findCrystalSlot(ClientPlayerEntity player) {
-		for (int slot = 0; slot < 9; slot++) {
-			if (player.getInventory().getStack(slot).isOf(Items.END_CRYSTAL)) return slot;
-		}
-		return -1;
-	}
-
-	private void selectSlot(MinecraftClient client, int slot) {
-		if (slot < 0 || slot > 8 || client.player.getInventory().getSelectedSlot() == slot) return;
-		client.player.getInventory().setSelectedSlot(slot);
-		client.player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slot));
-		((ClientPlayerInteractionManagerAccessor) client.interactionManager).profps$setLastSelectedSlot(slot);
-	}
-
-	private void reset(MinecraftClient client, boolean restoreSlot) {
-		if (restoreSlot && previousSlot >= 0 && client != null && client.player != null
-				&& client.interactionManager != null) selectSlot(client, previousSlot);
-		phase = Phase.IDLE;
-		basePos = null;
-		pendingCrystalId = -1;
-		previousSlot = -1;
-		deadlineTick = 0;
-	}
-
 	public String status(MinecraftClient client) {
 		return config.autoCrystal ? status : "Off";
 	}
@@ -267,9 +168,5 @@ public final class AutoCrystalController {
 				&& client.world != null && client.interactionManager != null && client.currentScreen == null
 				&& client.isWindowFocused() && client.player.isAlive() && !client.player.isSpectator()
 				&& client.interactionManager.getCurrentGameMode() != GameMode.SPECTATOR;
-	}
-
-	private enum Phase {
-		IDLE, PLACE_CRYSTAL, WAIT_CRYSTAL, BREAK_CRYSTAL, WAIT_BREAK
 	}
 }

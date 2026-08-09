@@ -428,7 +428,6 @@ public final class ProFPSConfig {
 	public boolean crystalManualPlaceObsidian = false;
 	public boolean crystalManualShowTargetBlock = true;
 	public int autoCrystalSpeed = 4; // padding after each confirmed action: 1 (~6 ticks) → 10 (none)
-	public boolean autoCrystalStrictRay = true; // require the fresh vanilla ray; never wait on render cache
 	public boolean fastUse = false;
 	public boolean fastUseExpanded = false;
 	public int fastUseLevel = 6;
@@ -545,7 +544,7 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 101;
+	public int configVersion = 102;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1528,7 +1527,6 @@ public final class ProFPSConfig {
 		if (configVersion < 75) {
 			maceModeAutoSwitch = true;
 			autoMaceAutoSwitch = true;
-			autoCrystalStrictRay = true;
 			configVersion = 75;
 			changed = true;
 		}
@@ -1818,6 +1816,13 @@ public final class ProFPSConfig {
 			// a totem stored outside the hotbar, and the alternative there is doing
 			// nothing at all, so the field is dropped rather than migrated.
 			configVersion = 101;
+			changed = true;
+		}
+		if (configVersion < 102) {
+			// Auto Crystal reduced to place-and-break off the live crosshair. It no
+			// longer touches the hotbar, so the strict-ray option lost its meaning:
+			// the fresh ray is now the whole mechanism rather than a mode.
+			configVersion = 102;
 			changed = true;
 		}
 		return changed;
