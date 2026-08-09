@@ -179,6 +179,12 @@ public final class NovaScreenV2 extends Screen {
 	private String query = "";
 	private boolean searchFocused;
 	private String listeningId;
+	/**
+	 * The GLFW key whose keystroke was spent on a keybind, or -1. Held by key
+	 * identity rather than as a one-shot flag so that holding the key — which
+	 * repeats both callbacks — cannot leak the repeats into a text field either.
+	 */
+	private int bindingConsumedKey = -1;
 	private NovaModules.IntSetting activeSlider;
 	private float sliderTrackX, sliderTrackW;
 	private NovaModules.StringSetting activeString;
@@ -1255,7 +1261,10 @@ public final class NovaScreenV2 extends Screen {
 				config.save();
 				listeningId = null;
 			} else {
+				// Reaching for a bind means the search is no longer what you are
+				// typing into, so it should not still be holding focus afterwards.
 				listeningId = mod.id;
+				searchFocused = false;
 			}
 			sound(1.0F);
 		});
@@ -1633,6 +1642,7 @@ public final class NovaScreenV2 extends Screen {
 			} else {
 				listeningId = mod.id;
 				configNameFocused = false;
+				searchFocused = false;
 			}
 			sound(1.0F);
 		});
@@ -2215,11 +2225,24 @@ public final class NovaScreenV2 extends Screen {
 	@Override
 	public boolean keyPressed(KeyInput input) {
 		int key = input.key();
+		// A different key supersedes the pending one. Non-printable keys never
+		// produce a character event at all, so without this the suppression could
+		// outlive its keystroke and eat an unrelated letter later on.
+		if (bindingConsumedKey != -1 && key != bindingConsumedKey) bindingConsumedKey = -1;
 		if (settingsOpen && key == GLFW.GLFW_KEY_ESCAPE && listeningId == null && !configNameFocused) {
 			closeSettings();
 			return true;
 		}
 		if (listeningId != null) {
+			// GLFW reports a keystroke as TWO independent events: the key callback
+			// (this) and, for anything printable, a character callback a moment
+			// later. Consuming the key does nothing to the character — so binding
+			// "K" cleared listeningId here, and charTyped then found nothing
+			// listening and filed the k as ordinary typing, into the module
+			// search. Claim the other half of the keystroke explicitly, and keep
+			// claiming it until the key is physically released, because a held key
+			// repeats both callbacks.
+			bindingConsumedKey = key;
 			if (key == GLFW.GLFW_KEY_ESCAPE || key == GLFW.GLFW_KEY_BACKSPACE || key == GLFW.GLFW_KEY_DELETE) {
 				config.moduleKeybinds.remove(listeningId);
 				config.save();
@@ -2294,8 +2317,20 @@ public final class NovaScreenV2 extends Screen {
 	}
 
 	@Override
+	public boolean keyReleased(KeyInput input) {
+		// Letting go of the bound key is what ends the suppression: until then the
+		// key is still repeating, and every repeat carries a character with it.
+		if (input.key() == bindingConsumedKey) bindingConsumedKey = -1;
+		return super.keyReleased(input);
+	}
+
+	@Override
 	public boolean charTyped(CharInput input) {
 		String s = input.asString();
+		// The character half of a keystroke that was spent on a keybind — either
+		// one still being captured, or the one just captured by keyPressed. It
+		// belongs to the bind, not to any text field.
+		if (listeningId != null || bindingConsumedKey != -1) return true;
 		if (activeString != null) {
 			if (!s.isBlank() || s.equals(" ")) {
 				String current = activeString.get.get();
