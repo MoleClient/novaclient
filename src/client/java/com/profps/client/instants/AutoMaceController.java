@@ -40,7 +40,17 @@ import java.util.UUID;
  * through an entire mace recharge. A genuine descending smash takes its contact window.
  *
  * When an axe is in the hotbar it can run a stun-slam combo against a confirmed shielding
- * target: a quick axe tap, then a controlled swap back to the mace for the smash.
+ * target: a quick axe tap, then a swap back to the mace on the same tick for the smash.
+ *
+ * <p>That combo only ever starts from a real descent, and the reason is arithmetic. The
+ * axe tap zeroes the shared attack clock and a mace takes about 33 ticks to recharge, so
+ * the follow-up is always a low-charge hit. That is fine while falling — {@code
+ * MaceItem.getBonusAttackDamage} returns a pure fall-distance bonus that vanilla adds
+ * AFTER the charge multiplier, so a 6% smash still keeps roughly three quarters of its
+ * damage and comfortably beats the axe hit it has to exceed inside the invulnerability
+ * window. On the ground that bonus is zero, and the follow-up is then worth less than the
+ * hit it is trying to override — which is to say worth nothing. A shielder on flat ground
+ * belongs to Axe Stun; this takes the ones it can actually finish.
  */
 public final class AutoMaceController {
 	private static final long DISENGAGE_NANOS = 120_000_000L; // brief post-hit gap
@@ -54,6 +64,8 @@ public final class AutoMaceController {
 	private static final long AIRBORNE_HOLD_NANOS = 1_250_000_000L;
 	/** How long an armed stun-slam follow-up stays valid — one airtime, not the next fight. */
 	private static final long STUN_SMASH_WINDOW_NANOS = 1_200_000_000L;
+	/** Ticks a committed combo tolerates the ray not naming the target before giving up. */
+	private static final int STUN_RAY_GRACE_TICKS = 3;
 
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
@@ -234,8 +246,19 @@ public final class AutoMaceController {
 		// descending smash can use the narrow responsive follow-up; a ground acquisition never can.
 		if (shieldPhase == 1) {
 			if (player.age < shieldActionAge) return;
-			if (!isHoldingShield(target) || !confirmedVanillaTarget(client, player, target)
-					|| !isAxe(player.getMainHandStack().getItem())) {
+			// Wrong state or nothing left to break: give up cleanly.
+			if (!isAxe(player.getMainHandStack().getItem()) || !isHoldingShield(target)) {
+				if (!restoreMace(client, player)) return;
+				endCombo();
+				return;
+			}
+			// A tick where the ray does not name them is NOT a failed combo. The aim
+			// is actively being driven back onto them, and on a fast dive the
+			// crosshair crosses their hitbox edge constantly — so aborting on the
+			// first such tick threw away combos that were one tick from landing.
+			// Wait it out, bounded, rather than treating a flicker as a decision.
+			if (!confirmedVanillaTarget(client, player, target)) {
+				if (player.age < shieldActionAge + STUN_RAY_GRACE_TICKS) return;
 				if (!restoreMace(client, player)) return;
 				endCombo();
 				return;
@@ -350,8 +373,19 @@ public final class AutoMaceController {
 		// Net damage is preserved even with no shield: the small axe hit sets the target's
 		// last-damage, and the far bigger mace smash overrides it within the invuln window
 		// (dealing smash − axe), so the total still equals the full smash — plus the stun.
+		// The dive requirement is the whole point and it was missing. On the ground
+		// this combo cannot finish: the axe tap zeroes the shared attack clock, a
+		// mace needs about 33 ticks to recharge, and with no fall distance there is
+		// no smash bonus to make a low-charge hit worth taking — so the follow-up
+		// either never fires or lands for less than the axe hit it has to beat
+		// inside the invulnerability window, which is to say for nothing. Every
+		// ground shielder therefore produced exactly what this looked like from the
+		// outside: an axe tap and no slam. Started from a real descent instead, the
+		// fall bonus carries the follow-up and the combo pays. A shielder on the
+		// ground is Axe Stun's job, and that module still handles it.
 		if (stunSlamEnabled()
-				&& shieldPhase == 0 && now >= shieldComboUntilNanos) {
+				&& shieldPhase == 0 && now >= shieldComboUntilNanos
+				&& isDiving(player)) {
 			int axe = findAxe(player);
 			if (axe >= 0 && isHoldingShield(target)) {
 				if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_MACE)) return;
