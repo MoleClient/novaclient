@@ -41,13 +41,19 @@ import java.security.SecureRandom;
  * to work with. Swapping hands introduces no such contradiction at any speed.
  *
  * <p>A totem stored deeper than the hotbar has no legal alternative, so that case
- * still opens a real inventory — but only to stage one totem up into the hotbar,
- * after which every refill is the swap again. There is no setting for it: with a
- * hotbar totem the screen is never reached, and without one the only other
- * outcome is doing nothing at all, which is not a choice worth offering. It stops
- * the sprint first, because that is what opening a screen does to a real player,
- * and it takes the shared combat action claim so it can never emit a slot change
- * in the same tick as another module.
+ * still opens a real inventory, hovers the stored totem and swaps it into the
+ * offhand — the same SWAP the swap-hands key performs inside a screen. There is
+ * no setting for it: with a hotbar totem the screen is never reached, and without
+ * one the only other outcome is doing nothing at all, which is not a choice worth
+ * offering. It stops the sprint first, because that is what opening a screen does
+ * to a real player, it waits before clicking, because no hand opens a screen and
+ * reaches into it on the same tick, and it takes the shared combat action claim
+ * so it can never emit a slot change in the same tick as another module.
+ *
+ * <p>Crucially the screen is only ever reached when the offhand is genuinely
+ * empty of totems. Opening one to top up a spare — while you are already
+ * protected — costs a sprint, a screen and a hotbar selection, and buys nothing
+ * that the next pop could not buy for itself.
  *
  * <p>The swap is not predicted locally — vanilla does not predict it either, the
  * server performs it and syncs back — so the offhand only shows the totem a
@@ -73,7 +79,6 @@ public final class TotemTweaksController {
 	private long swapSettleNanos;
 	private long guiDeadlineNanos;
 	private boolean openedInventory;
-	private int savedSelectedSlot = -1;
 	private int restoreSlot = -1;
 	private int attempts;
 	private String status = "Idle";
@@ -153,16 +158,15 @@ public final class TotemTweaksController {
 			return;
 		}
 
-		// Upkeep only: a spare in the hotbar so the next refill is the legal path.
-		if (findTotem(client, 0, 9) >= 0) {
-			status = "Ready";
-			return;
-		}
-		if (findTotem(client, 9, 36) < 0) {
-			status = "Ready";
-			return;
-		}
-		openInventory(client, now);
+		// The offhand is already holding a totem, so there is nothing to refill.
+		// This is where a "stage a spare into the hotbar" pass used to sit, and it
+		// was worse than the problem it solved: a fighting loadout has no free
+		// hotbar slot, so it opened a real inventory, found nowhere to put the
+		// totem and closed again — every action gap, for as long as a spare sat in
+		// the backpack. That loop stopped the sprint, spammed close-screen packets
+		// and put the selected slot back each time, which is what left Auto Mace
+		// unable to hold a mace long enough to ever swing it.
+		status = "Ready";
 	}
 
 	public String status(MinecraftClient client) {
@@ -200,35 +204,40 @@ public final class TotemTweaksController {
 		// screen exists. A slot click from someone still sprinting is the exact
 		// contradiction this module has to avoid.
 		if (client.player.isSprinting()) client.player.setSprinting(false);
-		savedSelectedSlot = client.player.getInventory().getSelectedSlot();
 		client.setScreen(new TotemScreen(client.player));
 		openedInventory = true;
 		guiDeadlineNanos = now + GUI_DEADLINE_NANOS;
+		// Reaching for a stack takes a moment. Opening a screen and clicking
+		// inside it on the same tick is not something a hand does, and this
+		// module exists to avoid exactly that kind of contradiction.
+		nextActionNanos = now + ms(45D + rng.nextDouble() * 70D);
 		status = "Opening";
-		driveInventoryRefill(client, now);
 	}
 
 	private void driveInventoryRefill(MinecraftClient client, long now) {
 		if (!openedInventory) return;
 		if (now > guiDeadlineNanos) {
 			closeInventory(client);
-			nextActionNanos = now + ACTION_GAP_NANOS;
+			nextActionNanos = now + BACKOFF_NANOS;
 			return;
 		}
 		if (now < nextActionNanos) return;
 		if (client.player.isSprinting()) client.player.setSprinting(false);
 
-		// Stage a totem into the hotbar. Once one is there the offhand refill can
-		// use the swap-hands key, so the screen is only ever needed once.
-		if (attempts < MAX_ATTEMPTS_PER_EPISODE && findTotem(client, 0, 9) < 0) {
+		// Swap the stored totem straight into the offhand. Button 40 is the
+		// offhand for a SWAP click — the same action vanilla runs when you hover a
+		// stack in a screen and press the swap-hands key. Routing it through a
+		// free hotbar slot instead needed one to exist, and a fighting loadout has
+		// none, so that path arrived here with nowhere to put the totem and did
+		// nothing but open and close the screen again.
+		if (!client.player.getOffHandStack().isOf(TOTEM)) {
 			int source = findTotem(client, 9, 36);
-			int destination = freeHotbarSlot(client);
-			if (source >= 0 && destination >= 0
+			if (source >= 0 && attempts < MAX_ATTEMPTS_PER_EPISODE
 					&& CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_TOTEM)) {
-				click(client, source, destination, SlotActionType.SWAP);
+				click(client, source, OFFHAND_SWAP_BUTTON, SlotActionType.SWAP);
 				attempts++;
-				nextActionNanos = now + ms(4D + rng.nextDouble() * 10D);
-				status = "Staging";
+				nextActionNanos = now + ms(35D + rng.nextDouble() * 55D);
+				status = "Refilling";
 				return;
 			}
 		}
@@ -236,16 +245,17 @@ public final class TotemTweaksController {
 		nextActionNanos = now + ACTION_GAP_NANOS;
 	}
 
+	// Nothing in the refill changes which hotbar slot is held — the swap targets
+	// the offhand directly — so nothing here may put a selected slot "back".
+	// Doing that fought every other module for the hotbar: it reverted Auto Mace's
+	// handoff on the tick after it was made, so the mace was never in hand when
+	// the swing was due.
 	private void closeInventory(MinecraftClient client) {
 		if (openedInventory && ourScreenOpen(client)) {
 			client.player.closeHandledScreen();
 			client.setScreen(null);
 		}
-		if (savedSelectedSlot >= 0 && savedSelectedSlot < 9) {
-			client.player.getInventory().setSelectedSlot(savedSelectedSlot);
-		}
 		openedInventory = false;
-		savedSelectedSlot = -1;
 		guiDeadlineNanos = 0L;
 		status = client.player.getOffHandStack().isOf(TOTEM) ? "Ready" : "Retrying";
 	}
@@ -276,13 +286,6 @@ public final class TotemTweaksController {
 		return -1;
 	}
 
-	private int freeHotbarSlot(MinecraftClient client) {
-		for (int slot = 0; slot < 9; slot++) {
-			if (client.player.getInventory().getStack(slot).isEmpty()) return slot;
-		}
-		return -1;
-	}
-
 	/** Inventory index → player-handler screen slot (hotbar 0-8 → 36-44; main 9-35 unchanged). */
 	private int invToScreen(int inventorySlot) {
 		return inventorySlot < 9 ? 36 + inventorySlot : inventorySlot;
@@ -299,12 +302,8 @@ public final class TotemTweaksController {
 				&& client.currentScreen instanceof TotemScreen) {
 			client.player.closeHandledScreen();
 			client.setScreen(null);
-			if (savedSelectedSlot >= 0 && savedSelectedSlot < 9) {
-				client.player.getInventory().setSelectedSlot(savedSelectedSlot);
-			}
 		}
 		openedInventory = false;
-		savedSelectedSlot = -1;
 		restoreSlot = -1;
 		guiDeadlineNanos = 0L;
 		popWatchUntilNanos = 0L;

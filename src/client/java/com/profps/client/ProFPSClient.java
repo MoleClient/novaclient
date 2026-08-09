@@ -53,6 +53,7 @@ import com.profps.client.instants.AutoBreachSwapController;
 import com.profps.client.instants.AutoLungeSwapController;
 import com.profps.client.instants.AutoSpearController;
 import com.profps.client.instants.AutoMaceController;
+import com.profps.client.instants.AxeCritController;
 import com.profps.client.instants.AxeStunController;
 import com.profps.client.instants.KnockbackDisplacementController;
 import com.profps.client.instants.MovementInstantsController;
@@ -97,6 +98,7 @@ public final class ProFPSClient implements ClientModInitializer {
 	private static HitImprovementsController hitImprovements;
 	private static ExpandedHitboxController expandedHitbox;
 	private static AutoMaceController autoMace;
+	private static AxeCritController axeCrit;
 	private static AutoBreachSwapController autoBreachSwap;
 	private static AxeStunController axeStun;
 	private static PearlCatchController pearlCatch;
@@ -151,6 +153,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		PlayerSightingLog playerSightings = new PlayerSightingLog(config);
 		autoClicker = new AutoClickerController(config);
 		autoMace = new AutoMaceController(config);
+		axeCrit = new AxeCritController(config);
 		autoBreachSwap = new AutoBreachSwapController(config);
 		axeStun = new AxeStunController(config);
 		pearlCatch = new PearlCatchController(config);
@@ -429,16 +432,19 @@ public final class ProFPSClient implements ClientModInitializer {
 				if (autoMace != null) autoMace.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
 				if (axeStun != null) axeStun.tick(client);
+				if (axeCrit != null) axeCrit.tick(client);
 				if (hitImprovements != null) hitImprovements.tick(client);
 			}
 			case AXE -> {
 				if (autoMace != null) autoMace.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
 				if (axeStun != null) axeStun.tick(client);
+				if (axeCrit != null) axeCrit.tick(client);
 				if (hitImprovements != null) hitImprovements.tick(client);
 			}
 			case MACE -> {
 				if (axeStun != null) axeStun.tick(client);
+				if (axeCrit != null) axeCrit.tick(client);
 				if (hitImprovements != null) hitImprovements.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
 				if (autoMace != null) autoMace.tick(client);
@@ -447,6 +453,7 @@ public final class ProFPSClient implements ClientModInitializer {
 				// Let any in-flight hotbar sequence restore first after Modes are turned off;
 				// the shared action claim still permits only one ordered action in this tick.
 				if (axeStun != null) axeStun.tick(client);
+				if (axeCrit != null) axeCrit.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
 				if (autoMace != null) autoMace.tick(client);
 				if (hitImprovements != null) hitImprovements.tick(client);

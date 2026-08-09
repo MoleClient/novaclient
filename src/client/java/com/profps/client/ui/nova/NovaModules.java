@@ -40,7 +40,7 @@ public final class NovaModules {
 	private static final Map<Integer, Map<String, String>> MANAGED = Map.of(
 			1, Map.of("aim", "swordModeAim", "strafe", "swordModeStrafe",
 					"hit", "swordModeTrigger", "swordai", "swordModeAiBot"),
-			2, Map.of("aim", "axeModeAim", "axestun", "axeModeStun",
+			2, Map.of("aim", "axeModeAim", "axestun", "axeModeStun", "axecrit", "axeModeCrit",
 					"autoaim", "axeModeProjectileAim", "hit", "axeModeTrigger"),
 			3, Map.of("automace", "maceModeAutoMace", "autobreachswap", "maceModeBreachSwap"));
 
@@ -77,6 +77,7 @@ public final class NovaModules {
 			case "swordModeAiBot" -> cfg.swordModeAiBot;
 			case "axeModeAim" -> cfg.axeModeAim;
 			case "axeModeStun" -> cfg.axeModeStun;
+			case "axeModeCrit" -> cfg.axeModeCrit;
 			case "axeModeProjectileAim" -> cfg.axeModeProjectileAim;
 			case "axeModeTrigger" -> cfg.axeModeTrigger;
 			case "maceModeAutoMace" -> cfg.maceModeAutoMace;
@@ -323,6 +324,7 @@ public final class NovaModules {
 		d.put("autopot", "Throws a healing potion when low.");
 		d.put("velocity", "BLATANT FLAG · Alters server-authored knockback.");
 		d.put("axestun", "Swaps to an axe to break a shield, then swaps back.");
+		d.put("axecrit", "Jump onto a player with an axe and the swing lands as a crit.");
 		d.put("kbdisplace", "Keybind: sprint-reset hit that shoves a nearby player back.");
 		d.put("automace", "Auto-attacks the nearest player with mace.");
 		d.put("autobreachswap", "Server-ordered sword-to-Breach-mace jump-crit swap and restore.");
@@ -418,6 +420,7 @@ public final class NovaModules {
 				new TierSetting("Tier", "axe", () -> cfg.axeModeTier, v -> cfg.axeModeTier = v),
 				new BoolSetting("Aim Assist", () -> cfg.axeModeAim, v -> cfg.axeModeAim = v),
 				new BoolSetting("Axe Stun", () -> cfg.axeModeStun, v -> cfg.axeModeStun = v),
+				new BoolSetting("Axe Crit", () -> cfg.axeModeCrit, v -> cfg.axeModeCrit = v),
 				new BoolSetting("Triggerbot", () -> cfg.axeModeTrigger, v -> cfg.axeModeTrigger = v),
 				new BoolSetting("Sword Follow-up", () -> cfg.axeModeSwordFollowup, v -> cfg.axeModeSwordFollowup = v),
 				new BoolSetting("Trigger Follow-up", () -> cfg.axeModeTriggerFollowup, v -> cfg.axeModeTriggerFollowup = v, () -> cfg.axeModeSwordFollowup),
@@ -523,6 +526,8 @@ public final class NovaModules {
 						() -> cfg.axeStunRestorePrevious, v -> cfg.axeStunRestorePrevious = v),
 				new IntSetting("Reaction", " ms", 0, 300, 5, () -> cfg.axeStunReactionMs, v -> cfg.axeStunReactionMs = v),
 				new IntSetting("Switch Back", " ms", 30, 250, 5, () -> cfg.axeStunSwitchBackMs, v -> cfg.axeStunSwitchBackMs = v)));
+		m.put("axecrit", new Module("axecrit", "Axe Crit", Items.NETHERITE_AXE,
+				() -> cfg.axeCrit, v -> cfg.axeCrit = v));
 		m.put("kbdisplace", new Module("kbdisplace", "Knockback Displace", Items.WIND_CHARGE,
 				() -> false, v -> { if (v) cfg.kbDisplaceRequested = true; },
 				new BoolSetting("Sprint Reset", () -> cfg.kbDisplaceReset, v -> cfg.kbDisplaceReset = v),
@@ -905,7 +910,7 @@ public final class NovaModules {
 		List<Category> categories = new ArrayList<>();
 		categories.add(new Category("Combat", Items.NETHERITE_SWORD, pick(m,
 				MODE_SWORD, MODE_AXE, "swordai", "hit", "aim", "strafe", "autoaim", "reach", "expandedhitbox", "jumpreset", "autopot", "velocity",
-				"hitboxes", "axestun", "kbdisplace", "anchor", "totem", "autocrystal", "fastuse", "autoxp")));
+				"hitboxes", "axestun", "axecrit", "kbdisplace", "anchor", "totem", "autocrystal", "fastuse", "autoxp")));
 		categories.add(new Category("Mace & Spear", Items.MACE, pick(m,
 				MODE_MACE, "automace", "autobreachswap", "autolunge", "autospear")));
 		categories.add(new Category("SubTiers", Items.DIAMOND, pick(m,

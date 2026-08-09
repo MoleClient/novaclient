@@ -23,6 +23,7 @@ public final class CombatModeRuntime {
 		AUTO_CREEPER,
 		TRIGGER,
 		AXE_STUN,
+		AXE_CRIT,
 		AUTO_MACE,
 		BREACH_SWAP,
 		PEARL_CATCH,

@@ -109,6 +109,16 @@ public abstract class InputMixin {
 					input = critTap;
 					overridden = true;
 				}
+
+				// Axe Crit drops the sprint for the same reason and by the same
+				// means, but it runs from its own switch, so it needs its own
+				// layer: the Triggerbot's crit timing may well be off.
+				PlayerInput axeCritTap = com.profps.client.instants.AxeCritController
+						.critSprintOverride(input);
+				if (axeCritTap != null) {
+					input = axeCritTap;
+					overridden = true;
+				}
 			}
 
 			// Silent aim turns the body away from where the player is looking, and

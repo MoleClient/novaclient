@@ -69,6 +69,7 @@ public final class CombatModePolicy {
 				case MELEE_AIM -> config.axeModeAim;
 				case TRIGGER -> config.axeModeTrigger;
 				case AXE_STUN -> config.axeModeStun;
+				case AXE_CRIT -> config.axeModeCrit;
 				case PROJECTILE_AIM -> config.axeModeProjectileAim
 						&& (config.axeModeBowAim || config.axeModeCrossbowAim);
 				case BOW_AIM -> config.axeModeProjectileAim && config.axeModeBowAim;
@@ -110,6 +111,7 @@ public final class CombatModePolicy {
 			case SWORD_AI_AIM -> c.swordAiEnabled && c.swordAiAim;
 			case SWORD_AI_JUMP -> c.swordAiEnabled && c.swordAiJump;
 			case AXE_STUN -> c.axeStun;
+			case AXE_CRIT -> c.axeCrit;
 			case PROJECTILE_AIM, BOW_AIM, CROSSBOW_AIM, FIREBALL_AIM -> c.autoAim;
 			case AUTO_MACE -> c.autoMace;
 			case MACE_AIM -> c.autoMace;

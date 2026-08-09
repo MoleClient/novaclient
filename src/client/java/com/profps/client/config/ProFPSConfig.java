@@ -58,6 +58,7 @@ public final class ProFPSConfig {
 
 	public boolean axeModeAim = true;
 	public boolean axeModeStun = true;
+	public boolean axeModeCrit = true;
 	public boolean axeModeProjectileAim = true;
 	public boolean axeModeBowAim = true;
 	public boolean axeModeCrossbowAim = true;
@@ -168,6 +169,10 @@ public final class ProFPSConfig {
 	public int axeStunReactionMs = 110;   // humanized reaction before the swap fires
 	public int axeStunSwitchBackMs = 90;  // gap between the axe hit and swapping back (~1+ server tick)
 	public boolean axeStunRestorePrevious = false; // standalone: restore the exact pre-axe hotbar slot
+
+	// Axe Crit — you jump onto a player holding an axe; this releases the swing on the descent,
+	// past 0.9 charge and with the sprint dropped, which is what vanilla actually needs for the 1.5x.
+	public boolean axeCrit = false;
 
 	// Auto Breachswap — visible sword→Breach-mace handoff on a crit descent.
 	public boolean autoBreachSwap = false;     // advanced; off by default
