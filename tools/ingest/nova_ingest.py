@@ -29,9 +29,12 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# A batch is ~400 rows of a few hundred bytes, gzipped. Anything near this ceiling is not one of
-# ours, so the cap is a filter as much as a memory bound.
-MAX_BODY_BYTES = 8 * 1024 * 1024
+# A real 400-row batch measured 26 KB gzipped, and the worst plausible one — full entity slots and
+# a large dictionary — is under 100 KB. 1 MB is an order of magnitude of headroom and still an
+# order of magnitude tighter than the 8 MB this used to allow. That matters more than the rate
+# limit does: on Cloudflare's free plan a blocked IP is only held for 10 seconds, so the ceiling on
+# a sustained flood is (requests allowed) x (this number), and this is the half we control.
+MAX_BODY_BYTES = 1024 * 1024
 # Only ever inflate enough to read the header line. Never inflate the whole body: that is what
 # turns a 1 MB request into a disk-filling one.
 MAX_HEADER_BYTES = 512 * 1024
@@ -109,9 +112,18 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
 
     def _reply(self, code: int, payload: bytes = b"") -> None:
+        # Errors are answered without reading the request body — that refusal is the whole point of
+        # the size cap. But on a keep-alive connection the unread body is then parsed as the next
+        # request line, which produces a bogus 414 locally and a 502 through the tunnel, so the
+        # client never sees the real status. Closing the connection is the correct way to reject a
+        # request you have not drained.
+        if code >= 400:
+            self.close_connection = True
         self.send_response(code)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Content-Type", "application/json")
+        if code >= 400:
+            self.send_header("Connection", "close")
         self.end_headers()
         if payload:
             self.wfile.write(payload)

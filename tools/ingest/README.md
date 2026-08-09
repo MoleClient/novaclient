@@ -31,13 +31,17 @@ Stdlib only, no dependencies. Flags: `--port` (8787), `--quota-gb` (200), `--tok
 `CLIENT_TOKEN` in [ContributionUploader.java](../../src/client/java/com/profps/client/data/ContributionUploader.java)).
 
 It refuses anything that is not a `POST /v1/ticks` with the right bearer token, caps bodies at
-8 MB, and inflates only as far as the first newline to read the batch header — the body itself is
+1 MB (a real 400-row batch is ~26 KB), and inflates only as far as the first newline to read the batch header — the body itself is
 never fully decompressed, so a gzip bomb costs nothing. Session and pseudonym are matched against
 strict hex patterns before they are allowed anywhere near a file path. `GET /healthz` returns
 counters.
 
-Verified against a live server: valid batches `204`, wrong token `401`, `../../../../etc/passwd`
+Verified against the live endpoint: valid batches `204`, wrong token `401`, `../../../../etc/passwd`
 as a session id `400`, and a 199 KB body that inflates to 200 MB `400`.
+
+An oversized body is answered without being read, so the connection is closed rather than left
+holding an undelivered 2 MB — through the tunnel that surfaces to the sender as `502` rather than
+`413`. Only abuse reaches that path; a real batch is two orders of magnitude under the cap.
 
 ## Tunnel
 
