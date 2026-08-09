@@ -119,6 +119,17 @@ public abstract class InputMixin {
 					input = axeCritTap;
 					overridden = true;
 				}
+
+				// The stun-slam drops the sprint for its axe tap for a different
+				// reason: a sprinting hit above 0.9 charge pays a knockback bonus,
+				// and that bonus is what used to shove the target out of reach
+				// before the mace could land.
+				PlayerInput stunTap = com.profps.client.instants.AutoMaceController
+						.stunSprintOverride(input);
+				if (stunTap != null) {
+					input = stunTap;
+					overridden = true;
+				}
 			}
 
 			// Silent aim turns the body away from where the player is looking, and

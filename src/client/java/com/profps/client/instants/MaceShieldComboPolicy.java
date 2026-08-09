@@ -5,10 +5,16 @@ final class MaceShieldComboPolicy {
 	private MaceShieldComboPolicy() {}
 
 	/**
-	 * Hold the armed mace when the axe connected early in the descent but vanilla's
+	 * Hold the armed mace while the combo is still in the air but vanilla's
 	 * 1.5-block smash threshold has not been crossed yet.
+	 *
+	 * <p>The airborne test is deliberately not "falling". Between the axe tap and
+	 * the swap back the arc can still be rising, or sitting at the apex where
+	 * vertical velocity passes through zero; treating those ticks as ground
+	 * combat spent the mace hit early, at no fall distance, for none of the smash
+	 * bonus the whole combo is for.
 	 */
-	static boolean waitForSmash(boolean armedFollowup, boolean falling, boolean smashing) {
-		return armedFollowup && falling && !smashing;
+	static boolean waitForSmash(boolean armedFollowup, boolean airborne, boolean smashing) {
+		return armedFollowup && airborne && !smashing;
 	}
 }
