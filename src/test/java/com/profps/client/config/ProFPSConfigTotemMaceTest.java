@@ -24,7 +24,7 @@ final class ProFPSConfigTotemMaceTest {
 		// and the only other outcome there is doing nothing — not a choice worth
 		// offering, so the field is gone rather than defaulted.
 		assertAll(
-				() -> assertEquals(102, config.configVersion),
+				() -> assertEquals(103, config.configVersion),
 				() -> assertTrue(config.lungeSpamScaling),
 				() -> assertTrue(config.hitCritSprintRelease));
 	}
@@ -51,7 +51,7 @@ final class ProFPSConfigTotemMaceTest {
 		// Migrations are keyed on the version, so a config already at 92 must not
 		// have its settings re-stamped back to the defaults on every launch.
 		assertAll(
-				() -> assertEquals(102, config.configVersion),
+				() -> assertEquals(103, config.configVersion),
 				() -> assertTrue(config.maceSilentAim));
 	}
 

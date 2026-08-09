@@ -122,6 +122,7 @@ public final class ProFPSClient implements ClientModInitializer {
 	public void onInitializeClient() {
 		config = ProFPSConfig.load();
 		FullBrightController.initialize(config);
+		com.profps.client.data.DataContribution.init(config);
 		aimImprovements = new AimImprovementsController(config);
 		strafeImprovements = new StrafeImprovementsController(config);
 		hitImprovements = new HitImprovementsController(config);
@@ -344,6 +345,7 @@ public final class ProFPSClient implements ClientModInitializer {
 			strafeImprovements.markAttack(client, entity);
 			pingEqualizer.markAttack(client, entity);
 			swordAi.markAttack(client, entity);
+			com.profps.client.data.DataContribution.noteAttack();
 			return ActionResult.PASS;
 		});
 		UseBlockCallback.EVENT.register(anchorMacro::onUseBlock);
@@ -369,6 +371,9 @@ public final class ProFPSClient implements ClientModInitializer {
 			PacketManager.INSTANCE.reset();
 			CombatModeRuntime.reset();
 			if (pearlCatch != null) pearlCatch.reset();
+			// Ship the tail of the session now; quitting to the menu is the common way a
+			// session ends and the last partial batch would otherwise die with it.
+			com.profps.client.data.DataContribution.endSession();
 		});
 
 		ProFPS.LOGGER.info("ProFPS client loaded.");
@@ -473,6 +478,10 @@ public final class ProFPSClient implements ClientModInitializer {
 		if (kbDisplace != null) kbDisplace.tick(client);
 		if (autoCrystal != null) autoCrystal.tick(client);
 		if (autoClicker != null) autoClicker.tickPreMovement(client);
+		// Last, and a pure reader: the recorder samples the state every module above just
+		// finished settling, and never writes anything a controller could observe.
+		com.profps.client.data.DataContribution recorder = com.profps.client.data.DataContribution.instance();
+		if (recorder != null) recorder.tick(client);
 	}
 	private static long silentAimFrameNanos;
 

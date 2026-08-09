@@ -549,7 +549,30 @@ public final class ProFPSConfig {
 	// not persisted here — a fresh session always starts sending normally.
 	public boolean packetUtils = false;
 
-	public int configVersion = 102;
+	// ── Data contribution (the Data page) ────────────────────────────────────────
+	// Anonymous per-tick movement telemetry, uploaded in batches so the recordings can
+	// train movement models. On by default; the first time the Nova GUI opens it says so
+	// in a card above the wordmark, and after that it lives only on the Data page.
+	public boolean dataContribution = true;
+	/**
+	 * Absolute world coordinates, dimension and server address. Deliberately OFF by default
+	 * and kept separate from the master switch: the model wants translation-invariant motion,
+	 * so world coordinates buy nothing for training while being the one field that could
+	 * expose where somebody's base is. Only turn this on for map-aware work.
+	 */
+	public boolean dataContributionLocation = false;
+	/** Set once the first-open card has been dismissed, so it never shows again. */
+	public boolean dataContributionPromptSeen = false;
+	/** Ingest host. A hostname, never a bare IP — it has to terminate real TLS. */
+	public String dataContributionEndpoint = "https://ingest.novaclient.app";
+	/**
+	 * Random per-install salt. The uploaded pseudonym is a hash of the account UUID and this
+	 * salt, so recordings from one install group together for train/test splits without the
+	 * account itself ever leaving the machine. Deleting the config re-anonymises you.
+	 */
+	public String dataContributionSalt = "";
+
+	public int configVersion = 103;
 
 	public static ProFPSConfig load() {
 		Path path = configPath();
@@ -1828,6 +1851,30 @@ public final class ProFPSConfig {
 			// longer touches the hotbar, so the strict-ray option lost its meaning:
 			// the fresh ray is now the whole mechanism rather than a mode.
 			configVersion = 102;
+			changed = true;
+		}
+		if (configVersion < 103) {
+			// Data contribution arrives on by default, but the prompt flag stays false so
+			// every existing install is told about it the next time the GUI opens rather
+			// than being enrolled silently. Location data stays off; it is opt-in only.
+			dataContributionPromptSeen = false;
+			configVersion = 103;
+			changed = true;
+		}
+
+		// An endpoint that is not plain HTTPS is refused rather than repaired: a hand-edited
+		// http:// or bare-IP host would ship the recordings unencrypted or unauthenticated.
+		if (dataContributionEndpoint == null || !dataContributionEndpoint.startsWith("https://")) {
+			dataContributionEndpoint = new ProFPSConfig().dataContributionEndpoint;
+			changed = true;
+		}
+		while (dataContributionEndpoint.endsWith("/")) {
+			dataContributionEndpoint = dataContributionEndpoint.substring(0, dataContributionEndpoint.length() - 1);
+			changed = true;
+		}
+		if (dataContributionSalt == null || dataContributionSalt.length() < 32) {
+			dataContributionSalt = java.util.UUID.randomUUID().toString().replace("-", "")
+					+ java.util.UUID.randomUUID().toString().replace("-", "");
 			changed = true;
 		}
 		return changed;
