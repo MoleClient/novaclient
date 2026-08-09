@@ -137,15 +137,50 @@ grep -rl "assertEquals(103, " src/test/java/ | \
 
 ## 8. Two Cloudflare rules before you publish
 
-The token ships inside a decompilable jar, so it filters scanners, not people. These are what
-actually bound the damage:
+The token ships inside a decompilable jar, so it filters scanners, not people. These two are what
+actually bound the damage, and they cannot be created from the CLI — the tunnel credential has no
+WAF permission, so this is dashboard work.
 
-- **Rate limiting** → Security → WAF → Rate limiting rules. Path equals `/v1/ticks`,
-  ~30 requests per minute per IP, action Block. A real client sends 6.
-- **WAF custom rule** → block where `http.request.uri.path eq "/v1/ticks"` and
-  `http.request.method ne "POST"`.
+Start at [dash.cloudflare.com](https://dash.cloudflare.com) → **goatmath.org** → **Security** →
+**WAF**. (Some accounts now show this as Security → Security rules; the expressions are the same
+either way, and both rule types are available on the free plan.)
 
-Optionally cap upload size at the edge, and turn on Cloudflare's bot-fight mode.
+### Rate limiting rule
+
+Tab **Rate limiting rules** → *Create rule*.
+
+| Field | Value |
+|---|---|
+| Name | `nova-ingest-rate` |
+| Expression (use the *Edit expression* box) | `(http.host eq "ingest.goatmath.org" and http.request.uri.path eq "/v1/ticks")` |
+| Rate | `30` requests per `1 minute` |
+| Counting characteristic | IP |
+| Action | Block, for `10 minutes` |
+
+A real client sends 6 per minute, so 30 leaves plenty of headroom for a spool drain catching up
+after a network drop.
+
+### Method rule
+
+Tab **Custom rules** → *Create rule*.
+
+| Field | Value |
+|---|---|
+| Name | `nova-ingest-method` |
+| Expression | `(http.host eq "ingest.goatmath.org" and http.request.uri.path eq "/v1/ticks" and http.request.method ne "POST")` |
+| Action | Block |
+
+### Check they took
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://ingest.goatmath.org/v1/ticks   # expect 403
+for i in $(seq 1 40); do curl -s -o /dev/null https://ingest.goatmath.org/healthz; done
+```
+
+The GET should turn from `404` (collector said no) into `403` (Cloudflare said no) once the method
+rule is live — that difference is how you tell the rule is actually in the path.
+
+Optional extras: cap request body size at the edge, and turn on Bot Fight Mode.
 
 ---
 
