@@ -29,14 +29,21 @@ import java.util.UUID;
  * GCD-quantized with carry, so on screen it is butter smooth and on the wire
  * every delta is a legitimate integer mouse count.
  *
- * <p>Sequence: health under 5 hearts with a splash heal on the hotbar →
- * instant flick to BEHIND THE SHOULDER, away from the nearby enemy (whichever
- * side is the shorter head travel) pointing steeply down → hotbar rolls to the
- * pot mid-flick → one-tick use tap once the head has genuinely reached the
- * throw line → at ≤2.5 hearts a second pot follows after the vanilla
- * right-click cooldown with a small re-settle → flick back to the original
- * orientation (or live onto the enemy with "Flick To Player") while the hotbar
- * restores mid-turn. Whole single-pot cycle: ~350-450ms.
+ * <p>Sequence: health under 5 hearts with a splash heal on the hotbar → a short
+ * flick STEEPLY DOWN, leaning a little away from the nearby enemy → hotbar
+ * rolls to the pot mid-flick → one-tick use tap once the head has genuinely
+ * reached the throw line → at ≤2.5 hearts a second pot follows after the
+ * vanilla right-click cooldown with a small re-settle → flick back to the
+ * original orientation (or live onto the enemy with "Flick To Player") while
+ * the hotbar restores mid-turn. Whole single-pot cycle: ~350-450ms.
+ *
+ * <p>The motion is deliberately nearly all pitch. Vanilla throws a splash 20
+ * degrees shallower than you are looking, at speed 0.5 under 0.05 gravity, so
+ * from an ~83 degree look the potion lands about three quarters of a block in
+ * front of your feet — and yaw only decides which way that three quarters of a
+ * block points, against a splash radius of four. Turning further is a rounding
+ * error in coverage and a real cost in travel, time and return distance, which
+ * is why the sideways sweep this used to do is gone.
  *
  * <p>Two rules make it reliable next to an aim assist, which is what it shares
  * a duel with. It <b>owns the view</b> for the whole sequence — see
@@ -61,17 +68,17 @@ public final class AutoPotController {
 	 * finished moving; it says nothing about where the head ended up, which is
 	 * the entire difference between a pot at your feet and a pot at theirs.
 	 */
-	private static final float YAW_TOLERANCE = 14.0F;
+	private static final float YAW_TOLERANCE = 30.0F;
 	private static final float PITCH_TOLERANCE = 8.0F;
 	/**
 	 * Below this the throw is no longer landing at your own feet, so it is not a
-	 * heal, it is a gift. A splash thrown this steeply lands within about half a
-	 * block whatever the yaw is doing, which is why pitch is the real safety
-	 * condition and yaw is only the tidiness one.
+	 * heal, it is a gift. This is the ONLY safety condition, because it is the
+	 * only one that does anything: vanilla throws a splash 20 degrees shallower
+	 * than the look, so pitch alone decides whether the potion drops at your feet
+	 * or sails off, and a steep throw lands under a block away whatever the yaw
+	 * is doing.
 	 */
-	private static final float MIN_SAFE_PITCH = 58.0F;
-	/** Never release while the head is still anywhere near the opponent's bearing. */
-	private static final float MIN_ENEMY_SEPARATION = 55.0F;
+	private static final float MIN_SAFE_PITCH = 62.0F;
 
 	private final ProFPSConfig config;
 	private final Random random = new Random();
@@ -206,24 +213,31 @@ public final class AutoPotController {
 		originalYaw = player.getYaw();
 		originalPitch = player.getPitch();
 
-		// Behind the shoulder, away from the enemy bearing — not square across it.
-		// A perpendicular throw put them on the shorter side of every subsequent
-		// error, so any drift at all carried the splash toward them; from behind
-		// the shoulder the same drift carries it away. Still the shorter of the
-		// two sides, so it stays one quick flick rather than a full about-turn.
+		// The flick is almost entirely PITCH. Run the numbers and the yaw barely
+		// matters: a splash leaves the hand 20 degrees shallower than you are
+		// looking (vanilla throws it at pitch - 20) at speed 0.5 under 0.05
+		// gravity, so from an ~83 degree look it lands about three quarters of a
+		// block in front of your feet. Yaw only chooses which direction that
+		// three quarters of a block points, against a splash radius of four. A
+		// big turn buys a rounding error and costs the whole flick: more travel,
+		// more time for something to contest the view, and a return turn just as
+		// long. So nudge just far enough that the small offset leans away from
+		// them, and spend the motion where it actually does something.
 		if (enemy != null) {
-			float toEnemy = bearingTo(player, enemy);
-			float offset = 108.0F + random.nextFloat() * 42.0F;
-			float left = MathHelper.wrapDegrees(toEnemy - offset);
-			float right = MathHelper.wrapDegrees(toEnemy + offset);
-			float travelLeft = Math.abs(MathHelper.wrapDegrees(left - originalYaw));
-			float travelRight = Math.abs(MathHelper.wrapDegrees(right - originalYaw));
-			throwYaw = travelLeft <= travelRight ? left : right;
+			// Turn the short way, opposite to whichever side they are on. Always
+			// a small flick, always leaning the splash away from them.
+			float side = MathHelper.wrapDegrees(bearingTo(player, enemy) - originalYaw) >= 0.0F
+					? -1.0F : 1.0F;
+			throwYaw = MathHelper.wrapDegrees(
+					originalYaw + side * (22.0F + random.nextFloat() * 16.0F));
 		} else {
-			float side = random.nextBoolean() ? 1.0F : -1.0F;
-			throwYaw = MathHelper.wrapDegrees(originalYaw + side * (75.0F + random.nextFloat() * 30.0F));
+			// Nobody to lean away from, so there is nothing for a turn to
+			// achieve. It used to swing 75-105 degrees to one side anyway, which
+			// is most of a sideways flick spent on nothing at all.
+			throwYaw = originalYaw;
 		}
-		throwPitch = 74.0F + random.nextFloat() * 10.0F;
+		// Steep, because the 20 degree shortfall above comes straight off this.
+		throwPitch = 79.0F + random.nextFloat() * 9.0F;
 		potsPlanned = config.autoPotMode == 0 && player.getHealth() <= triggerHealth * 0.5F
 				&& countHealingPots(player) >= 2 ? 2 : 1;
 
@@ -327,20 +341,17 @@ public final class AutoPotController {
 	}
 
 	/**
-	 * The last line of defence: never let a pot go anywhere it could heal the
-	 * opponent instead of you. A steep enough downward throw lands at your own
-	 * feet regardless of bearing, so the pitch carries the guarantee; the bearing
-	 * check only catches the case where the pitch is marginal AND the head is
-	 * still turned toward them. Failing this is not a reason to throw anyway —
-	 * the flick simply times out and the pot stays in the bag, which is strictly
-	 * better than topping them up mid-duel.
+	 * The last line of defence: never let a pot go anywhere but down. A steep
+	 * throw lands at your own feet regardless of bearing, so pitch carries the
+	 * whole guarantee. There used to be a bearing test beside it, and it was
+	 * worse than useless — it protected nothing the pitch did not already cover,
+	 * and because it read the opponent's bearing live, an opponent circling you
+	 * could hold it false for the entire flick. The throw then timed out, the
+	 * cycle retried, and the result was the endless flicking with nothing to
+	 * show for it.
 	 */
 	private boolean safeToThrow(MinecraftClient client, ClientPlayerEntity player) {
-		if (player.getPitch() < MIN_SAFE_PITCH) return false;
-		PlayerEntity enemy = enemyByUuid(client, player);
-		if (enemy == null) return true;
-		float toEnemy = bearingTo(player, enemy);
-		return Math.abs(MathHelper.wrapDegrees(player.getYaw() - toEnemy)) >= MIN_ENEMY_SEPARATION;
+		return player.getPitch() >= MIN_SAFE_PITCH;
 	}
 
 	private float bearingTo(ClientPlayerEntity player, PlayerEntity target) {
@@ -468,7 +479,13 @@ public final class AutoPotController {
 		for (PlayerEntity other : client.world.getPlayers()) {
 			if (!enemyUuid.equals(other.getUuid())) continue;
 			if (!other.isAlive() || other.isSpectator()) return null;
-			return other.squaredDistanceTo(player) <= 40.0 * 40.0 ? other : null;
+			// Bounded to the range they were acquired in, plus slack for the
+			// ground they cover during the cycle. It used to allow forty blocks —
+			// more than three times the acquisition range — so an opponent who
+			// disengaged mid-pot had the "flick to player" return whip the head
+			// across the map onto them, which is not re-acquiring a fight.
+			double bound = ENEMY_RANGE * 1.5;
+			return other.squaredDistanceTo(player) <= bound * bound ? other : null;
 		}
 		return null;
 	}
