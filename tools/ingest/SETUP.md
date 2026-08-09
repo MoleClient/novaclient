@@ -107,7 +107,7 @@ public String dataContributionEndpoint = "https://ingest.yourdomain.com";
 
 ```java
 // ContributionUploader.java — change this before you publish a build
-private static final String CLIENT_TOKEN = "nova-contrib-1";
+private static final String CLIENT_TOKEN = "<yours>";
 ```
 
 Then pass the same token to the collector (the script reads `NOVA_TOKEN` if set, else the default).

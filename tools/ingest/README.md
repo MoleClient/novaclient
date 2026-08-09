@@ -24,7 +24,7 @@ wire. The collector binds loopback only, so the tunnel is the sole way to reach 
 ## Collector
 
 ```bash
-python3 tools/ingest/nova_ingest.py --root ~/nova-data --token nova-contrib-1
+python3 tools/ingest/nova_ingest.py --root ~/nova-data --token "$NOVA_TOKEN"
 ```
 
 Stdlib only, no dependencies. Flags: `--port` (8787), `--quota-gb` (200), `--token` (must match

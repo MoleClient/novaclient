@@ -50,7 +50,7 @@ final class ContributionUploader {
 	 * the hostname from filling the collector, nothing more. Real protection is the tunnel, the
 	 * edge rate limit and the collector only ever appending bytes.
 	 */
-	private static final String CLIENT_TOKEN = "nova-contrib-1";
+	private static final String CLIENT_TOKEN = "nova-Kxq9lQRPaHosMEl9uWf85wBF3vyprjws";
 
 	private final ProFPSConfig config;
 	private final BlockingQueue<Batch> outbound = new ArrayBlockingQueue<>(QUEUE_DEPTH);

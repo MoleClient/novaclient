@@ -13,7 +13,7 @@ set -euo pipefail
 TUNNEL_NAME="${TUNNEL_NAME:-nova-ingest}"
 PORT="${PORT:-8787}"
 DATA_ROOT="${DATA_ROOT:-$HOME/nova-data}"
-TOKEN="${NOVA_TOKEN:-nova-contrib-1}"
+TOKEN="${NOVA_TOKEN:?set NOVA_TOKEN to the same value as CLIENT_TOKEN in ContributionUploader.java}"
 QUOTA_GB="${QUOTA_GB:-200}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
