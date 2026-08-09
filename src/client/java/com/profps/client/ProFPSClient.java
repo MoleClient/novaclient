@@ -348,6 +348,10 @@ public final class ProFPSClient implements ClientModInitializer {
 			com.profps.client.data.DataContribution.noteAttack();
 			return ActionResult.PASS;
 		});
+		UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
+			com.profps.client.data.DataContribution.noteBlockPlace();
+			return ActionResult.PASS;
+		});
 		UseBlockCallback.EVENT.register(anchorMacro::onUseBlock);
 		UseBlockCallback.EVENT.register(autoCrystal::onUseBlock);
 		UseBlockCallback.EVENT.register(autoBed::onUseBlock);

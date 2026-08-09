@@ -1553,6 +1553,7 @@ public final class NovaScreenV2 extends Screen {
 				"Tick-by-tick movement, sent in the background to train the AI.",
 				config.dataContribution, () -> config.dataContribution = !config.dataContribution,
 				x, y, w, live);
+		y = drawContributionStatus(ctx, x, y, w);
 
 		y += 2.0F;
 		for (String line : wrapText("What goes: your position relative to where the session started, "
@@ -1583,6 +1584,27 @@ public final class NovaScreenV2 extends Screen {
 			y += 10.0F;
 		}
 		return y + 4.0F;
+	}
+
+	/**
+	 * Live recording state. Worth the space: the filter refuses any tick a module could have
+	 * touched, so somebody with Flight bound and forgotten would otherwise see a switch that says
+	 * on and wonder why they never contribute anything. This says which module is holding it.
+	 */
+	private float drawContributionStatus(DrawContext ctx, float x, float y, float w) {
+		var recorder = com.profps.client.data.DataContribution.instance();
+		String paused = recorder == null ? null : recorder.pausedReason();
+		boolean recording = config.dataContribution && paused == null;
+		float h = 22.0F;
+
+		NovaRender.roundRect(ctx, x, y, w, h, 6, WELL);
+		NovaRender.roundRectBorder(ctx, x, y, w, h, 6, recording ? accentA(0x4A) : ROW_LINE);
+		float dotX = x + 12.0F;
+		NovaRender.fillCircle(ctx, dotX, y + h / 2.0F, 2.6F, recording ? accent() : GHOST);
+		String label = recording ? "Recording" : "Paused" + (paused == null ? "" : " · " + paused);
+		textScaled(ctx, regular(trimToWidth(label, (w - 30.0F) / T_VAL)), dotX + 8.0F,
+				y + h / 2.0F - 3.0F, recording ? TEXT : FAINT, T_VAL);
+		return y + h + 6.0F;
 	}
 
 	private float drawThemePage(DrawContext ctx, float mx, float my, float x, float y, float w, boolean live) {

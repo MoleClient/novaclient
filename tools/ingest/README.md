@@ -79,8 +79,9 @@ the jar, so it filters scanners, not anyone who decompiles it:
 ## Reading the corpus
 
 ```bash
-python3 tools/ingest/read_ticks.py ~/nova-data                 # summary
-python3 tools/ingest/read_ticks.py ~/nova-data --human-only    # drop module-driven ticks
+python3 tools/ingest/read_ticks.py ~/nova-data                    # summary
+python3 tools/ingest/read_ticks.py ~/nova-data --activity combat  # one activity
+python3 tools/ingest/read_ticks.py ~/nova-data --human-only       # drop module-driven ticks
 python3 tools/ingest/read_ticks.py ~/nova-data --csv out.csv
 ```
 
@@ -109,11 +110,55 @@ Field order **is** the wire format. Append to the end of `FIELDS` / `ENTITY_FIEL
 `SCHEMA`; never insert into the middle. A row writer that disagrees with the declared count throws
 on the first tick instead of silently shifting every later column.
 
-### The two columns that matter most
+### Activity and segments
 
-`overridden` is set when the player's real keys disagree with the input the body was given —
-i.e. a module was driving. Those ticks are not human movement and `--human-only` drops them. Train
-on them by accident and the model learns to imitate the cheat, not the player.
+Every tick is labelled `combat`, `mining`, `building`, `traveling`, `falling`, `swimming`,
+`riding`, `idle` or `menu`, and consecutive ticks of the same label share a `segment` number. So
+"every PvP engagement" is a filter on two columns rather than a search.
+
+Combat is held for three seconds past the last exchange — the disengage and the reposition are part
+of the fight, and cutting at the last swing would teach a model that fights stop mid-motion. `pvp`
+distinguishes a player opponent from a mob; `threat_dist` is the nearest one.
+
+Segments also break across gaps. When the module gate drops a run of ticks, the next kept tick
+starts a fresh segment, so nothing downstream reads across a hole as continuous motion.
+
+```bash
+python3 read_ticks.py ~/nova-data --activity combat
+```
+
+### Module filtering
+
+This is what makes the corpus real gameplay rather than a recording of the client's own modules.
+A model trained on Triggerbot's swings learns Triggerbot's timing; one trained on Freecam learns
+to fly.
+
+The gate walks the live module catalogue every tick, and **any module it does not explicitly
+recognise as harmless suppresses recording**. New modules are excluded until somebody classifies
+them — the fail-safe points the right way. Three scopes:
+
+| Scope | Effect | Modules |
+|---|---|---|
+| `NONE` | recorded normally | `fullbright`, `nickname`, `nickother` |
+| `BLOCKS` | mining and building ticks dropped | `autotool`, `fastbreak`, `breakon`, `fastplace`, `autosign` |
+| `COMBAT` | fighting ticks dropped | `totem`, `fastuse`, `autoarmor`, `refill`, `autohotbar`, `cheststeal`, `invcleaner` |
+| `ALL` | nothing recorded | **everything else** — all 60-odd movement, aim, view, netcode and ESP modules |
+
+The scopes are independent vetoes, not a severity ladder: AutoTool and Auto Totem on together
+suppress mining *and* combat while still keeping traversal. ESP-type modules are `ALL` on purpose —
+seeing players through walls changes how someone moves, so those ticks are not ordinary play even
+though no packet was forged.
+
+Momentary modules report their toggle as permanently off and fire straight off a keybind, so the
+gate also treats a held module keybind as active. After anything clears, recording stays off for a
+further 40 ticks: knockback, momentum and swing cooldown outlive the module that caused them.
+
+`overridden` is a backstop on top of all that — set whenever the player's real keys disagree with
+the input the body was handed. `--human-only` drops those rows.
+
+**Expect this to reject a lot.** On a client where somebody keeps half a dozen modules on, most
+sessions contribute nothing, which is the correct outcome. The Data settings page shows a live
+`Recording` / `Paused · <module> is on` line so it is never a mystery.
 
 `abs_x/abs_y/abs_z` are zero unless the contributor turned on location data; the header's
 `"location"` flag says which, so zeros are never mistaken for someone standing at world origin.

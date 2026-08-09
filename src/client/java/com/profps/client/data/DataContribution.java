@@ -42,7 +42,7 @@ import java.util.UUID;
  */
 public final class DataContribution {
 	/** Bump when the field order below changes. Rows are positional, so readers key off this. */
-	static final int SCHEMA = 1;
+	static final int SCHEMA = 2;
 
 	private static final int MAX_TRACKED = 4;
 	private static final double TRACK_RADIUS = 32.0D;
@@ -79,7 +79,11 @@ public final class DataContribution {
 			"ledge_n", "ledge_e", "ledge_s", "ledge_w", "wall_dist", "head_room",
 			"near_count", "player_count",
 			// Zero unless the player opted into location data; the batch header says which.
-			"abs_x", "abs_y", "abs_z"
+			"abs_x", "abs_y", "abs_z",
+			// What the player is doing, and a segment id that groups consecutive ticks of it.
+			// The segment also breaks across any gap the module gate left, so nothing downstream
+			// reads across dropped ticks as though the motion were continuous.
+			"activity", "segment", "ms_in_activity", "pvp", "threat_dist"
 	};
 
 	/** Positional field names for each tracked nearby entity. Same append-only rule. */
@@ -92,6 +96,8 @@ public final class DataContribution {
 
 	private final ProFPSConfig config;
 	private final ContributionUploader uploader;
+	private final ContributionGate gate = new ContributionGate();
+	private final ActivityClassifier activity = new ActivityClassifier();
 
 	private ClientWorld sessionWorld;
 	private long sessionStartMs;
@@ -106,6 +112,7 @@ public final class DataContribution {
 	private boolean lastOnGround = true;
 	private boolean lastSwinging;
 	private boolean lastUsing;
+	private boolean lastBreaking;
 	private int lastHurtTime;
 	private int lastSlot = -1;
 	private final List<String> pendingEvents = new ArrayList<>(4);
@@ -128,12 +135,9 @@ public final class DataContribution {
 		if (instance != null) instance.pendingEvents.add("attack");
 	}
 
+	/** Called from the block-use path; also what flips the activity label to building. */
 	public static void noteBlockPlace() {
 		if (instance != null) instance.pendingEvents.add("place");
-	}
-
-	public static void noteBlockBreak() {
-		if (instance != null) instance.pendingEvents.add("break");
 	}
 
 	/** Seals the session's last batch. Called on disconnect; the JVM exit path spools separately. */
@@ -165,7 +169,7 @@ public final class DataContribution {
 		}
 
 		try {
-			uploader.submit(row(client, self, world));
+			sample(client, self, world);
 		} catch (RuntimeException exception) {
 			// Telemetry must never be able to take the client down with it. One bad row is
 			// dropped and the session carries on; a broken recorder is not worth a crash.
@@ -174,6 +178,49 @@ public final class DataContribution {
 			pendingEvents.clear();
 			tickIndex++;
 		}
+	}
+
+	/**
+	 * Works out what this tick is before deciding whether to keep it. The order matters: events
+	 * and the entity list feed the activity label, the label plus the module gate decide whether
+	 * the row is real play, and only then is anything encoded. Per-tick deltas are advanced either
+	 * way, so a delta is always "since the previous tick" rather than silently spanning a gap.
+	 */
+	private void sample(MinecraftClient client, ClientPlayerEntity self, ClientWorld world) {
+		Vec3d pos = self.getEntityPos();
+		Vec3d velocity = self.getVelocity();
+		PlayerInput input = self.input == null ? PlayerInput.DEFAULT : self.input.playerInput;
+		GameOptions keys = client.options;
+		boolean overridden = keys.forwardKey.isPressed() != input.forward()
+				|| keys.backKey.isPressed() != input.backward()
+				|| keys.leftKey.isPressed() != input.left()
+				|| keys.rightKey.isPressed() != input.right()
+				|| keys.jumpKey.isPressed() != input.jump()
+				|| keys.sneakKey.isPressed() != input.sneak()
+				|| keys.sprintKey.isPressed() != input.sprint();
+
+		detectEdges(client, self, velocity);
+		List<Entity> tracked = nearby(world, self);
+		long nowMs = System.currentTimeMillis();
+		activity.update(client, self, tracked, velocity, tickIndex, nowMs, pendingEvents);
+		gate.update(client, config, overridden);
+
+		if (!gate.allows(activity.activity())) {
+			// Deliberately not recorded: a module is driving this. Advancing the deltas here is
+			// what keeps the next kept row honest instead of carrying a stale reference point.
+			lastPos = pos;
+			lastYaw = self.getYaw();
+			lastPitch = self.getPitch();
+			return;
+		}
+		uploader.submit(row(client, self, world, tracked, input, overridden, nowMs));
+	}
+
+	/** What the Data settings page shows: null while recording, otherwise why it is paused. */
+	public String pausedReason() {
+		if (!config.dataContribution) return "Turned off";
+		String reason = gate.reason();
+		return reason == null ? null : reason + " is on";
 	}
 
 	private void beginSession(MinecraftClient client, ClientPlayerEntity self, ClientWorld world) {
@@ -217,7 +264,8 @@ public final class DataContribution {
 		return entry == null ? "unknown" : entry.address;
 	}
 
-	private String row(MinecraftClient client, ClientPlayerEntity self, ClientWorld world) {
+	private String row(MinecraftClient client, ClientPlayerEntity self, ClientWorld world,
+			List<Entity> tracked, PlayerInput input, boolean overridden, long nowMs) {
 		Vec3d pos = self.getEntityPos();
 		Vec3d delta = lastPos == null ? Vec3d.ZERO : pos.subtract(lastPos);
 		Vec3d velocity = self.getVelocity();
@@ -225,11 +273,8 @@ public final class DataContribution {
 		float yaw = self.getYaw();
 		float pitch = self.getPitch();
 
-		PlayerInput input = self.input == null ? PlayerInput.DEFAULT : self.input.playerInput;
 		Vec2f movement = self.input == null ? Vec2f.ZERO : self.input.getMovementInput();
 		BlockPos feet = self.getBlockPos();
-
-		detectEdges(self, velocity);
 
 		RowWriter w = new RowWriter(FIELDS.length, uploader);
 		w.n(tickIndex);
@@ -250,21 +295,13 @@ public final class DataContribution {
 		w.n(self.getHungerManager().getFoodLevel()); w.n(self.getHungerManager().getSaturationLevel());
 		w.n(self.getAir()); w.n(self.hurtTime);
 		GameOptions keys = client.options;
-		boolean kForward = keys.forwardKey.isPressed();
-		boolean kBack = keys.backKey.isPressed();
-		boolean kLeft = keys.leftKey.isPressed();
-		boolean kRight = keys.rightKey.isPressed();
-		boolean kJump = keys.jumpKey.isPressed();
-		boolean kSneak = keys.sneakKey.isPressed();
-		boolean kSprint = keys.sprintKey.isPressed();
-		w.b(kForward); w.b(kBack); w.b(kLeft); w.b(kRight);
-		w.b(kJump); w.b(kSneak); w.b(kSprint);
+		w.b(keys.forwardKey.isPressed()); w.b(keys.backKey.isPressed());
+		w.b(keys.leftKey.isPressed()); w.b(keys.rightKey.isPressed());
+		w.b(keys.jumpKey.isPressed()); w.b(keys.sneakKey.isPressed()); w.b(keys.sprintKey.isPressed());
 		w.b(keys.attackKey.isPressed()); w.b(keys.useKey.isPressed());
 		w.b(input.forward()); w.b(input.backward()); w.b(input.left()); w.b(input.right());
 		w.b(input.jump()); w.b(input.sneak()); w.b(input.sprint());
-		w.b(kForward != input.forward() || kBack != input.backward()
-				|| kLeft != input.left() || kRight != input.right()
-				|| kJump != input.jump() || kSneak != input.sneak() || kSprint != input.sprint());
+		w.b(overridden);
 		w.n(movement.x); w.n(movement.y);
 		w.n(self.getInventory().getSelectedSlot());
 		w.s(itemId(self.getMainHandStack())); w.s(itemId(self.getOffHandStack()));
@@ -278,15 +315,25 @@ public final class DataContribution {
 		w.n(wallDistance(world, self, pos));
 		w.n(headRoom(world, feet));
 
-		List<Entity> tracked = nearby(world, self);
 		int players = 0;
-		for (Entity entity : tracked) if (entity instanceof PlayerEntity) players++;
+		double threat = -1.0D;
+		for (Entity entity : tracked) {
+			if (entity instanceof PlayerEntity) players++;
+			double distance = Math.sqrt(entity.getEntityPos().squaredDistanceTo(self.getEyePos()));
+			if (threat < 0.0D || distance < threat) threat = distance;
+		}
 		w.n(tracked.size()); w.n(players);
 
 		boolean location = config.dataContributionLocation;
 		w.n(location ? pos.x : 0.0D);
 		w.n(location ? pos.y : 0.0D);
 		w.n(location ? pos.z : 0.0D);
+
+		w.s(activity.activity());
+		w.n(activity.segment());
+		w.n(activity.msInActivity(nowMs));
+		w.b(activity.pvp());
+		w.n(threat);
 
 		lastPos = pos;
 		lastYaw = yaw;
@@ -298,9 +345,16 @@ public final class DataContribution {
 	 * Turns state transitions into the sparse event list. Kept to edges the client can see for
 	 * itself so that no combat module has to call into the recorder and change its own timing.
 	 */
-	private void detectEdges(ClientPlayerEntity self, Vec3d velocity) {
+	private void detectEdges(MinecraftClient client, ClientPlayerEntity self, Vec3d velocity) {
 		if (self.handSwinging && !lastSwinging) pendingEvents.add("swing");
 		lastSwinging = self.handSwinging;
+
+		boolean breaking = client.interactionManager != null && client.interactionManager.isBreakingBlock();
+		if (breaking && !lastBreaking) pendingEvents.add("break_start");
+		// The falling edge is "stopped breaking", which covers both finishing the block and
+		// letting go of it. The mining label already says which stretch was the dig.
+		if (!breaking && lastBreaking) pendingEvents.add("break_end");
+		lastBreaking = breaking;
 
 		if (self.isUsingItem() && !lastUsing) pendingEvents.add("use_start");
 		if (!self.isUsingItem() && lastUsing) pendingEvents.add("use_end");

@@ -54,7 +54,8 @@ def read_session(path: Path, human_only: bool = False) -> Iterator[dict]:
 
             row = dict(zip(fields, record["f"]))
             # String-valued columns arrive as dictionary indices; put the strings back.
-            for column in ("main_item", "off_item", "dim", "block_below", "block_feet", "block_head"):
+            for column in ("main_item", "off_item", "dim", "block_below", "block_feet",
+                           "block_head", "activity"):
                 index = row.get(column)
                 if isinstance(index, int) and 0 <= index < len(dictionary):
                     row[column] = dictionary[index]
@@ -80,6 +81,7 @@ def main() -> int:
     parser.add_argument("--csv", help="flatten local-player fields to this CSV")
     parser.add_argument("--human-only", action="store_true",
                         help="drop ticks where a module overrode the player's input")
+    parser.add_argument("--activity", help="keep only this activity (combat, traveling, mining, …)")
     args = parser.parse_args()
 
     root = Path(args.root).expanduser()
@@ -92,17 +94,24 @@ def main() -> int:
     overridden = 0
     contributors: set[str] = set()
     events: Counter = Counter()
+    activities: Counter = Counter()
+    segments: set[tuple] = set()
     writer = None
     handle = None
 
     try:
         for session in sessions:
             for row in read_session(session, human_only=args.human_only):
+                if args.activity and row.get("activity") != args.activity:
+                    continue
                 ticks += 1
                 overridden += 1 if row.get("overridden") else 0
                 if row.get("_pseudonym"):
                     contributors.add(row["_pseudonym"])
                 events.update(row["_events"])
+                if row.get("activity"):
+                    activities[row["activity"]] += 1
+                    segments.add((row.get("_session"), row.get("segment")))
 
                 if args.csv:
                     flat = {k: v for k, v in row.items() if not k.startswith("_")}
@@ -124,6 +133,12 @@ def main() -> int:
     if not args.human_only:
         share = 100.0 * overridden / ticks if ticks else 0.0
         print(f"module-driven {overridden:,} ticks ({share:.1f}%) — filter with --human-only")
+    if segments:
+        print(f"segments      {len(segments):,}")
+    if activities:
+        print("activity      " + ", ".join(
+            f"{name}={count:,} ({100.0 * count / ticks:.0f}%)"
+            for name, count in activities.most_common()))
     if events:
         print("events        " + ", ".join(f"{name}={count:,}" for name, count in events.most_common()))
     if args.csv:
