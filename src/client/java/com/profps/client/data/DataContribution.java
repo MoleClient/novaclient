@@ -128,6 +128,8 @@ public final class DataContribution {
 	private boolean[] lastKeys;
 	private long recorded;
 	private long skipped;
+	/** Last gate verdict, so only transitions are logged rather than a sample of blocked ticks. */
+	private boolean lastBlocked;
 	private final List<String> pendingEvents = new ArrayList<>(4);
 
 	private DataContribution(ProFPSConfig config) {
@@ -231,18 +233,22 @@ public final class DataContribution {
 		activity.update(client, self, tracked, velocity, tickIndex, nowMs, pendingEvents);
 		gate.update(client, config, overridden);
 
-		if (!gate.allows(activity.activity())) {
+		boolean blocked = !gate.allows(activity.activity());
+		// Log the EDGES, not a sample of the blocked ticks. A rate-limited counter told me nothing
+		// when the count stayed at zero while the UI still said paused — the two disagreeing is
+		// itself the symptom, so record both sides of every transition.
+		if (blocked != lastBlocked) {
+			ProFPS.LOGGER.info("Data contribution {}: reason={} activity={} overridden={}{} kept={} skipped={}",
+					blocked ? "PAUSED" : "resumed",
+					gate.reason(), activity.activity(), overridden,
+					overridden ? " " + describeOverride(previousKeys, applied) : "",
+					recorded, skipped);
+			lastBlocked = blocked;
+		}
+		if (blocked) {
 			// Deliberately not recorded: a module is driving this. Advancing the deltas here is
 			// what keeps the next kept row honest instead of carrying a stale reference point.
 			skipped++;
-			// Rate-limited so a long suppression does not flood the log, but frequent enough that
-			// "why is the corpus empty" is answerable from logs/latest.log instead of guesswork.
-			if (skipped % 200L == 1L) {
-				ProFPS.LOGGER.info("Data contribution paused: {} (activity {}, {} skipped so far){}",
-						gate.reason() == null ? "input override" : gate.reason(),
-						activity.activity(), skipped,
-						overridden ? " " + describeOverride(previousKeys, applied) : "");
-			}
 			lastPos = pos;
 			lastYaw = self.getYaw();
 			lastPitch = self.getPitch();
