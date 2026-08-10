@@ -114,7 +114,7 @@ public final class NovaScreenV2 extends Screen {
 	private static final float DESIGN_H = 596.0F;
 
 	/** Wordmark suffix. One line to bump when the build rolls over. */
-	private static final String BUILD_LABEL = "Beta06";
+	private static final String BUILD_LABEL = "Beta06 General";
 	/** How long "Client" holds each theme colour, and how much of that is the crossfade. */
 	private static final long CYCLE_MS = 10_000L;
 	private static final float CYCLE_FADE_MS = 1_400.0F;
