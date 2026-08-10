@@ -51,6 +51,11 @@ final class ContributionGate {
 			Map.entry("fullbright", Taint.NONE),
 			Map.entry("nickname", Taint.NONE),
 			Map.entry("nickother", Taint.NONE),
+			// Deliberate exception, chosen by the author. Unlike the entries above this one does
+			// grant information — it draws player boxes through walls — so movement recorded under
+			// it reflects a player who knew where people were. It draws nothing and sends nothing,
+			// which is the line drawn here, but the corpus is not strictly unassisted because of it.
+			Map.entry("hitboxes", Taint.NONE),
 			// Reach only into breaking and placing.
 			Map.entry("fastbreak", Taint.BLOCKS),
 			Map.entry("autotool", Taint.BLOCKS),

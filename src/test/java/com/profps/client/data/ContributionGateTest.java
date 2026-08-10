@@ -82,6 +82,22 @@ class ContributionGateTest {
 				() -> assertEquals(Taint.ALL, ContributionGate.scopeOf("aim")));
 	}
 
+	/**
+	 * Hitboxes is an explicit exception the author asked for, and the only render module that is
+	 * exempt despite granting information (it draws players through walls). Pinned so it is not
+	 * quietly swept back into ALL alongside the ESP modules it otherwise resembles.
+	 */
+	@Test
+	void hitboxesIsTheDeliberateRenderExemption() {
+		assertAll(
+				() -> assertEquals(Taint.NONE, ContributionGate.scopeOf("hitboxes")),
+				() -> assertTrue(ContributionGate.allows(EnumSet.noneOf(Taint.class),
+						ActivityClassifier.COMBAT)),
+				// but it does not extend to the ESP family it sits near in the UI
+				() -> assertEquals(Taint.ALL, ContributionGate.scopeOf("mobesp")),
+				() -> assertEquals(Taint.ALL, ContributionGate.scopeOf("storageesp")));
+	}
+
 	@Test
 	void classifiedModulesKeepTheirNarrowScope() {
 		assertAll(

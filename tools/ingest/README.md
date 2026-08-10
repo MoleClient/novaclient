@@ -143,10 +143,14 @@ them — the fail-safe points the right way. Three scopes:
 
 | Scope | Effect | Modules |
 |---|---|---|
-| `NONE` | recorded normally | `fullbright`, `nickname`, `nickother` |
+| `NONE` | recorded normally | `fullbright`, `nickname`, `nickother`, `hitboxes`\* |
 | `BLOCKS` | mining and building ticks dropped | `autotool`, `fastbreak`, `breakon`, `fastplace`, `autosign` |
 | `COMBAT` | fighting ticks dropped | `totem`, `fastuse`, `autoarmor`, `refill`, `autohotbar`, `cheststeal`, `invcleaner` |
 | `ALL` | nothing recorded | **everything else** — all 60-odd movement, aim, view, netcode and ESP modules |
+
+\* `hitboxes` is a deliberate exception. Unlike the other `NONE` entries it does grant
+information — it draws player boxes through walls — so sessions recorded under it are not strictly
+unassisted. It draws nothing and sends nothing, which is where the line was drawn.
 
 The scopes are independent vetoes, not a severity ladder: AutoTool and Auto Totem on together
 suppress mining *and* combat while still keeping traversal. ESP-type modules are `ALL` on purpose —
