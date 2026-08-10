@@ -222,6 +222,7 @@ public final class DataContribution {
 				input.jump(), input.sneak(), input.sprint()
 		};
 		boolean overridden = inputOverridden(lastKeys, applied);
+		boolean[] previousKeys = lastKeys;
 		lastKeys = pressed;
 
 		detectEdges(client, self, velocity);
@@ -237,9 +238,10 @@ public final class DataContribution {
 			// Rate-limited so a long suppression does not flood the log, but frequent enough that
 			// "why is the corpus empty" is answerable from logs/latest.log instead of guesswork.
 			if (skipped % 200L == 1L) {
-				ProFPS.LOGGER.info("Data contribution paused: {} (activity {}, {} skipped so far)",
+				ProFPS.LOGGER.info("Data contribution paused: {} (activity {}, {} skipped so far){}",
 						gate.reason() == null ? "input override" : gate.reason(),
-						activity.activity(), skipped);
+						activity.activity(), skipped,
+						overridden ? " " + describeOverride(previousKeys, applied) : "");
 			}
 			lastPos = pos;
 			lastYaw = self.getYaw();
@@ -393,6 +395,20 @@ public final class DataContribution {
 		lastYaw = yaw;
 		lastPitch = pitch;
 		return w.finish(tickIndex, entityRows(client, self, pos, tracked), pendingEvents);
+	}
+
+	private static final String[] INPUT_NAMES = {"forward","back","left","right","jump","sneak","sprint"};
+
+	/** Names exactly which inputs disagreed and which way, so a false positive is diagnosable. */
+	static String describeOverride(boolean[] lastKeys, boolean[] applied) {
+		if (lastKeys == null) return "[no previous tick]";
+		StringBuilder out = new StringBuilder("[");
+		for (int i = 0; i < lastKeys.length; i++) {
+			if (lastKeys[i] == applied[i]) continue;
+			if (out.length() > 1) out.append(", ");
+			out.append(INPUT_NAMES[i]).append(lastKeys[i] ? ": held but not applied" : ": applied but not held");
+		}
+		return out.append(']').toString();
 	}
 
 	/**

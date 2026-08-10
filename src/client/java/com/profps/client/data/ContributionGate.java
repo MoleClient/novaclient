@@ -3,7 +3,6 @@ package com.profps.client.data;
 import com.profps.client.config.ProFPSConfig;
 import com.profps.client.ui.nova.NovaModules;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.util.InputUtil;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -102,7 +101,7 @@ final class ContributionGate {
 			for (NovaModules.Category category : categories) {
 				for (NovaModules.Module module : category.modules) {
 					Taint scope = scopeOf(module.id);
-					if (scope == Taint.NONE || !isActive(client, config, module)) continue;
+					if (scope == Taint.NONE || !isActive(module)) continue;
 					found.add(scope);
 					// Name the widest-reaching one, since that is the one worth turning off.
 					if (blame == null || scope == Taint.ALL) blame = module.name;
@@ -138,15 +137,18 @@ final class ContributionGate {
 	}
 
 	/**
-	 * A module counts as active when its toggle is on, or when its bound key is down. The keybind
-	 * check is what catches the momentary modules: those report {@code false} forever and fire
-	 * straight off the key, so the toggle alone would never see them.
+	 * A module counts as active when its toggle is on. Nothing else.
+	 *
+	 * <p>This used to also treat a held module keybind as active, to catch the momentary modules —
+	 * they report {@code false} forever and fire straight off the key. It was wrong twice over. For
+	 * an ordinary module the keybind just flips the config field this already reads, so it added
+	 * nothing; for a momentary one the key being down only means the module was <em>asked</em> to
+	 * fire, and it may decline — Auto Lunge on Left Alt read as permanently active without ever
+	 * doing anything. Each false positive costs 40 ticks, so the check destroyed far more data than
+	 * the momentary modules it was meant to catch could ever have contaminated.
 	 */
-	private static boolean isActive(MinecraftClient client, ProFPSConfig config, NovaModules.Module module) {
-		if (Boolean.TRUE.equals(module.get.get())) return true;
-		Integer key = config.moduleKeybinds.get(module.id);
-		return key != null && key > 0 && client.getWindow() != null
-				&& InputUtil.isKeyPressed(client.getWindow(), key);
+	private static boolean isActive(NovaModules.Module module) {
+		return Boolean.TRUE.equals(module.get.get());
 	}
 
 	/** Whether a tick with this activity label survives every taint currently in force. */
