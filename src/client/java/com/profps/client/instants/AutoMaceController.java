@@ -9,9 +9,13 @@ import com.profps.client.combatmode.CombatModeRuntime;
 import com.profps.client.config.ProFPSConfig;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.AttributeModifiersComponent;
 import net.minecraft.enchantment.EnchantmentHelper;
 import net.minecraft.enchantment.Enchantments;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -327,6 +331,13 @@ public final class AutoMaceController {
 		boolean confirmed = confirmedVanillaTarget(client, player, target);
 		boolean smash = isSmashing(player);
 		if (!confirmed) {
+			// Waiting a tick for the ray is fine — the fall only grows, so a later slam hits
+			// harder. What is not fine is holding the armed bypass open indefinitely: once the
+			// combo has clearly lost the target, drop it so the next hit resolves under ordinary
+			// ground rules instead of spending a stale smash bypass on an unrelated swing.
+			if (stunSmashFollowup && player.age >= maceReadyAge + STUN_RAY_GRACE_TICKS) {
+				stunSmashFollowup = false;
+			}
 			return;
 		}
 		// The axe may connect a fraction before fallDistance reaches the vanilla
@@ -387,7 +398,10 @@ public final class AutoMaceController {
 				&& shieldPhase == 0 && now >= shieldComboUntilNanos
 				&& isDiving(player)) {
 			int axe = findAxe(player);
-			if (axe >= 0 && isHoldingShield(target)) {
+			// Only commit when the slam will still be high enough to beat the axe tap when it
+			// actually swings. See slamWillLand — this is the difference between a combo and an
+			// axe tap that throws the dive away.
+			if (axe >= 0 && isHoldingShield(target) && slamWillLand(player, axe)) {
 				if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_MACE)) return;
 				maceSlot = player.getInventory().getSelectedSlot(); // remember the mace slot
 				// A legal, ordered handoff: select the axe now, let one movement
@@ -537,6 +551,41 @@ public final class AutoMaceController {
 
 	private boolean isFalling(ClientPlayerEntity player) {
 		return !player.isOnGround() && player.getVelocity().y < 0.0D;
+	}
+
+	/** Base attack damage a weapon grants in the main hand, read off its attribute modifiers. */
+	private static double attackDamageOf(ItemStack stack) {
+		AttributeModifiersComponent modifiers = stack.getOrDefault(
+				DataComponentTypes.ATTRIBUTE_MODIFIERS, AttributeModifiersComponent.DEFAULT);
+		// The player's own 1.0 base is included so this is the real hit, not just the bonus.
+		return modifiers.applyOperations(EntityAttributes.ATTACK_DAMAGE, 1.0D, EquipmentSlot.MAINHAND);
+	}
+
+	/**
+	 * Whether committing to the combo right now ends in a slam that actually damages them.
+	 *
+	 * <p>This replaced a bare {@code isDiving} check, and that swap is the whole fix. The axe tap
+	 * takes the invulnerability window at full charge and — because the combo drops sprint while
+	 * falling — as a 1.5× crit, so the mace has to strictly beat roughly 15 damage a few ticks
+	 * later on a clock the axe just reset. Below about 3.8 blocks of fall it cannot, and vanilla
+	 * discards the hit entirely. The old trigger fired at 1.3 blocks, which projects to ~3.2 by the
+	 * time the mace swings: under the line every time, which is exactly why this landed an axe tap
+	 * and nothing else.
+	 *
+	 * <p>Both weapons are measured rather than assumed, so a weaker axe correctly lowers the bar
+	 * instead of the rule being tuned around netherite.
+	 */
+	private boolean slamWillLand(ClientPlayerEntity player, int axeSlot) {
+		if (!isFalling(player)) return false;
+		ItemStack axe = player.getInventory().getStack(axeSlot);
+		ItemStack mace = player.getMainHandStack();
+		if (axe.isEmpty() || mace.isEmpty()) return false;
+		// The tap happens a couple of ticks out with the clock still where it is now, and it crits
+		// because by then the combo has dropped sprint and we are still descending.
+		return StunSlamPolicy.worthCommitting(
+				player.fallDistance, player.getVelocity().y,
+				attackDamageOf(axe), player.getAttackCooldownProgress(0.0F), true,
+				attackDamageOf(mace), player.getAttackCooldownProgressPerTick());
 	}
 
 	/**
