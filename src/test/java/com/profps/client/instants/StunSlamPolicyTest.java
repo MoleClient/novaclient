@@ -101,6 +101,24 @@ class StunSlamPolicyTest {
 		assertTrue(wooden < netherite, wooden + " should be less than " + netherite);
 	}
 
+	/**
+	 * The rule the controller now uses: sprint is kept below 0.9 charge, so the tap does not crit
+	 * and the floor collapses. This is what makes an ordinary dive land instead of being refused.
+	 */
+	@Test
+	void keepingSprintBelowTheLaunchThresholdMakesOrdinaryDivesLand() {
+		double axeSprinted = StunSlamPolicy.axeTapDamage(NETHERITE_AXE, 0.9D, false);
+		double axeCrit = StunSlamPolicy.axeTapDamage(NETHERITE_AXE, 1.0D, true);
+		assertAll(
+				() -> assertTrue(StunSlamPolicy.breakEvenFall(axeSprinted, MACE, MACE_CHARGE_AT_SLAM) < 2.0D),
+				() -> assertTrue(StunSlamPolicy.breakEvenFall(axeCrit, MACE, MACE_CHARGE_AT_SLAM) > 3.5D),
+				// a 1.5-block dive: refused under the old crit floor, lands under the new rule
+				() -> assertFalse(StunSlamPolicy.worthCommitting(1.5D, -0.6D,
+						NETHERITE_AXE, 1.0D, true, MACE, MACE_CHARGE_AT_SLAM)),
+				() -> assertTrue(StunSlamPolicy.worthCommitting(1.5D, -0.6D,
+						NETHERITE_AXE, 0.9D, false, MACE, MACE_CHARGE_AT_SLAM)));
+	}
+
 	/** Not critting the axe halves the problem — worth knowing if the sprint rule ever changes. */
 	@Test
 	void aNonCritAxeIsMuchEasierToBeat() {

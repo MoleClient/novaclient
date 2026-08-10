@@ -46,15 +46,30 @@ import java.util.UUID;
  * When an axe is in the hotbar it can run a stun-slam combo against a confirmed shielding
  * target: a quick axe tap, then a swap back to the mace on the same tick for the smash.
  *
- * <p>That combo only ever starts from a real descent, and the reason is arithmetic. The
- * axe tap zeroes the shared attack clock and a mace takes about 33 ticks to recharge, so
- * the follow-up is always a low-charge hit. That is fine while falling — {@code
- * MaceItem.getBonusAttackDamage} returns a pure fall-distance bonus that vanilla adds
- * AFTER the charge multiplier, so a 6% smash still keeps roughly three quarters of its
- * damage and comfortably beats the axe hit it has to exceed inside the invulnerability
- * window. On the ground that bonus is zero, and the follow-up is then worth less than the
- * hit it is trying to override — which is to say worth nothing. A shielder on flat ground
- * belongs to Axe Stun; this takes the ones it can actually finish.
+ * <p>That combo only ever starts from a real descent, and the reason is arithmetic. The axe
+ * tap zeroes the shared attack clock, so the mace follow-up is always a low-charge hit
+ * carried almost entirely by {@code MaceItem.getBonusAttackDamage} — a pure fall-distance
+ * bonus vanilla adds AFTER the charge multiplier.
+ *
+ * <p>The part that matters, and that an earlier version of this comment got wrong: inside the
+ * invulnerability window vanilla does not reduce a follow-up, it <em>discards</em> it unless it
+ * strictly exceeds the hit before it. So the axe tap's own damage is the bar the slam has to
+ * clear, and the combo is only worth starting when it can. Two things follow, and both run
+ * counter to what looks like good play:
+ *
+ * <ul>
+ *   <li>Do not make the axe tap strong. A crit tap sets a 15-damage floor a low-charge mace
+ *       needs ~3.8 blocks of fall to beat; an uncharged one sets ~2 and is beaten almost
+ *       immediately. Dropping sprint "to land a cleaner tap" bought exactly the 1.5x crit that
+ *       made the slam impossible.</li>
+ *   <li>Do not wait for mace charge before starting. A smash is paid for by the fall, not the
+ *       clock, and waiting is what let the axe reach full charge in the first place.</li>
+ * </ul>
+ *
+ * <p>Sprint is therefore kept unless the charge is above 0.9, which is the only place vanilla
+ * pays the knockback bonus that launches them out of reach. See {@link StunSlamPolicy}. On the
+ * ground the fall bonus is zero and nothing can beat the tap, so a flat-ground shielder still
+ * belongs to Axe Stun.
  */
 public final class AutoMaceController {
 	private static final long DISENGAGE_NANOS = 120_000_000L; // brief post-hit gap
@@ -103,7 +118,7 @@ public final class AutoMaceController {
 	private int maceReadyAge;         // never select a mace and attack in the same client tick
 	private boolean stunSmashFollowup; // bypass is permitted only inside the same genuine falling smash
 	private long stunSmashUntilNanos;  // and only for the airtime that combo belongs to
-	private volatile boolean sprintDropRequest; // published W-tap: a sprinting axe tap launches them out of reach
+	private volatile boolean sprintDropRequest; // published W-tap, only above 0.9 charge where the launch is real
 
 	// The mace is a dive weapon, so the auto handoff is a loan: remember what was in hand before it
 	// and give that back once the fall is over. Without this the Wind Burst mace stayed out while you
@@ -275,8 +290,14 @@ public final class AutoMaceController {
 			// axes and never slams. The tap is also a crit once the sprint is
 			// gone. The request is published a tick ahead, so this is normally
 			// already satisfied; the bound stops a stall if it never clears.
-			sprintDropRequest = true;
-			if (player.isSprinting() && player.age < shieldActionAge + 2) return;
+			// Sprinting is only a problem above 0.9 charge — that is exactly where vanilla pays
+			// the knockback bonus that used to launch them out of the slam's reach. Below it,
+			// staying sprinted is strictly better: it costs nothing and it denies the 1.5x crit,
+			// and that crit was the floor the mace had to beat. Dropping sprint to "improve" the
+			// tap was raising the bar by half and killing the combo it was meant to help.
+			boolean wouldLaunch = player.getAttackCooldownProgress(0.0F) > 0.9F;
+			sprintDropRequest = wouldLaunch;
+			if (wouldLaunch && player.isSprinting() && player.age < shieldActionAge + 2) return;
 
 			if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_MACE)) return;
 			attackShieldWithEquippedAxe(client, player, target);
@@ -340,39 +361,6 @@ public final class AutoMaceController {
 			}
 			return;
 		}
-		// The axe may connect a fraction before fallDistance reaches the vanilla
-		// smash threshold. Preserve the armed follow-up through that part of the
-		// descent instead of treating it as ground combat and spending the mace hit
-		// too early. If the player lands first, it safely falls back to ground rules.
-		boolean followupLive = stunSmashFollowup && now < stunSmashUntilNanos;
-		if (MaceShieldComboPolicy.waitForSmash(followupLive, !player.isOnGround(), smash)) return;
-
-		// Ground combat retains an acquisition dwell, including a shield-breaking
-		// axe tap. It starts when the player is acquired so aiming, equipping and
-		// reaction overlap instead of stacking three independent delays.
-		if (!smash) {
-			stunSmashFollowup = false;
-			if (onTargetSinceNanos == 0L) {
-				beginGroundSettle(now, tuning);
-			}
-			if (now - onTargetSinceNanos < settleNeededNanos) return;
-		}
-
-		float threshold = MathHelper.clamp(
-				smash ? tuning.smashChargePct() : tuning.groundChargePct(), 0, 100) / 100.0F;
-		boolean responsiveStunSmash = followupLive && smash;
-		float cooldown = player.getAttackCooldownProgress(0.0F);
-		double remainingChargeMs = Math.max(0.0D, threshold - cooldown)
-				* player.getAttackCooldownProgressPerTick() * 50.0D;
-		double holdBudgetMs = chargeHoldBudgetNanos / 1_000_000.0D;
-		if (autoEquippedThisEngagement) holdBudgetMs = Math.min(holdBudgetMs, 70.0D);
-		boolean firstContact = attacksThisEngagement == 0
-				&& now - lastAttackNanos >= MaceAttackTimingPolicy.MIN_INITIAL_REATTACK_NANOS;
-		boolean attackReady = responsiveStunSmash || MaceAttackTimingPolicy.shouldAttack(
-				cooldown, threshold, firstContact, smash, remainingChargeMs,
-				holdBudgetMs);
-		if (!attackReady) return;
-
 		// ── Stun-slam initiation (axe tap on a shielder) ─────────────────────────
 		// Only when you're genuinely aimed at a shielder with an axe in the hotbar (crosshair-
 		// gated just above, so it's a legal hit). The axe tap disables their raised shield AND
@@ -415,6 +403,40 @@ public final class AutoMaceController {
 				return;
 			}
 		}
+
+
+		// The axe may connect a fraction before fallDistance reaches the vanilla
+		// smash threshold. Preserve the armed follow-up through that part of the
+		// descent instead of treating it as ground combat and spending the mace hit
+		// too early. If the player lands first, it safely falls back to ground rules.
+		boolean followupLive = stunSmashFollowup && now < stunSmashUntilNanos;
+		if (MaceShieldComboPolicy.waitForSmash(followupLive, !player.isOnGround(), smash)) return;
+
+		// Ground combat retains an acquisition dwell, including a shield-breaking
+		// axe tap. It starts when the player is acquired so aiming, equipping and
+		// reaction overlap instead of stacking three independent delays.
+		if (!smash) {
+			stunSmashFollowup = false;
+			if (onTargetSinceNanos == 0L) {
+				beginGroundSettle(now, tuning);
+			}
+			if (now - onTargetSinceNanos < settleNeededNanos) return;
+		}
+
+		float threshold = MathHelper.clamp(
+				smash ? tuning.smashChargePct() : tuning.groundChargePct(), 0, 100) / 100.0F;
+		boolean responsiveStunSmash = followupLive && smash;
+		float cooldown = player.getAttackCooldownProgress(0.0F);
+		double remainingChargeMs = Math.max(0.0D, threshold - cooldown)
+				* player.getAttackCooldownProgressPerTick() * 50.0D;
+		double holdBudgetMs = chargeHoldBudgetNanos / 1_000_000.0D;
+		if (autoEquippedThisEngagement) holdBudgetMs = Math.min(holdBudgetMs, 70.0D);
+		boolean firstContact = attacksThisEngagement == 0
+				&& now - lastAttackNanos >= MaceAttackTimingPolicy.MIN_INITIAL_REATTACK_NANOS;
+		boolean attackReady = responsiveStunSmash || MaceAttackTimingPolicy.shouldAttack(
+				cooldown, threshold, firstContact, smash, remainingChargeMs,
+				holdBudgetMs);
+		if (!attackReady) return;
 
 		if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_MACE)) return;
 		client.interactionManager.attackEntity(player, target);
@@ -582,9 +604,14 @@ public final class AutoMaceController {
 		if (axe.isEmpty() || mace.isEmpty()) return false;
 		// The tap happens a couple of ticks out with the clock still where it is now, and it crits
 		// because by then the combo has dropped sprint and we are still descending.
+		// The tap crits only if we have to drop sprint to avoid the knockback launch, which is
+		// only above 0.9 charge. Predict the same rule the tap will use so the decision and the
+		// hit agree about how big a floor the mace is being asked to clear.
+		float charge = player.getAttackCooldownProgress(0.0F);
+		boolean willCrit = charge > 0.9F;
 		return StunSlamPolicy.worthCommitting(
 				player.fallDistance, player.getVelocity().y,
-				attackDamageOf(axe), player.getAttackCooldownProgress(0.0F), true,
+				attackDamageOf(axe), charge, willCrit,
 				attackDamageOf(mace), player.getAttackCooldownProgressPerTick());
 	}
 
