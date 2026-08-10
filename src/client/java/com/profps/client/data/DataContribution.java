@@ -234,6 +234,13 @@ public final class DataContribution {
 			// Deliberately not recorded: a module is driving this. Advancing the deltas here is
 			// what keeps the next kept row honest instead of carrying a stale reference point.
 			skipped++;
+			// Rate-limited so a long suppression does not flood the log, but frequent enough that
+			// "why is the corpus empty" is answerable from logs/latest.log instead of guesswork.
+			if (skipped % 200L == 1L) {
+				ProFPS.LOGGER.info("Data contribution paused: {} (activity {}, {} skipped so far)",
+						gate.reason() == null ? "input override" : gate.reason(),
+						activity.activity(), skipped);
+			}
 			lastPos = pos;
 			lastYaw = self.getYaw();
 			lastPitch = self.getPitch();
