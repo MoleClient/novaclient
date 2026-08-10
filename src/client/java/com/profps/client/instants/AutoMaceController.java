@@ -6,6 +6,7 @@ import com.profps.client.combatmode.CombatFeature;
 import com.profps.client.combatmode.CombatModePolicy;
 import com.profps.client.combatmode.CombatModeProfile;
 import com.profps.client.combatmode.CombatModeRuntime;
+import com.profps.ProFPS;
 import com.profps.client.config.ProFPSConfig;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -24,6 +25,7 @@ import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -127,6 +129,7 @@ public final class AutoMaceController {
 	private int autoSwitchSlot = -1;       // the mace slot this controller selected, or -1
 	private int autoSwitchReturnSlot = -1; // what was held before that handoff, or -1
 	private long diveHoldUntilNanos;       // keep the loan until this passes
+	private int lastSlamRefusalAge;        // so a declined slam logs its reason once, not every tick
 
 	private static AutoMaceController instance;
 
@@ -575,6 +578,28 @@ public final class AutoMaceController {
 		return !player.isOnGround() && player.getVelocity().y < 0.0D;
 	}
 
+	/**
+	 * How far the player can still fall before landing, up to {@code max}. Stepped in half blocks
+	 * from the feet.
+	 *
+	 * <p>The projection alone was not enough: it assumes free fall, but a dive onto somebody
+	 * standing on the ground runs out of air first. Landing early is fatal to the combo rather than
+	 * merely suboptimal — {@code smash} goes false, which switches the mace off its responsive
+	 * bypass and onto the ground rule, and that wants 92% charge on a clock the axe tap just reset
+	 * to about 3%. So the mace never swings at all, and what comes out is an axe tap and nothing
+	 * else. Exactly the symptom.
+	 */
+	private static double groundClearance(ClientPlayerEntity player, double max) {
+		net.minecraft.world.World world = player.getEntityWorld();
+		if (world == null) return max;
+		Vec3d pos = player.getEntityPos();
+		for (double drop = 0.5D; drop <= max; drop += 0.5D) {
+			BlockPos probe = BlockPos.ofFloored(pos.x, pos.y - drop, pos.z);
+			if (!world.getBlockState(probe).getCollisionShape(world, probe).isEmpty()) return drop;
+		}
+		return max;
+	}
+
 	/** Base attack damage a weapon grants in the main hand, read off its attribute modifiers. */
 	private static double attackDamageOf(ItemStack stack) {
 		AttributeModifiersComponent modifiers = stack.getOrDefault(
@@ -609,10 +634,42 @@ public final class AutoMaceController {
 		// hit agree about how big a floor the mace is being asked to clear.
 		float charge = player.getAttackCooldownProgress(0.0F);
 		boolean willCrit = charge > 0.9F;
-		return StunSlamPolicy.worthCommitting(
+		double axeDamage = attackDamageOf(axe);
+		double maceDamage = attackDamageOf(mace);
+		double maceCharge = player.getAttackCooldownProgressPerTick();
+
+		// There has to be air left to fall through, or the slam tick arrives on the ground.
+		double needed = StunSlamPolicy.dropBeforeSlam(player.getVelocity().y);
+		double clearance = groundClearance(player, needed + 1.0D);
+		boolean roomToFall = clearance > needed;
+
+		boolean worth = StunSlamPolicy.worthCommitting(
 				player.fallDistance, player.getVelocity().y,
-				attackDamageOf(axe), charge, willCrit,
-				attackDamageOf(mace), player.getAttackCooldownProgressPerTick());
+				axeDamage, charge, willCrit, maceDamage, maceCharge);
+		if (!worth || !roomToFall) {
+			if (player.age != lastSlamRefusalAge) {
+				lastSlamRefusalAge = player.age;
+				ProFPS.LOGGER.info(
+						"Stun slam declined: fall={} v={} clearance={} needs={} axe={} (charge {}, crit {}) -> {}",
+						String.format("%.2f", player.fallDistance),
+						String.format("%.2f", player.getVelocity().y),
+						String.format("%.2f", clearance), String.format("%.2f", needed),
+						String.format("%.1f", StunSlamPolicy.axeTapDamage(axeDamage, charge, willCrit)),
+						String.format("%.2f", charge), willCrit,
+						!roomToFall ? "would land before the slam" : "slam would be absorbed");
+			}
+			return false;
+		}
+		ProFPS.LOGGER.info("Stun slam committed: fall={} clearance={} projected={} net={}",
+				String.format("%.2f", player.fallDistance), String.format("%.2f", clearance),
+				String.format("%.2f", StunSlamPolicy.projectFall(player.fallDistance,
+						player.getVelocity().y, StunSlamPolicy.SLAM_DELAY_TICKS)),
+				String.format("%.1f", StunSlamPolicy.netSlamDamage(
+						StunSlamPolicy.slamDamage(maceDamage, maceCharge,
+								StunSlamPolicy.projectFall(player.fallDistance,
+										player.getVelocity().y, StunSlamPolicy.SLAM_DELAY_TICKS)),
+						StunSlamPolicy.axeTapDamage(axeDamage, charge, willCrit))));
+		return true;
 	}
 
 	/**

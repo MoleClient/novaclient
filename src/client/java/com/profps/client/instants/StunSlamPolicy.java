@@ -67,6 +67,21 @@ public final class StunSlamPolicy {
 	}
 
 	/**
+	 * How far the player descends before the mace swings — the vertical room the dive needs. The
+	 * fall projection is not sufficient on its own: it assumes nothing interrupts the fall, and a
+	 * dive onto somebody standing on the ground lands first.
+	 */
+	public static double dropBeforeSlam(double velocityY) {
+		double v = velocityY;
+		double drop = 0.0D;
+		for (int i = 0; i < SLAM_DELAY_TICKS; i++) {
+			v = (v - GRAVITY) * DRAG;
+			if (v < 0.0D) drop += -v;
+		}
+		return drop;
+	}
+
+	/**
 	 * Where {@code fallDistance} will be in {@code ticks}, stepping vanilla gravity. Used to decide
 	 * at commit time whether there will still be enough fall left when the mace finally swings —
 	 * the old check asked about the fall <em>now</em>, which is the wrong moment by three ticks.
