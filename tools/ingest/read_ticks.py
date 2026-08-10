@@ -67,11 +67,19 @@ def read_session(path: Path, human_only: bool = False) -> Iterator[dict]:
             row["_pseudonym"] = meta.get("pseudonym")
             row["_schema"] = meta.get("schema")
             row["_events"] = [dictionary[i] for i in record.get("v", []) if i < len(dictionary)]
-            row["_entities"] = [
-                {**dict(zip(entity_fields, entity)),
-                 "type": dictionary[entity[0]] if entity and entity[0] < len(dictionary) else None}
-                for entity in record.get("e", [])
-            ]
+            entities = []
+            for entity in record.get("e", []):
+                # Deliberately not named `fields`: that is the outer list of local-player column
+                # names, and shadowing it here silently decodes every later row against the
+                # entity schema instead.
+                columns = dict(zip(entity_fields, entity))
+                # "type" is dictionary-encoded; resolve it by name, not by position, so the
+                # column order can grow without silently decoding the wrong field.
+                index = columns.get("type")
+                if isinstance(index, int) and 0 <= index < len(dictionary):
+                    columns["type"] = dictionary[index]
+                entities.append(columns)
+            row["_entities"] = entities
             yield row
 
 

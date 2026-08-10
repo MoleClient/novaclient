@@ -42,7 +42,7 @@ import java.util.UUID;
  */
 public final class DataContribution {
 	/** Bump when the field order below changes. Rows are positional, so readers key off this. */
-	static final int SCHEMA = 2;
+	static final int SCHEMA = 3;
 
 	private static final int MAX_TRACKED = 4;
 	private static final double TRACK_RADIUS = 32.0D;
@@ -86,9 +86,17 @@ public final class DataContribution {
 			"activity", "segment", "ms_in_activity", "pvp", "threat_dist"
 	};
 
-	/** Positional field names for each tracked nearby entity. Same append-only rule. */
+	/**
+	 * Positional field names for each tracked nearby entity. Same append-only rule.
+	 *
+	 * <p>{@code id} is what makes the four slots followable. They are sorted players-first then by
+	 * distance, so when two opponents swap ranks between ticks slot 0 silently becomes a different
+	 * person — without an identity you cannot track one opponent through a fight, which is exactly
+	 * what a combat model has to learn from. The network id is stable for as long as the entity is
+	 * tracked in the session and says nothing about who it belongs to.
+	 */
 	static final String[] ENTITY_FIELDS = {
-			"type", "is_player", "dx", "dy", "dz", "dist",
+			"id", "type", "is_player", "dx", "dy", "dz", "dist",
 			"vx", "vy", "vz",
 			"yaw", "pitch", "bearing", "facing_us",
 			"health", "on_ground", "sprint", "sneak", "using", "blocking", "hurt", "swinging"
@@ -425,6 +433,7 @@ public final class DataContribution {
 					Math.toDegrees(Math.atan2(rel.x, -rel.z)) - entity.getYaw());
 
 			RowWriter w = new RowWriter(ENTITY_FIELDS.length, uploader);
+			w.n(entity.getId());
 			w.s(Registries.ENTITY_TYPE.getId(entity.getType()).toString());
 			w.b(entity instanceof PlayerEntity);
 			w.n(rel.x); w.n(rel.y); w.n(rel.z); w.n(dist);
