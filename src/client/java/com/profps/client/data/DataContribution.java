@@ -67,10 +67,11 @@ public final class DataContribution {
 			// The human's actual key state this tick — the label a movement model predicts.
 			"key_forward", "key_back", "key_left", "key_right",
 			"key_jump", "key_sneak", "key_sprint", "key_attack", "key_use",
-			// What the body was actually given, which a module may have rewritten.
+			// What the body was actually given. Note this lags key_* by one tick by construction:
+			// it was written during the previous player tick, before this sample was taken.
 			"eff_forward", "eff_back", "eff_left", "eff_right", "eff_jump", "eff_sneak", "eff_sprint",
-			// Set when the two disagree: this tick is synthetic and should be filtered out of
-			// any "real human movement" split rather than trusted as a training label.
+			// A module rewrote the movement input. Computed from the two aligned to the SAME tick,
+			// not from the two columns above — those are a tick apart and differ on every keypress.
 			"overridden",
 			"mv_side", "mv_fwd",
 			"slot", "main_item", "off_item", "attack_cd",
@@ -123,6 +124,8 @@ public final class DataContribution {
 	private boolean lastBreaking;
 	private int lastHurtTime;
 	private int lastSlot = -1;
+	/** Previous tick's raw key state, so `overridden` compares like with like. See sample(). */
+	private boolean[] lastKeys;
 	private long recorded;
 	private long skipped;
 	private final List<String> pendingEvents = new ArrayList<>(4);
@@ -201,13 +204,25 @@ public final class DataContribution {
 		Vec3d velocity = self.getVelocity();
 		PlayerInput input = self.input == null ? PlayerInput.DEFAULT : self.input.playerInput;
 		GameOptions keys = client.options;
-		boolean overridden = keys.forwardKey.isPressed() != input.forward()
-				|| keys.backKey.isPressed() != input.backward()
-				|| keys.leftKey.isPressed() != input.left()
-				|| keys.rightKey.isPressed() != input.right()
-				|| keys.jumpKey.isPressed() != input.jump()
-				|| keys.sneakKey.isPressed() != input.sneak()
-				|| keys.sprintKey.isPressed() != input.sprint();
+		boolean[] pressed = {
+				keys.forwardKey.isPressed(), keys.backKey.isPressed(),
+				keys.leftKey.isPressed(), keys.rightKey.isPressed(),
+				keys.jumpKey.isPressed(), keys.sneakKey.isPressed(), keys.sprintKey.isPressed()
+		};
+
+		// The two samples are a tick apart and have to be aligned before they can be compared.
+		// This runs at the tail of handleInputEvents(); `input.playerInput` was last written by
+		// KeyboardInput.tick() during the PREVIOUS player tick, so it reflects the keyboard as it
+		// was then, not as it is now. Comparing it against the keys held right now flags every
+		// press and every release as an override — symmetric, transition-only noise that has
+		// nothing to do with modules. So compare last tick's keys against last tick's applied
+		// input, which is like for like.
+		boolean[] applied = {
+				input.forward(), input.backward(), input.left(), input.right(),
+				input.jump(), input.sneak(), input.sprint()
+		};
+		boolean overridden = inputOverridden(lastKeys, applied);
+		lastKeys = pressed;
 
 		detectEdges(client, self, velocity);
 		List<Entity> tracked = nearby(world, self);
@@ -225,7 +240,7 @@ public final class DataContribution {
 			return;
 		}
 		recorded++;
-		uploader.submit(row(client, self, world, tracked, input, overridden, nowMs));
+		uploader.submit(row(client, self, world, tracked, input, pressed, overridden, nowMs));
 	}
 
 	/** What the Data settings page shows: null while recording, otherwise why it is paused. */
@@ -298,7 +313,7 @@ public final class DataContribution {
 	}
 
 	private String row(MinecraftClient client, ClientPlayerEntity self, ClientWorld world,
-			List<Entity> tracked, PlayerInput input, boolean overridden, long nowMs) {
+			List<Entity> tracked, PlayerInput input, boolean[] pressed, boolean overridden, long nowMs) {
 		Vec3d pos = self.getEntityPos();
 		Vec3d delta = lastPos == null ? Vec3d.ZERO : pos.subtract(lastPos);
 		Vec3d velocity = self.getVelocity();
@@ -327,11 +342,10 @@ public final class DataContribution {
 		w.n(self.getHealth()); w.n(self.getAbsorptionAmount());
 		w.n(self.getHungerManager().getFoodLevel()); w.n(self.getHungerManager().getSaturationLevel());
 		w.n(self.getAir()); w.n(self.hurtTime);
-		GameOptions keys = client.options;
-		w.b(keys.forwardKey.isPressed()); w.b(keys.backKey.isPressed());
-		w.b(keys.leftKey.isPressed()); w.b(keys.rightKey.isPressed());
-		w.b(keys.jumpKey.isPressed()); w.b(keys.sneakKey.isPressed()); w.b(keys.sprintKey.isPressed());
-		w.b(keys.attackKey.isPressed()); w.b(keys.useKey.isPressed());
+		// The same snapshot sample() took, not a fresh read: re-reading here could land on the
+		// other side of a keypress and disagree with the flag computed moments ago.
+		for (boolean held : pressed) w.b(held);
+		w.b(client.options.attackKey.isPressed()); w.b(client.options.useKey.isPressed());
 		w.b(input.forward()); w.b(input.backward()); w.b(input.left()); w.b(input.right());
 		w.b(input.jump()); w.b(input.sneak()); w.b(input.sprint());
 		w.b(overridden);
@@ -372,6 +386,26 @@ public final class DataContribution {
 		lastYaw = yaw;
 		lastPitch = pitch;
 		return w.finish(tickIndex, entityRows(client, self, pos, tracked), pendingEvents);
+	}
+
+	/**
+	 * Whether a module rewrote the movement input, given the keys held on the previous tick and the
+	 * input that was actually applied for that same tick.
+	 *
+	 * <p>Both arguments must describe the SAME tick. Comparing the keys held right now against the
+	 * already-applied input is off by one and flags every press and release, which is symmetric,
+	 * transition-only noise — and because an override suppresses recording for 40 ticks, it starved
+	 * the corpus to about 2% of real play before this was caught.
+	 *
+	 * @param lastKeys previous tick's raw keyboard state, or null on the very first tick
+	 * @param applied  the input actually given to the body for that same tick
+	 */
+	static boolean inputOverridden(boolean[] lastKeys, boolean[] applied) {
+		if (lastKeys == null) return false;
+		for (int i = 0; i < lastKeys.length; i++) {
+			if (lastKeys[i] != applied[i]) return true;
+		}
+		return false;
 	}
 
 	/**
