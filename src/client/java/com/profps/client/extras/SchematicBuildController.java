@@ -1,11 +1,13 @@
 package com.profps.client.extras;
 
 import com.profps.ProFPS;
+import com.profps.client.aim.SilentAimController;
 import com.profps.client.config.ProFPSConfig;
 import com.profps.client.donutsmp.FreecamController;
 import com.profps.client.donutsmp.HumanizedAim;
 import com.profps.client.donutsmp.TunnelController;
 import com.profps.client.mixin.BlockItemInvoker;
+import com.profps.client.mixin.ClientPlayerInteractionManagerAccessor;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
@@ -19,6 +21,7 @@ import net.minecraft.item.Item;
 import net.minecraft.item.ItemPlacementContext;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.registry.tag.FluidTags;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.state.property.Property;
@@ -66,28 +69,26 @@ import java.util.Set;
  * until one sweep places nothing at all, which is what lets a cell missed for a
  * blocked route or a body in the way still get built.
  *
- * <p>Auto Move uses a bounded A* path made only of legal walk, step/jump, safe
- * drop, or creative-flight cells. It publishes ordinary {@link PlayerInput}; it
- * never teleports or writes velocity. View motion is applied every render frame
- * by the same mouse-grid humanized aim engine used by the mining controllers.
- * Every placement still requires a real raycast, a real support face, an
- * available material, vanilla placement prediction, and vanilla
+ * <p>With Auto Move on the controller owns the body: it proves a stand that
+ * yields the right block rotation, walks there, and steers the view every
+ * render frame with the same mouse-grid humanized aim engine used by the
+ * mining controllers. With Auto Move off the player walks and the printer
+ * works through silent aim, the way the combat modules do: the camera stays
+ * under the player's mouse while the body itself turns to each support face
+ * and clicks. Nothing is clicked that the body is not genuinely looking at,
+ * so rotation, hit vector, and movement always agree in the packet stream —
+ * which is exactly what a simulating anti-cheat re-derives and checks.
+ * Either way, every placement requires a real raycast, a real support face,
+ * an available material, vanilla placement prediction, and vanilla
  * {@code interactBlock}.
  *
- * <p>The controller is never allowed to idle while work is pending: when no
- * cell has a proven stand it walks toward the nearest pending cell anyway,
- * because closing distance is what turns unprovable stands into provable ones.
- * When no stand exists at all it creates one out of temporary blocks — a
- * bridge/staircase causeway planned by {@link SchematicSupportPlanner}, or a
- * straight-up pillar jump-placed beneath the body — then builds from it and
- * cleans it up through the same owned-block ledger as face supports. Movement
- * runs at real player pace: sprint on the ground, sprint-flight in the air.
+ * <p>A cell whose own support face is missing gets one: a bridge/staircase of
+ * temporary blocks planned by {@link SchematicSupportPlanner}, placed and then
+ * mined back out through the same owned-block ledger.
  */
 public final class SchematicBuildController {
-	private static final boolean AUTO_MOVE_AVAILABLE = true;
 	private static final double MAX_REACH = 4.5D;
 	private static final double MAX_REACH_SQUARED = MAX_REACH * MAX_REACH;
-	private static final double STAND_REACH = 4.30D;
 	private static final long RECENT_POSITION_NS = 900_000_000L;
 	private static final int SOURCE_SCAN_PER_TICK = 32_768;
 	private static final int MAX_PENDING_PER_LAYER = 65_536;
@@ -100,38 +101,38 @@ public final class SchematicBuildController {
 	private static final int LAYER_STALL_TICKS = 600;
 	private static final int MAX_BUILD_PASSES = 64;
 	private static final int MAX_LAYER_STEPS_PER_TICK = 64;
+	// Several candidates per tick: one unreachable cell must never cost a whole
+	// tick of stillness while its neighbours are workable.
+	private static final int TARGET_CANDIDATES_PER_TICK = 3;
+	// Stand search. Proving a stand costs up to thirty raycasts plus a vanilla
+	// placement prediction each, so the examine limit is a frame-time budget,
+	// not a quality knob — candidates are ranked before they are proved, and
+	// the ranking is what keeps the good ones inside the budget.
 	private static final int STAND_RADIUS = 4;
 	private static final int STAND_MIN_DY = -3;
 	private static final int STAND_MAX_DY = 3;
-	// Every in-reach candidate is examined; the accept limit is what keeps the
-	// common case cheap, since candidates are ranked before they are proved.
-	private static final int STAND_EXAMINE_LIMIT = 512;
-	private static final int STAND_ACCEPT_LIMIT = 16;
-	private static final int MAX_REPLANS_PER_TARGET = 6;
-	private static final int ANCHOR_STAND_PROOFS_PER_PLAN = 384;
-	private static final int UNSTICK_TRIGGER_TICKS = 16;
-	private static final int UNSTICK_BURST_TICKS = 9;
-	// Never-idle navigation: when no pending cell has a provable stand this
-	// tick, walk toward the nearest one anyway. Approach starts outside this
-	// distance and asks the partial-path search for only modest progress —
-	// 8 keeps the search's minimum-progress clamp at its 2-block floor, so a
-	// short trip (the "standing two blocks behind the build" case) still gets
-	// a route instead of being refused for lack of a long corridor.
-	private static final double APPROACH_MIN_DISTANCE = 4.0D;
-	private static final double APPROACH_PROGRESS = 8.0D;
-	private static final int NAV_CANDIDATES_PER_TICK = 3;
-	// Stand scaffolding: temporary blocks placed for the BODY, not the block.
-	private static final int SCAFFOLD_STAND_EXAMINE_LIMIT = 40;
-	private static final int SCAFFOLD_STAND_PLAN_ATTEMPTS = 8;
-	private static final int MAX_PILLAR_HEIGHT = 24;
-	private static final int PILLAR_STALL_TICKS = 70;
+	private static final int STAND_EXAMINE_LIMIT = 8;
 	private static final int MAX_PATH_NODES = 32_768;
+	// A failed route search is expensive and rarely changes its mind from the
+	// same spot, so it is rate-limited rather than retried every tick.
+	private static final int ROUTE_ATTEMPT_INTERVAL = 8;
 	private static final int SUPPORT_PATH_NODES = 32_768;
 	private static final int SUPPORT_HORIZONTAL_HORIZON = 128;
 	private static final int SUPPORT_DOWNWARD_HORIZON = 128;
 	private static final int MAX_TEMPORARY_BLOCKS_PER_PLAN = 320;
 	private static final int MANUAL_PAUSE_TICKS = 10;
 	private static final int TARGET_RETRY_TICKS = 35;
+	// Printer mode (Auto Move off): how long a clicked cell waits for the
+	// server before it may be clicked again, mirroring Scaffold's confirm
+	// window, and how long a cell whose proof failed sits out of the per-tick
+	// proof budget so it cannot starve the cells behind it in the ranking.
+	private static final long PRINTER_CONFIRM_NS = 350_000_000L;
+	private static final int PRINTER_DEFER_TICKS = 10;
+	// Proofs per printer tick, sized like the stand prover's examine budget.
+	// It must outpace deferred wall-hidden cells expiring back into the
+	// ranking, or they would eat the budget and starve the placeable cells
+	// ranked behind them — the same starvation the old queue suffered.
+	private static final int PRINTER_PROOFS_PER_TICK = 8;
 	private static final int TEMPORARY_CELL_RETRY_TICKS = 400;
 	private static final Set<String> PLACEMENT_PROPERTIES = Set.of(
 			"axis", "facing", "half", "type", "rotation", "attachment", "face",
@@ -150,19 +151,19 @@ public final class SchematicBuildController {
 	private final RememberController remember;
 	private final Random random = new Random();
 	private final HumanizedAim aim = new HumanizedAim();
+	private final SchematicNavigator navigator = new SchematicNavigator(random);
 	private final LitematicaBridge litematica = new LitematicaBridge();
 
-	// Manual-hover mode state (the pre-Auto-Move behavior).
-	private HoverTarget hoverTarget;
-	private long hoverReadyNanos;
 	private long lastPlaceNanos;
 	private BlockPos recentPosition;
 	private long recentPositionUntil;
 
-	// Published input + frame-driven look goal.
+	// Published movement + frame-driven look goal. Movement is read from the
+	// tick thread by InputMixin and written here; the look goal is read from
+	// the render thread by frame().
 	private volatile boolean controlling;
-	private volatile boolean ownsRotation;
 	private volatile PlayerInput movementInput = PlayerInput.DEFAULT;
+	private volatile boolean ownsRotation;
 	private volatile Vec3d aimGoal;
 	private volatile float aimSpeed = 1.0F;
 	private long lastFrameNanos;
@@ -198,46 +199,49 @@ public final class SchematicBuildController {
 
 	// Repeat-until-nothing-moves sweep state.
 	private int passIndex;
+	// Fluids are skipped for the whole dry build, then swept for once on
+	// their own pass. sawDeferredFluid is what remembers there is a pass owed.
+	private boolean fluidPass;
+	private boolean sawDeferredFluid;
 	private int passPlacements;
 	private int passUnplaced;
 	private BlockPos passUnplacedSample;
 
-	// Current target/navigation/placement state.
+	// Current target/placement state.
 	private DesiredBlock target;
 	private WorkKind workKind = WorkKind.SCHEMATIC;
 	private PlacementAim placementAim;
-	private List<SchematicPathfinder.Node> path = List.of();
-	private int pathIndex;
-	private boolean navigationComplete = true;
-	private int transitWaitTicks;
 	private int phaseTicks;
 	private int settleTicks;
 	private int confirmationTicks;
 	private int manualPauseTicks;
-	private int flightActivationPhase;
-	private int flightAttemptCooldownUntil;
-	private int stuckTicks;
-	private int unstickTicks;
-	private int unstickStrafe;
-	private int replanAttempts;
-	private double lastWaypointDistance = Double.POSITIVE_INFINITY;
-	private Vec3d lastDrivePosition;
 	private final ArrayDeque<DesiredBlock> temporaryQueue = new ArrayDeque<>();
 	private final LinkedHashMap<BlockPos, BlockState> ownedTemporaryBlocks = new LinkedHashMap<>();
 	private DesiredBlock temporarySupportGoal;
-	// Pillar scaffold: jump-place a column beneath the body up to pillarTopY.
-	private int pillarColumnX;
-	private int pillarColumnZ;
-	private int pillarTopY;
-	private int pillarStallTicks;
-	private int lastPillarFeetY = Integer.MIN_VALUE;
-	private BlockState pillarMaterial;
 	private int nextCleanupAttemptTick;
+	private int nextRouteAttemptTick;
+	// Posture the current stand was proved under. A stand only reachable
+	// while crouched has to stay crouched for the placement too — standing
+	// up moves the eye 0.35 blocks and puts the work back out of reach.
+	private boolean standSneak;
 	private boolean placementSent;
 	private boolean breakingTemporary;
 	private int breakSwingTicks;
 	private final Map<BlockPos, Integer> retryAfter = new HashMap<>();
+	// Stands that were proved from a distance and then did not work out on
+	// arrival. Without this the builder can walk to the same wrong spot
+	// forever: the proof is deterministic, so re-planning from an unmoved
+	// body returns the identical answer every time.
 	private final Map<BlockPos, Set<SchematicPathfinder.Node>> failedStands = new HashMap<>();
+	// Printer-mode bookkeeping: cells clicked and awaiting the server, cells
+	// whose placement proof just failed (parked for a few ticks), and the cell
+	// the silently-turned body is currently converging on.
+	private final Map<BlockPos, Long> printerClickedAt = new HashMap<>();
+	private final Map<BlockPos, Integer> printerDeferUntil = new HashMap<>();
+	private DesiredBlock printerTarget;
+	private PlacementAim printerAimPlan;
+	private int printerPhaseTicks;
+	private boolean printerEngaged;
 	private int nextStatusTick;
 	private boolean wasEnabled;
 	private String lastTrace = "";
@@ -248,7 +252,7 @@ public final class SchematicBuildController {
 		instance = this;
 	}
 
-	/** True while Auto Move owns the ordinary movement input path. */
+	/** True while the builder owns the ordinary movement input path. */
 	public static boolean isAutoMoving() {
 		return instance != null && instance.controlling;
 	}
@@ -256,6 +260,14 @@ public final class SchematicBuildController {
 	/** Input applied by {@code InputMixin} after the keyboard has been sampled. */
 	public static PlayerInput movementInput() {
 		return instance == null ? PlayerInput.DEFAULT : instance.movementInput;
+	}
+
+	/**
+	 * The Y layer being built right now, or {@link Integer#MIN_VALUE} when the
+	 * builder is idle. Read by the hologram to pick out the working layer.
+	 */
+	public static int activeLayerY() {
+		return instance == null ? Integer.MIN_VALUE : instance.activeLayer;
 	}
 
 	public boolean ownsRotation() {
@@ -282,53 +294,67 @@ public final class SchematicBuildController {
 			return;
 		}
 
-		if (!AUTO_MOVE_AVAILABLE || !config.schematicAutoMove) {
-			cancelTemporaryBreaking(client);
-			releaseAuto();
-			tickManualHover(client);
-			wasEnabled = true;
-			return;
-		}
-
-		resetHover();
 		if (!wasEnabled) {
 			resetPlanning();
 			wasEnabled = true;
 		}
 
-		if (manualInput(client)) {
+		if (manualInteracting(client)) {
 			cancelTemporaryBreaking(client);
-			flightActivationPhase = 0;
 			manualPauseTicks = MANUAL_PAUSE_TICKS;
-			releaseAuto();
+			navigator.pause();
+			releaseControl();
 			return;
 		}
 		if (manualPauseTicks > 0) {
 			manualPauseTicks--;
-			releaseAuto();
+			navigator.pause();
+			releaseControl();
 			return;
 		}
 
-		if (FreecamController.isActive() || TunnelController.isControlling()) {
+		// Another module already owns the view. Never fight it for rotation.
+		if (TunnelController.isControlling() || FreecamController.isActive()) {
+			// Freecam matters as much as Tunnel here: it forces dead keys onto
+			// the body, so anything published while it is on is silently
+			// discarded and the builder would walk a route it never travels.
 			cancelTemporaryBreaking(client);
-			flightActivationPhase = 0;
-			releaseAuto();
+			navigator.pause();
+			releaseControl();
 			return;
 		}
 
 		syncSources(client);
 		if (remembered.isEmpty() && schematicBounds.isEmpty()) {
-			releaseAuto();
-			status(client, "No Remember capture or enabled Litematica placement", Formatting.GRAY, 80);
+			releaseControl();
+			// Say which of the several ways this can go wrong actually happened.
+			// "No placement" and "Litematica renamed its API" are very different
+			// problems and used to read identically.
+			status(client, SchematicLibrary.isLoaded() ? "Loaded schematic is already complete"
+					: litematica.diagnosis(), Formatting.GRAY, 80);
 			return;
 		}
+
+		// Auto Move off: the player is the navigator and keeps the camera. The
+		// builder prints through silent aim — the body turns and clicks while
+		// the screen stays under the player's mouse — and never touches the
+		// movement keys. Everything below this block is stand/route/layer
+		// machinery that only makes sense when the builder moves the body.
+		if (!config.schematicAutoMove) {
+			cancelTemporaryBreaking(client);
+			if (target != null || navigator.isRouting()) {
+				clearTarget();
+				releaseControl();
+			}
+			controlling = false;
+			movementInput = PlayerInput.DEFAULT;
+			printerTick(client);
+			return;
+		}
+
 		if (buildFinished && ownedTemporaryBlocks.isEmpty() && client.player.age >= nextMaintenanceTick) {
 			resetLayerScanner();
 			status(client, "Checking the completed build", Formatting.GRAY, 0);
-		}
-		if (flightActivationPhase > 0) {
-			driveCreativeFlightActivation(client);
-			return;
 		}
 
 		int tick = client.player.age;
@@ -339,8 +365,7 @@ public final class SchematicBuildController {
 		// blocks as progress would let scaffolding alone keep a layer alive
 		// forever without ever placing a schematic block.
 		if (layerProgressTick != Integer.MIN_VALUE
-				&& (!temporaryQueue.isEmpty() || workKind == WorkKind.TEMP_PLACE
-						|| workKind == WorkKind.PILLAR)) {
+				&& (!temporaryQueue.isEmpty() || workKind == WorkKind.TEMP_PLACE)) {
 			layerProgressTick++;
 		}
 		if (target != null) {
@@ -377,14 +402,12 @@ public final class SchematicBuildController {
 					layerProgressTick = client.player.age;
 					if (sameDesiredBlock(temporarySupportGoal, target)) temporarySupportGoal = null;
 				}
-				failedStands.remove(target.pos());
 				clearTarget();
 			}
 		}
 
 		if (confirmationTicks > 0) {
 			confirmationTicks--;
-			releaseMovementOnly();
 			if (target != null) {
 				aimGoal = target.center();
 				ownsRotation = true;
@@ -397,25 +420,25 @@ public final class SchematicBuildController {
 			return;
 		}
 
+		// Walking comes before working: a route in progress owns the tick.
+		if (navigator.isRouting()) {
+			driveRoute(client);
+			return;
+		}
+
 		if (target == null) {
 			if (!prepareTarget(client)) {
-				releaseAuto();
+				releaseControl();
 				return;
 			}
 		}
 
 		if (target == null) return;
-		if (pathIndex < path.size()) {
-			drivePath(client);
+		if (navigator.isRouting()) {
+			driveRoute(client);
 			return;
 		}
-		if (!navigationComplete) {
-			continueTransit(client);
-			return;
-		}
-
 		if (workKind == WorkKind.TEMP_REMOVE) alignAndBreakTemporary(client);
-		else if (workKind == WorkKind.PILLAR) drivePillar(client);
 		else alignAndPlace(client);
 	}
 
@@ -434,8 +457,16 @@ public final class SchematicBuildController {
 		sourceCheckTick = 20;
 
 		long rememberRevision = remember.revision();
-		List<SourceBounds> bounds = litematica.bounds();
-		long signature = boundsSignature(bounds);
+		List<SourceBounds> merged = new ArrayList<>(litematica.bounds());
+		int[] library = SchematicLibrary.bounds();
+		if (library != null) {
+			merged.add(new SourceBounds(library[0], library[1], library[2],
+					library[3], library[4], library[5], 0));
+		}
+		List<SourceBounds> bounds = List.copyOf(merged);
+		// The library revision joins the signature: loading a different file at
+		// the same coordinates would otherwise hash identically and be missed.
+		long signature = boundsSignature(bounds) * 31L + SchematicLibrary.revision();
 		if (rememberRevision == knownRememberRevision && signature == knownLitematicaSignature) return;
 
 		knownRememberRevision = rememberRevision;
@@ -443,8 +474,13 @@ public final class SchematicBuildController {
 		remembered = remember.desiredStatesSnapshot();
 		rememberedEntries = new ArrayList<>(remembered.entrySet());
 		schematicBounds = bounds;
+		// Counts before and after the enabled filter, because "Litematica has no
+		// placement" and "Litematica has three and none are switched on" are
+		// different problems that used to print the same number.
 		trace("sources changed: " + remembered.size() + " remembered cell(s), "
-				+ bounds.size() + " litematica placement(s)");
+				+ bounds.size() + " usable litematica placement(s) from "
+				+ litematica.seenPlacements() + " loaded, " + litematica.enabledPlacements() + " enabled"
+				+ (litematica.failure().isEmpty() ? "" : " [" + litematica.failure() + "]"));
 		temporaryQueue.clear();
 		temporarySupportGoal = null;
 		cancelTemporaryBreaking(client);
@@ -467,6 +503,8 @@ public final class SchematicBuildController {
 
 	private void resetLayerScanner() {
 		buildFinished = false;
+		fluidPass = false;
+		sawDeferredFluid = false;
 		minimumLayer = Integer.MAX_VALUE;
 		maximumLayer = Integer.MIN_VALUE;
 		for (BlockPos pos : remembered.keySet()) {
@@ -483,8 +521,8 @@ public final class SchematicBuildController {
 
 	/**
 	 * Begins one bottom-to-top sweep. Sweeps repeat until a whole one places
-	 * nothing, so a cell skipped for a blocked route, a missing material, or a
-	 * body that was standing in the way is always retried later.
+	 * nothing, so a cell skipped for being out of reach, a missing material, or
+	 * a body that was standing in the way is always retried later.
 	 */
 	private void startBuildPass() {
 		retryAfter.clear();
@@ -572,13 +610,20 @@ public final class SchematicBuildController {
 		if (layerProgressTick == Integer.MIN_VALUE || layerProgressTick > now) layerProgressTick = now;
 		if (!pending.isEmpty() && now - layerProgressTick > LAYER_STALL_TICKS) return advanceLayer(client);
 
-		// Several candidates per tick: one cell with a broken stand proof must
-		// never cost a whole tick of stillness while its neighbors are workable.
-		boolean scaffoldTried = false;
-		for (int attempt = 0; attempt < NAV_CANDIDATES_PER_TICK; attempt++) {
+		boolean routeTried = false;
+		for (int attempt = 0; attempt < TARGET_CANDIDATES_PER_TICK; attempt++) {
 			DesiredBlock next = prioritizedSupportGoal(client);
 			if (next == null) next = choosePendingTarget(client);
 			if (next == null) break;
+
+			// A hanging cell needs its ceiling first, and the ceiling belongs to
+			// a layer this sweep has not reached. Build that instead, now.
+			DesiredBlock prerequisite = prerequisiteOf(client, next);
+			if (prerequisite != null) {
+				trace("pulling " + describe(prerequisite.pos()) + " forward for "
+						+ describe(next.pos()));
+				next = prerequisite;
+			}
 
 			BlockState current = client.world.getBlockState(next.pos());
 			if (current.isReplaceable() && !hasSupport(client.world, next.pos())) {
@@ -596,21 +641,21 @@ public final class SchematicBuildController {
 				continue;
 			}
 
-			NavigationPlan plan = navigationPlan(client, next);
-			if (plan != null) {
-				beginWork(next, WorkKind.SCHEMATIC, plan);
+			if (workableNow(client, next)) {
+				beginWork(next, WorkKind.SCHEMATIC);
 				return true;
 			}
-			if (flightActivationPhase > 0) return false;
-			trace("no route to " + describe(next.pos()) + " (attempt " + (attempt + 1) + ")");
-			// No walkable stand exists anywhere in reach of this cell. Make one:
-			// a temporary causeway or pillar the body can occupy is exactly as
-			// legitimate as the face supports planned for unsupported cells.
-			// One planning burst per tick keeps the worst case off the frame time.
-			if (!scaffoldTried) {
-				scaffoldTried = true;
-				if (enqueueStandScaffold(client, next)) return true;
+			// Out of reach from here. Walking to a stand that can build it is
+			// the whole point, so one route search per tick gets a turn before
+			// the cell is put back in the queue.
+			if (!routeTried && config.schematicAutoMove) {
+				routeTried = true;
+				if (routeToPlace(client, next, WorkKind.SCHEMATIC)) {
+					status(client, "Walking to layer " + activeLayer, Formatting.AQUA, 20);
+					return true;
+				}
 			}
+			trace("no stand for " + describe(next.pos()) + " (attempt " + (attempt + 1) + ")");
 			if (sameDesiredBlock(temporarySupportGoal, next)) temporarySupportGoal = null;
 			retryAfter.put(next.pos(), client.player.age + TARGET_RETRY_TICKS);
 		}
@@ -633,11 +678,7 @@ public final class SchematicBuildController {
 				status(client, "Layer " + activeLayer + " needs a support face or obstruction cleared",
 						Formatting.GOLD, 40);
 			}
-			// Standing still never fixes a failed stand proof; closing distance
-			// often does. Walk at the nearest pending cell whenever we are not
-			// already beside it, and re-prove everything from closer range.
-			if (approachPending(client)) return true;
-			status(client, "Layer " + activeLayer + ": " + pending.size() + " cell(s) waiting for a route",
+			status(client, "Layer " + activeLayer + ": " + pending.size() + " cell(s) out of reach — move closer",
 					Formatting.GRAY, 40);
 			return false;
 		}
@@ -672,6 +713,19 @@ public final class SchematicBuildController {
 			passIndex++;
 			startBuildPass();
 			status(client, "Verify sweep " + (passIndex + 1) + " over every layer", Formatting.AQUA, 0);
+			return null;
+		}
+
+		// The dry build is done; now, and only now, the water goes in. Placing a
+		// source earlier would flow it across an unfinished circuit and wash the
+		// components out — the one ordering mistake a redstone build never
+		// recovers from on its own.
+		if (!fluidPass && sawDeferredFluid) {
+			fluidPass = true;
+			passIndex = 0;
+			startBuildPass();
+			trace("dry build complete; beginning fluid pass");
+			status(client, "Dry build complete; placing water and lava last", Formatting.AQUA, 0);
 			return null;
 		}
 
@@ -728,7 +782,8 @@ public final class SchematicBuildController {
 
 			BlockPos pos = new BlockPos(scanX, activeLayer, scanZ);
 			if (!remembered.containsKey(pos)) {
-				BlockState desired = litematica.stateAt(pos);
+				BlockState desired = SchematicLibrary.stateAt(pos);
+					if (desired == null) desired = litematica.stateAt(pos);
 				if (desired != null && !desired.isAir()) addPending(client.world, pos, desired);
 			}
 
@@ -758,13 +813,53 @@ public final class SchematicBuildController {
 		if (layerFootprint.size() < MAX_FOOTPRINT_CELLS) {
 			layerFootprint.add(SchematicLayerOrder.key(pos.getX(), pos.getZ()));
 		}
-		if (desiredComplete(world, pos, desired) || pendingKeys.contains(pos)) return;
+		// Judged against the FULL goal first, water included. Skipping this and
+		// testing only the dry goal is what let the re-verification sweep decide
+		// a correctly waterlogged block was unfinished and empty it out again
+		// with the bucket, draining the build every hundred ticks forever.
+		if (desiredComplete(world, pos, desired)) return;
+
+		// Water and lava are held back until the dry build is finished: a source
+		// placed now spreads before the circuit around it exists and washes out
+		// every component it reaches. A waterlogged block is not held back —
+		// only its water is. The block goes in dry with everything else and the
+		// bucket comes on the fluid pass, which is also the only way a fresh
+		// waterlogged cell can be built at all, since a dry placement can never
+		// match a waterlogged goal.
+		BlockState wanted = desired;
+		if (!fluidPass) {
+			if (SchematicBlockRules.isFluid(desired)) {
+				sawDeferredFluid = true;
+				return;
+			}
+			if (SchematicBlockRules.isWaterlogged(desired)) {
+				sawDeferredFluid = true;
+				wanted = SchematicBlockRules.dewatered(desired);
+			}
+		}
+
+		if (desiredComplete(world, pos, wanted) || pendingKeys.contains(pos)) return;
 		if (depthOf(pos) < layerDepthFloor || pending.size() >= MAX_PENDING_PER_LAYER) {
 			layerOverflowed = true;
 			return;
 		}
 		pendingKeys.add(pos);
-		pending.put(pos, desired);
+		pending.put(pos, wanted);
+	}
+
+	/**
+	 * The goal for a cell <em>as this pass is building it</em>: dry during the
+	 * main build, fully watered on the fluid pass. Reading the raw schematic
+	 * state instead would have a dry-pass prerequisite compare itself against a
+	 * waterlogged goal, judge the block unfinished, and reach for the bucket —
+	 * putting water in mid-build, which is the one thing the pass split exists
+	 * to prevent.
+	 */
+	private BlockState plannedStateAt(BlockPos pos) {
+		BlockState desired = desiredStateAt(pos);
+		if (desired == null || fluidPass) return desired;
+		if (SchematicBlockRules.isFluid(desired)) return null;
+		return SchematicBlockRules.isWaterlogged(desired) ? SchematicBlockRules.dewatered(desired) : desired;
 	}
 
 	/** How far inside the layer footprint a cell sits; 1 is the outer shell. */
@@ -776,14 +871,20 @@ public final class SchematicBuildController {
 	 * Picks the next cell to place. Depth is a strict primary key: the deepest
 	 * cell of the layer always goes first, so every cell still to come keeps a
 	 * corridor of empty cells out to open space and can never be sealed in.
-	 * Reach and distance only break ties inside one depth ring, which keeps the
-	 * builder placing a whole ring from one stand before it walks again.
+	 *
+	 * <p>Phase breaks ties <em>inside</em> a depth ring rather than across the
+	 * whole layer, and that placement is deliberate. Ordering the entire layer
+	 * by phase would fill every structural cell first and seal the interior,
+	 * stranding the torches and rails that were supposed to go inside it.
+	 * Ordering within a ring gets the wall in before the torch on it while
+	 * leaving the corridor property untouched.
 	 */
 	private DesiredBlock choosePendingTarget(MinecraftClient client) {
 		Vec3d eye = client.player.getEyePos();
 		Vec3d feet = client.player.getEntityPos();
 		Map.Entry<BlockPos, BlockState> best = null;
 		int bestDepth = Integer.MIN_VALUE;
+		int bestPhase = Integer.MAX_VALUE;
 		boolean bestInReach = false;
 		double bestDistance = Double.POSITIVE_INFINITY;
 
@@ -794,18 +895,61 @@ public final class SchematicBuildController {
 					|| !materialAvailable(client, pos, entry.getValue())
 					|| !canWorkOn(client.world, pos, entry.getValue())) continue;
 
+			int phase = SchematicBlockRules.phaseOf(entry.getValue()).ordinal();
 			Vec3d center = Vec3d.ofCenter(pos);
 			boolean inReach = eye.squaredDistanceTo(center) <= MAX_REACH_SQUARED;
 			double distance = feet.squaredDistanceTo(center);
-			if (depth == bestDepth && !(inReach && !bestInReach)
-					&& !(inReach == bestInReach && distance < bestDistance)) continue;
+			if (depth == bestDepth && !(phase < bestPhase)
+					&& !(phase == bestPhase && inReach && !bestInReach)
+					&& !(phase == bestPhase && inReach == bestInReach && distance < bestDistance)) continue;
 
 			best = entry;
 			bestDepth = depth;
+			bestPhase = phase;
 			bestInReach = inReach;
 			bestDistance = distance;
 		}
 		return best == null ? null : new DesiredBlock(best.getKey(), best.getValue());
+	}
+
+	/**
+	 * Walks back from a cell to the cell that has to exist before it can.
+	 *
+	 * <p>Almost always the answer is "nothing" — most blocks rest on the layer
+	 * below, which a bottom-up sweep has already finished. The exception is
+	 * anything that hangs: a lantern, a chain, a ceiling lever, a downward
+	 * dripstone. Those need the cell <em>above</em>, which belongs to a layer
+	 * this sweep will not reach for a while, so the builder pulls that block
+	 * forward out of the later layer and places it now. That is what lets a
+	 * column two layers tall finish in one visit instead of waiting a whole
+	 * sweep for its own ceiling.
+	 *
+	 * <p>Only cells the schematic itself wants are pulled forward. A cell that
+	 * needs a support the schematic does not contain is the temporary-block
+	 * planner's problem, not this one's.
+	 */
+	private DesiredBlock prerequisiteOf(MinecraftClient client, DesiredBlock desired) {
+		DesiredBlock current = desired;
+		// Bounded: a chain of hanging blocks is legitimate (a lantern under a
+		// chain under a block), a cycle is not, and neither should cost a tick.
+		for (int hop = 0; hop < 4; hop++) {
+			Direction support = SchematicBlockRules.supportDirection(current.state());
+			if (support == null) return sameDesiredBlock(current, desired) ? null : current;
+			BlockPos anchor = current.pos().offset(support);
+			BlockState existing = client.world.getBlockState(anchor);
+			boolean solid = !existing.isReplaceable()
+					&& !existing.getCollisionShape(client.world, anchor).isEmpty();
+			if (solid) return sameDesiredBlock(current, desired) ? null : current;
+
+			BlockState wanted = plannedStateAt(anchor);
+			// Not part of the build: the temporary-support planner handles it.
+			if (wanted == null || desiredComplete(client.world, anchor, wanted)) {
+				return sameDesiredBlock(current, desired) ? null : current;
+			}
+			if (retryAfter.containsKey(anchor) || !materialAvailable(client, anchor, wanted)) return null;
+			current = new DesiredBlock(anchor, wanted);
+		}
+		return sameDesiredBlock(current, desired) ? null : current;
 	}
 
 	/**
@@ -960,12 +1104,11 @@ public final class SchematicBuildController {
 				deferTemporarySupport(client);
 				return false;
 			}
-			NavigationPlan plan = navigationPlan(client, next);
-			if (plan != null) {
-				beginWork(next, WorkKind.TEMP_PLACE, plan);
+			if (workableNow(client, next)) {
+				beginWork(next, WorkKind.TEMP_PLACE);
 				return true;
 			}
-			if (flightActivationPhase > 0) return false;
+			if (config.schematicAutoMove && routeToPlace(client, next, WorkKind.TEMP_PLACE)) return true;
 			retryAfter.put(next.pos(), client.player.age + TEMPORARY_CELL_RETRY_TICKS);
 			deferTemporarySupport(client);
 			return false;
@@ -992,29 +1135,23 @@ public final class SchematicBuildController {
 				ownedTemporaryBlocks.remove(pos);
 				continue;
 			}
-			NavigationPlan plan = navigationPlan(client, new DesiredBlock(pos, entry.getValue()));
-			if (plan == null) {
-				if (flightActivationPhase > 0) return false;
-				// Standing on the very block (a pillar top): break beneath the
-				// feet and ride the column down, exactly like a player would.
-				if (client.player.isOnGround() && client.player.getBlockPos().down().equals(pos)
-						&& safeToBreakUnderFeet(client, pos)) {
+			if (!reachableNow(client, pos)) {
+				if (config.schematicAutoMove
+						&& routeToSee(client, new DesiredBlock(pos, entry.getValue()), WorkKind.TEMP_REMOVE)) {
 					nextCleanupAttemptTick = 0;
-					beginWork(new DesiredBlock(pos, entry.getValue()), WorkKind.TEMP_REMOVE,
-							new NavigationPlan(List.of(feetNode(client.player)), true));
-					status(client, "Descending the temporary pillar", Formatting.GRAY, 20);
+					status(client, "Walking back to a temporary block", Formatting.GRAY, 20);
 					return true;
 				}
 				retryAfter.put(pos, client.player.age + TARGET_RETRY_TICKS);
 				continue;
 			}
 			nextCleanupAttemptTick = 0;
-			beginWork(new DesiredBlock(pos, entry.getValue()), WorkKind.TEMP_REMOVE, plan);
+			beginWork(new DesiredBlock(pos, entry.getValue()), WorkKind.TEMP_REMOVE);
 			status(client, "Cleaning temporary supports (" + ownedTemporaryBlocks.size() + " left)",
 					Formatting.GRAY, 20);
 			return true;
 		}
-		// No tracked block currently has a safe reachable stand.
+		// Nothing tracked is currently in reach.
 		nextCleanupAttemptTick = client.player.age + 20;
 		return false;
 	}
@@ -1027,312 +1164,17 @@ public final class SchematicBuildController {
 		temporarySupportGoal = null;
 	}
 
-	// ── Never-idle approach + stand scaffolding ───────────────────────────────
-
-	/**
-	 * Publishes a bounded partial route toward the nearest pending cell outside
-	 * its retry window. Failed stand proofs are usually distance problems in
-	 * disguise — occluded rays, unloaded cells, horizon cutoffs — so the honest
-	 * response to "nothing is provable" is to close distance and re-prove, hop
-	 * by hop, not to stand still for a retry window.
-	 */
-	private boolean approachPending(MinecraftClient client) {
-		ClientPlayerEntity player = client.player;
-		Vec3d feet = player.getEntityPos();
-		Map.Entry<BlockPos, BlockState> nearest = null;
-		double nearestSq = Double.POSITIVE_INFINITY;
-		// Any cell of the layer is a fine approach magnet; a bounded sample
-		// keeps this off the frame time for very wide pending windows.
-		int examined = 0;
-		for (Map.Entry<BlockPos, BlockState> entry : pending.entrySet()) {
-			if (examined++ >= 768) break;
-			if (retryAfter.containsKey(entry.getKey())
-					|| !materialAvailable(client, entry.getKey(), entry.getValue())) continue;
-			double sq = feet.squaredDistanceTo(Vec3d.ofCenter(entry.getKey()));
-			if (sq < nearestSq) {
-				nearestSq = sq;
-				nearest = entry;
-			}
-		}
-		if (nearest == null || nearestSq < APPROACH_MIN_DISTANCE * APPROACH_MIN_DISTANCE) return false;
-
-		boolean flight = player.getAbilities().flying;
-		SchematicPathfinder.Node start = feetNode(player);
-		WorldSpace space = new WorldSpace(client, player);
-		List<SchematicPathfinder.Node> goals = theoreticalPlacementStands(nearest.getKey());
-		List<SchematicPathfinder.Node> progress = flight
-				? SchematicPathfinder.flightPathTowardAny(start, goals, space, MAX_PATH_NODES / 4, APPROACH_PROGRESS)
-				: SchematicPathfinder.groundPathTowardAny(start, goals, space, MAX_PATH_NODES / 4, APPROACH_PROGRESS);
-		if (progress.size() <= 1) return false;
-		trace("approach hop toward " + describe(nearest.getKey()) + " via " + progress.getLast());
-		beginWork(new DesiredBlock(nearest.getKey(), nearest.getValue()), WorkKind.SCHEMATIC,
-				new NavigationPlan(progress, false));
-		status(client, "Moving to layer " + activeLayer, Formatting.AQUA, 20);
-		return true;
-	}
-
-	/**
-	 * Creates a place to stand when no walkable stand exists for {@code desired}.
-	 * First choice is a bridge/staircase causeway planned back to reachable
-	 * terrain by {@link SchematicSupportPlanner} — the reversed plan is walkable
-	 * by construction, and it serves both missing-floor stands and standable
-	 * islands that merely lack a route. When no causeway fits, a straight
-	 * jump-placed pillar needs only one clear column. Every block goes through
-	 * the owned-temporary ledger, so cleanup is identical to face supports.
-	 */
-	private boolean enqueueStandScaffold(MinecraftClient client, DesiredBlock desired) {
-		if (!config.schematicTemporaryBlocks) return false;
-		BlockState material = chooseTemporaryMaterial(client);
-		if (material == null) return false;
-		int available = client.player.isCreative() ? MAX_TEMPORARY_BLOCKS_PER_PLAN
-				: Math.min(MAX_TEMPORARY_BLOCKS_PER_PLAN, expendableBlockCount(client, material));
-		if (available <= 0) return false;
-
-		List<StandCandidate> stands = scaffoldStandCandidates(client, desired.pos());
-		for (StandCandidate candidate : stands) {
-			SchematicPathfinder.Node stand = candidate.node();
-			BlockPos floor = new BlockPos(stand.x(), stand.y() - 1, stand.z());
-			Set<BlockPos> body = Set.of(new BlockPos(stand.x(), stand.y(), stand.z()),
-					new BlockPos(stand.x(), stand.y() + 1, stand.z()));
-			boolean floorMissing = client.world.getBlockState(floor).isReplaceable();
-			// Never squat a cell the schematic itself wants: cleanup deliberately
-			// abandons owned blocks on desired cells, so a temp floor there would
-			// become a permanent wrong block.
-			if (floorMissing && desiredStateAt(floor) != null) continue;
-			List<SchematicSupportPlanner.Cell> plan = SchematicSupportPlanner.plan(
-					supportCell(floor), new TemporarySupportSpace(client, desired.pos(), body),
-					SUPPORT_PATH_NODES / 4, SUPPORT_HORIZONTAL_HORIZON, SUPPORT_DOWNWARD_HORIZON,
-					Math.max(0, available - (floorMissing ? 1 : 0)));
-			if (plan.isEmpty()) continue;
-
-			temporaryQueue.clear();
-			for (SchematicSupportPlanner.Cell cell : plan) {
-				BlockPos pos = new BlockPos(cell.x(), cell.y(), cell.z());
-				if (client.world.getBlockState(pos).isReplaceable()) {
-					temporaryQueue.addLast(new DesiredBlock(pos, material));
-				}
-			}
-			if (floorMissing) temporaryQueue.addLast(new DesiredBlock(floor, material));
-			if (temporaryQueue.isEmpty()) continue;
-			temporarySupportGoal = desired;
-			trace("causeway " + temporaryQueue.size() + " block(s) toward stand " + stand
-					+ " for " + describe(desired.pos()));
-			status(client, "Building a " + temporaryQueue.size() + "-block route to a stand", Formatting.AQUA, 0);
-			if (prepareTemporaryTarget(client)) return true;
-			// The failed attempt deferred the goal cell; lift that so the next
-			// candidate stand still gets its try at full priority.
-			retryAfter.remove(desired.pos());
-			temporaryQueue.clear();
-			temporarySupportGoal = null;
-		}
-
-		return planPillar(client, desired, stands, material, available);
-	}
-
-	/**
-	 * Theoretical stands worth scaffolding toward, cheapest first. The body
-	 * cells must already be open and the hypothetical eye must have a real ray
-	 * to the work; the floor (or the route to it) is what gets created.
-	 */
-	private List<StandCandidate> scaffoldStandCandidates(MinecraftClient client, BlockPos target) {
-		SchematicPathfinder.Node feet = feetNode(client.player);
-		double eyeHeight = client.player.getStandingEyeHeight();
-		Vec3d center = Vec3d.ofCenter(target);
-		Set<SchematicPathfinder.Node> rejected = failedStands.getOrDefault(target, Set.of());
-		List<StandCandidate> ranked = new ArrayList<>();
-		for (SchematicPathfinder.Node node : theoreticalPlacementStands(target)) {
-			if (rejected.contains(node)) continue;
-			Vec3d eye = new Vec3d(node.x() + 0.5D, node.y() + eyeHeight, node.z() + 0.5D);
-			if (eye.squaredDistanceTo(center) > STAND_REACH * STAND_REACH) continue;
-			double cost = Math.sqrt(node.squaredDistanceTo(feet));
-			// Stands at or below the work are cheaper to build to and never
-			// occlude the still-empty layer above it.
-			if (node.y() > target.getY()) cost += (node.y() - target.getY()) * 1.5D;
-			ranked.add(new StandCandidate(node, eye, cost));
-		}
-		ranked.sort(Comparator.comparingDouble(StandCandidate::cost));
-
-		List<StandCandidate> out = new ArrayList<>();
-		WorldSpace space = new WorldSpace(client, client.player);
-		int examined = 0;
-		for (StandCandidate candidate : ranked) {
-			if (examined++ >= SCAFFOLD_STAND_EXAMINE_LIMIT
-					|| out.size() >= SCAFFOLD_STAND_PLAN_ATTEMPTS) break;
-			SchematicPathfinder.Node node = candidate.node();
-			if (!space.passable(node.x(), node.y(), node.z())
-					|| space.hazardous(node.x(), node.y(), node.z())
-					|| !standCanSeeWork(client, candidate.eye(), target)) continue;
-			out.add(candidate);
-		}
-		return out;
-	}
-
-	/**
-	 * Straight-up pillar to a stand cell: walk to the ground beneath its column,
-	 * then jump-place the column beneath the body. Needs no horizontal room at
-	 * all, which is exactly the case the causeway planner cannot serve.
-	 */
-	private boolean planPillar(MinecraftClient client, DesiredBlock desired,
-			List<StandCandidate> stands, BlockState material, int available) {
-		if (client.player.getAbilities().flying) return false;
-		WorldSpace space = new WorldSpace(client, client.player);
-		for (StandCandidate candidate : stands) {
-			SchematicPathfinder.Node stand = candidate.node();
-			int base = Integer.MIN_VALUE;
-			boolean columnClean = true;
-			for (int y = stand.y() - 1; y >= stand.y() - MAX_PILLAR_HEIGHT; y--) {
-				// Every cell from the base up gets filled, so none of them may be
-				// a cell the schematic itself wants: cleanup deliberately abandons
-				// owned blocks on desired cells, and a temp block there would
-				// outlive the build as a permanent wrong block.
-				if (desiredStateAt(new BlockPos(stand.x(), y, stand.z())) != null) {
-					columnClean = false;
-					break;
-				}
-				if (space.standable(stand.x(), y, stand.z())) {
-					base = y;
-					break;
-				}
-				if (!space.passable(stand.x(), y, stand.z())) break;
-			}
-			if (!columnClean) continue;
-			int height = stand.y() - base;
-			if (base == Integer.MIN_VALUE || height <= 0 || height > available
-					|| space.hazardous(stand.x(), base, stand.z())) continue;
-
-			SchematicPathfinder.Node baseNode = new SchematicPathfinder.Node(stand.x(), base, stand.z());
-			SchematicPathfinder.Node start = feetNode(client.player);
-			List<SchematicPathfinder.Node> path = start.equals(baseNode) ? List.of(start)
-					: SchematicPathfinder.groundPathToAny(start, List.of(baseNode), space, MAX_PATH_NODES / 2);
-			if (path.isEmpty()) continue;
-
-			pillarColumnX = stand.x();
-			pillarColumnZ = stand.z();
-			pillarTopY = stand.y();
-			pillarMaterial = material;
-			temporarySupportGoal = desired;
-			trace("pillar " + height + " block(s) at " + stand.x() + "," + stand.z()
-					+ " up to y=" + stand.y() + " for " + describe(desired.pos()));
-			beginWork(desired, WorkKind.PILLAR, new NavigationPlan(path, true));
-			status(client, "Pillaring " + height + " block(s) up to a stand", Formatting.AQUA, 0);
-			return true;
-		}
-		return false;
-	}
-
-	/** Executes one pillar tick: centre over the column, jump, place, repeat. */
-	private void drivePillar(MinecraftClient client) {
-		ClientPlayerEntity player = client.player;
-		releaseMovementOnly();
-		controlling = true;
-		phaseTicks++;
-
-		int feetY = MathHelper.floor(player.getBoundingBox().minY + 1.0E-3D);
-		if (feetY != lastPillarFeetY) {
-			lastPillarFeetY = feetY;
-			pillarStallTicks = 0;
-		} else if (++pillarStallTicks > PILLAR_STALL_TICKS) {
-			abandonTarget(client);
-			return;
-		}
-		if (feetY >= pillarTopY && player.isOnGround()) {
-			// The stand exists now. Normal selection re-proves the route (a
-			// one-node path onto the pillar top) and places from up here; the
-			// support goal keeps this cell first in line.
-			clearTarget();
-			return;
-		}
-
-		// Stay centred over the column; a drifted jump lands beside the pillar.
-		Vec3d centre = new Vec3d(pillarColumnX + 0.5D, player.getY(), pillarColumnZ + 0.5D);
-		if (horizontalDistanceSq(player.getEntityPos(), centre) > 0.04D && player.isOnGround()) {
-			driveToPoint(player, centre);
-			return;
-		}
-
-		BlockPos support = null;
-		for (int y = Math.min(feetY, pillarTopY) - 1; y >= pillarTopY - MAX_PILLAR_HEIGHT - 1; y--) {
-			BlockPos pos = new BlockPos(pillarColumnX, y, pillarColumnZ);
-			BlockState state = client.world.getBlockState(pos);
-			if (!state.isReplaceable() && !state.getCollisionShape(client.world, pos).isEmpty()) {
-				support = pos;
-				break;
-			}
-		}
-		if (support == null) {
-			abandonTarget(client);
-			return;
-		}
-
-		aimGoal = facePoint(support, Direction.UP, 0);
-		aimSpeed = 1.9F;
-		ownsRotation = true;
-		// Press jump only while grounded: releasing in the air clears vanilla's
-		// held-jump cooldown, so every landing takes off again immediately.
-		movementInput = new PlayerInput(false, false, false, false, player.isOnGround(), false, false);
-
-		BlockPos placeCell = support.up();
-		if (placeCell.getY() >= pillarTopY) return; // column finished; landing
-		int slot = findMaterialSlot(client, pillarMaterial);
-		if (slot < 0) {
-			abandonTarget(client);
-			return;
-		}
-		if (player.getInventory().getSelectedSlot() != slot) {
-			player.getInventory().setSelectedSlot(slot);
-			return;
-		}
-		// The body must be fully above the cell being filled, or vanilla refuses.
-		if (player.getBoundingBox().minY < placeCell.getY() + 1.0D - 1.0E-3D) return;
-
-		HitResult raw = player.raycast(MAX_REACH, 1.0F, false);
-		if (!(raw instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK
-				|| !hit.getBlockPos().equals(support) || hit.getSide() != Direction.UP) return;
-		long now = System.nanoTime();
-		if (now < lastPlaceNanos + jitterMs(28, 46)) return;
-		if (placementForHit(client, player, hit, placeCell, pillarMaterial) == null) return;
-		ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, hit);
-		if (!result.isAccepted()) return;
-		player.swingHand(Hand.MAIN_HAND);
-		lastPlaceNanos = now;
-		ownedTemporaryBlocks.put(placeCell.toImmutable(), pillarMaterial);
-	}
-
-	/** True when removing this block drops the body at most three onto safe ground. */
-	private boolean safeToBreakUnderFeet(MinecraftClient client, BlockPos removed) {
-		for (int drop = 1; drop <= 3; drop++) {
-			BlockPos below = removed.down(drop);
-			BlockState state = client.world.getBlockState(below);
-			if (!state.getFluidState().isEmpty()) return false;
-			if (!state.isReplaceable() && !state.getCollisionShape(client.world, below).isEmpty()) {
-				return !new WorldSpace(client, client.player)
-						.hazardous(removed.getX(), below.getY() + 1, removed.getZ());
-			}
-		}
-		return false;
-	}
-
-	private void beginWork(DesiredBlock next, WorkKind kind, NavigationPlan plan) {
+	private void beginWork(DesiredBlock next, WorkKind kind) {
 		trace("work " + kind + " -> " + describe(next.pos()) + " ("
-				+ next.state().getBlock().getName().getString() + ") path=" + plan.path().size()
-				+ (plan.complete() ? "" : " partial")
-				+ (plan.path().isEmpty() ? "" : " stand=" + plan.path().getLast()));
+				+ next.state().getBlock().getName().getString() + ")");
 		target = next;
 		workKind = kind;
-		path = plan.path();
-		pathIndex = Math.min(1, path.size());
-		navigationComplete = plan.complete();
-		transitWaitTicks = plan.complete() ? 0 : 4;
 		phaseTicks = 0;
 		settleTicks = 0;
 		placementAim = null;
-		stuckTicks = 0;
-		lastWaypointDistance = Double.POSITIVE_INFINITY;
-		lastDrivePosition = null;
 		breakingTemporary = false;
 		breakSwingTicks = 0;
 		placementSent = false;
-		unstickTicks = 0;
 	}
 
 	private BlockState chooseTemporaryMaterial(MinecraftClient client) {
@@ -1436,6 +1278,7 @@ public final class SchematicBuildController {
 
 	private BlockState desiredStateAt(BlockPos pos) {
 		BlockState state = remembered.get(pos);
+		if (state == null || state.isAir()) state = SchematicLibrary.stateAt(pos);
 		if (state == null || state.isAir()) state = litematica.stateAt(pos);
 		return state == null || state.isAir() ? null : state;
 	}
@@ -1448,9 +1291,6 @@ public final class SchematicBuildController {
 		private final MinecraftClient client;
 		private final BlockPos desiredTarget;
 		private final Set<BlockPos> blocked;
-		private final Map<BlockPos, Boolean> anchorCache = new HashMap<>();
-		private int standProofBudget = ANCHOR_STAND_PROOFS_PER_PLAN;
-
 		/** {@code blocked} holds cells the plan must leave open (a stand's body). */
 		private TemporarySupportSpace(MinecraftClient client, BlockPos desiredTarget, Set<BlockPos> blocked) {
 			this.client = client;
@@ -1472,203 +1312,165 @@ public final class SchematicBuildController {
 
 		@Override
 		public boolean anchored(SchematicSupportPlanner.Cell cell) {
+			// A solid face to build off is the whole test. Whether the body can
+			// actually reach the cell is re-proved by reachableNow before any
+			// placement is sent, so an optimistic anchor here costs a retry,
+			// never a wrong action.
 			BlockPos pos = new BlockPos(cell.x(), cell.y(), cell.z());
-			boolean solidFace = false;
 			for (Direction direction : Direction.values()) {
 				BlockPos neighbor = pos.offset(direction);
 				BlockState state = client.world.getBlockState(neighbor);
 				if (!state.isReplaceable() && !state.getCollisionShape(client.world, neighbor).isEmpty()) {
-					solidFace = true;
-					break;
+					return true;
 				}
 			}
-			if (!solidFace) return false;
-
-			// A face high on an inaccessible wall is not a useful anchor in
-			// survival, so require a local reach-valid body position too. That
-			// proof costs raycasts and the planner asks per expanded cell, so it
-			// is cached and capped. Past the cap the cheap answer stands: the full
-			// A* still proves the stand before anything is placed, so an
-			// optimistic anchor costs a retry, never a wrong action.
-			Boolean cached = anchorCache.get(pos);
-			if (cached != null) return cached;
-			if (standProofBudget <= 0) return true;
-			standProofBudget--;
-			boolean reachable = !placementStands(client, pos,
-					client.player.getAbilities().flying, 1, 48).isEmpty();
-			anchorCache.put(pos, reachable);
-			return reachable;
+			return false;
 		}
 	}
 
-	// ── Navigation ─────────────────────────────────────────────────────────────
+	// ── Routing ────────────────────────────────────────────────────────────────
 
-	private void continueTransit(MinecraftClient client) {
-		releaseAuto();
-		if (transitWaitTicks-- > 0) return;
-
-		DesiredBlock retryTarget = target;
-		WorkKind retryKind = workKind;
-		NavigationPlan continuation = navigationPlan(client, retryTarget);
-		if (continuation != null) {
-			beginWork(retryTarget, retryKind, continuation);
-			return;
+	/**
+	 * Finds somewhere the cell can be built from and walks there.
+	 *
+	 * <p>The stand is chosen by proving a whole placement from it — body
+	 * position, the rotation that position implies, and the block state vanilla
+	 * would produce — not merely by proving line of sight. That is what makes a
+	 * furnace come out facing the right way: the builder walks to the side of
+	 * the block a player would have stood on, because that is the only side the
+	 * proof succeeded from.
+	 */
+	private boolean routeToPlace(MinecraftClient client, DesiredBlock next, WorkKind kind) {
+		if (client.player.age < nextRouteAttemptTick) return false;
+		WorldSpace space = new WorldSpace(client, client.player);
+		SchematicPathfinder.Node feet = feetNode(client.player);
+		List<SchematicPlacementSolver.Stand> stands = viableStands(client, next.pos(), space, feet);
+		SchematicPlacementSolver.Solution solution = SchematicPlacementSolver.solve(
+				client, next.pos(), next.state(), stands, this::placementMatches, STAND_EXAMINE_LIMIT);
+		if (solution == null) {
+			nextRouteAttemptTick = client.player.age + ROUTE_ATTEMPT_INTERVAL;
+			return false;
 		}
-		if (flightActivationPhase > 0) return;
-
-		if (retryKind == WorkKind.TEMP_PLACE) {
-			retryAfter.put(retryTarget.pos(), client.player.age + TEMPORARY_CELL_RETRY_TICKS);
-			deferTemporarySupport(client);
-		} else {
-			retryAfter.put(retryTarget.pos(), client.player.age + TARGET_RETRY_TICKS);
-			if (sameDesiredBlock(temporarySupportGoal, retryTarget)) temporarySupportGoal = null;
-		}
-		clearTarget();
+		return walkTo(client, next, kind, space, feet, solution.stand());
 	}
 
-	private NavigationPlan navigationPlan(MinecraftClient client, DesiredBlock desired) {
-		ClientPlayerEntity player = client.player;
-		boolean flight = player.getAbilities().flying;
-		SchematicPathfinder.Node start = feetNode(player);
-		WorldSpace space = new WorldSpace(client, player);
-		List<SchematicPathfinder.Node> stands = placementStands(client, desired.pos(), flight);
-		Set<SchematicPathfinder.Node> rejected = failedStands.getOrDefault(desired.pos(), Set.of());
-		stands.removeIf(rejected::contains);
-		stands.sort(Comparator.comparingDouble(node -> node.squaredDistanceTo(start)));
-		List<SchematicPathfinder.Node> candidate = flight
-				? SchematicPathfinder.flightPathToAny(start, stands, space, MAX_PATH_NODES)
-				: SchematicPathfinder.groundPathToAny(start, stands, space, MAX_PATH_NODES);
-		if (!candidate.isEmpty()) {
-			// Walking up a build this tall means scaffolding every stand. When the
-			// server already grants flight, take it now rather than after the
-			// ground route has failed and burned a retry window on every cell.
-			if (!flight && desired.pos().getY() - start.y() >= 3 && player.getAbilities().allowFlying
-					&& player.age >= flightAttemptCooldownUntil) {
-				flightActivationPhase = 1;
-				trace("entering creative flight for " + describe(desired.pos()) + " (rising layers)");
-				status(client, "Rising layers; entering creative flight", Formatting.AQUA, 0);
-				return null;
-			}
-			return new NavigationPlan(candidate, true);
+	/** As {@link #routeToPlace}, but the goal is only to see the block, not to build it. */
+	private boolean routeToSee(MinecraftClient client, DesiredBlock next, WorkKind kind) {
+		if (client.player.age < nextRouteAttemptTick) return false;
+		WorldSpace space = new WorldSpace(client, client.player);
+		SchematicPathfinder.Node feet = feetNode(client.player);
+		int examined = 0;
+		for (SchematicPlacementSolver.Stand stand : viableStands(client, next.pos(), space, feet)) {
+			if (examined++ >= STAND_EXAMINE_LIMIT) break;
+			if (!standCanSeeWork(client, stand.eye(), next.pos())) continue;
+			if (walkTo(client, next, kind, space, feet, stand)) return true;
 		}
-
-		// A placement may sit beyond the current loaded-chunk edge or the
-		// per-search horizon. Follow a bounded route toward its theoretical
-		// stands, pause for chunks to load, then run the exact visibility/path
-		// proof again. Repeating these segments removes the old global radius.
-		List<SchematicPathfinder.Node> distantGoals = theoreticalPlacementStands(desired.pos());
-		distantGoals.removeIf(rejected::contains);
-		List<SchematicPathfinder.Node> progress = flight
-				? SchematicPathfinder.flightPathTowardAny(start, distantGoals, space,
-						MAX_PATH_NODES / 2, 128.0D)
-				: SchematicPathfinder.groundPathTowardAny(start, distantGoals, space,
-						MAX_PATH_NODES / 2, 96.0D);
-		if (progress.size() > 1) return new NavigationPlan(progress, false);
-
-		// Creative flight is entered through the same double-jump input a player
-		// uses. It is attempted only when ordinary ground navigation cannot reach
-		// any legal stand; abilities/velocity are never written directly.
-		if (!flight && player.getAbilities().allowFlying && player.age >= flightAttemptCooldownUntil) {
-			flightActivationPhase = 1;
-			trace("entering creative flight for " + describe(desired.pos()) + " (ground route blocked)");
-			status(client, "Ground route blocked; entering creative flight", Formatting.AQUA, 0);
-		}
-		return null;
+		nextRouteAttemptTick = client.player.age + ROUTE_ATTEMPT_INTERVAL;
+		return false;
 	}
 
-	private List<SchematicPathfinder.Node> theoreticalPlacementStands(BlockPos target) {
-		List<SchematicPathfinder.Node> out = new ArrayList<>();
-		for (int dy = STAND_MIN_DY; dy <= STAND_MAX_DY; dy++) {
-			int y = target.getY() + dy;
-			for (int dz = -STAND_RADIUS; dz <= STAND_RADIUS; dz++) {
-				for (int dx = -STAND_RADIUS; dx <= STAND_RADIUS; dx++) {
-					if (dx == 0 && dz == 0 && dy < 1) continue;
-					if (Math.abs(dx) + Math.abs(dz) > STAND_RADIUS + 2) continue;
-					out.add(new SchematicPathfinder.Node(target.getX() + dx, y, target.getZ() + dz));
-				}
-			}
-		}
-		return out;
-	}
-
-	private void driveCreativeFlightActivation(MinecraftClient client) {
-		ClientPlayerEntity player = client.player;
-		if (player.getAbilities().flying) {
-			flightActivationPhase = 0;
-			releaseAuto();
-			status(client, "Creative flight ready", Formatting.GREEN, 0);
-			return;
-		}
-		if (!player.getAbilities().allowFlying || flightActivationPhase > 12) {
-			flightActivationPhase = 0;
-			flightAttemptCooldownUntil = player.age + 100;
-			releaseAuto();
-			return;
-		}
-
-		boolean jumpPulse = flightActivationPhase == 1 || flightActivationPhase == 3;
-		controlling = true;
-		ownsRotation = false;
-		aimGoal = null;
-		movementInput = new PlayerInput(false, false, false, false, jumpPulse, false, false);
-		flightActivationPhase++;
-	}
-
-	private List<SchematicPathfinder.Node> placementStands(MinecraftClient client, BlockPos target, boolean flight) {
-		return placementStands(client, target, flight, STAND_ACCEPT_LIMIT, STAND_EXAMINE_LIMIT);
+	/** Ranked stands for a cell, minus the ones already proved fruitless. */
+	private List<SchematicPlacementSolver.Stand> viableStands(MinecraftClient client, BlockPos target,
+			WorldSpace space, SchematicPathfinder.Node feet) {
+		List<SchematicPlacementSolver.Stand> stands = SchematicPlacementSolver.candidateStands(
+				space, target, feet, STAND_RADIUS, STAND_MIN_DY, STAND_MAX_DY);
+		Set<SchematicPathfinder.Node> blamed = failedStands.get(target);
+		if (blamed != null && !blamed.isEmpty()) stands.removeIf(s -> blamed.contains(s.node()));
+		return stands;
 	}
 
 	/**
-	 * Body positions that can legally place {@code target}, best first.
-	 *
-	 * <p>Candidates are ranked before the expensive clearance and line-of-sight
-	 * proofs so the cheap limits keep the strongest options: a stand directly
-	 * over the cell wins outright, because a straight-down click at the support
-	 * face below cannot be occluded by the rest of the layer, and that is the
-	 * one position a wide interior always has available while the layer above is
-	 * still empty. Stands overlooking the cell come next, then the nearest ones.
+	 * Records that the cell could not be built from where the body is now, so
+	 * the next route search picks somewhere else instead of walking back here.
 	 */
-	private List<SchematicPathfinder.Node> placementStands(MinecraftClient client, BlockPos target,
-			boolean flight, int acceptLimit, int examineLimit) {
-		SchematicPathfinder.Node feet = feetNode(client.player);
-		double eyeHeight = client.player.getStandingEyeHeight();
-		Vec3d center = Vec3d.ofCenter(target);
-		List<StandCandidate> candidates = new ArrayList<>();
+	private void blameCurrentStand(MinecraftClient client) {
+		blameStand(feetNode(client.player));
+	}
 
-		for (int dy = STAND_MIN_DY; dy <= STAND_MAX_DY; dy++) {
-			int y = target.getY() + dy;
-			for (int dz = -STAND_RADIUS; dz <= STAND_RADIUS; dz++) {
-				for (int dx = -STAND_RADIUS; dx <= STAND_RADIUS; dx++) {
-					// The target's own column only works from clear of the cell.
-					boolean overhead = dx == 0 && dz == 0;
-					if (overhead && dy < 1) continue;
-					int x = target.getX() + dx;
-					int z = target.getZ() + dz;
-					Vec3d eye = new Vec3d(x + 0.5D, y + eyeHeight, z + 0.5D);
-					if (eye.squaredDistanceTo(center) > STAND_REACH * STAND_REACH) continue;
-					SchematicPathfinder.Node node = new SchematicPathfinder.Node(x, y, z);
-					double cost = Math.sqrt(node.squaredDistanceTo(feet));
-					if (overhead) cost -= 3.0D;
-					else if (dy >= 1) cost -= 1.0D;
-					candidates.add(new StandCandidate(node, eye, cost));
-				}
-			}
-		}
-		candidates.sort(Comparator.comparingDouble(StandCandidate::cost));
+	private void blameStand(SchematicPathfinder.Node stand) {
+		if (target == null || stand == null) return;
+		failedStands.computeIfAbsent(target.pos(), ignored -> new HashSet<>()).add(stand);
+	}
 
-		List<SchematicPathfinder.Node> out = new ArrayList<>();
-		WorldSpace space = new WorldSpace(client, client.player);
-		int examined = 0;
-		for (StandCandidate candidate : candidates) {
-			if (examined++ >= examineLimit) break;
-			SchematicPathfinder.Node node = candidate.node();
-			boolean valid = flight ? space.passable(node.x(), node.y(), node.z())
-					: space.standable(node.x(), node.y(), node.z());
-			if (!valid || !standCanSeeWork(client, candidate.eye(), target)) continue;
-			out.add(node);
-			if (out.size() >= acceptLimit) break;
+	private boolean walkTo(MinecraftClient client, DesiredBlock next, WorkKind kind,
+			WorldSpace space, SchematicPathfinder.Node feet, SchematicPlacementSolver.Stand stand) {
+		List<SchematicPathfinder.Node> route = feet.equals(stand.node()) ? List.of(feet)
+				: SchematicPathfinder.groundPathToAny(feet, List.of(stand.node()), space, MAX_PATH_NODES);
+		if (route.isEmpty()) {
+			nextRouteAttemptTick = client.player.age + ROUTE_ATTEMPT_INTERVAL;
+			return false;
 		}
-		return out;
+		trace("route " + route.size() + " node(s) to " + stand.node()
+				+ (stand.sneak() ? " (crouched)" : "") + " for " + describe(next.pos()));
+		beginWork(next, kind);
+		standSneak = stand.sneak();
+		navigator.startRoute(route, stand.sneak());
+		nextRouteAttemptTick = 0;
+		return true;
+	}
+
+	/**
+	 * Publishes one tick of walking. A route that cannot be walked is dropped
+	 * rather than retried forever: the cell goes back in the queue and another
+	 * stand gets its turn from wherever the body ended up.
+	 */
+	private void driveRoute(MinecraftClient client) {
+		SchematicNavigator.State state = navigator.tick(client);
+		if (state == SchematicNavigator.State.STUCK) {
+			trace("route stuck; abandoning " + (target == null ? "route" : describe(target.pos())));
+			// Blame the destination, not where the body gave up: the search is
+			// deterministic, so an unblamed stand is re-planned into the same
+			// unwalkable route on the next attempt, forever.
+			blameStand(navigator.destination());
+			navigator.clear();
+			if (target != null) retryAfter.put(target.pos(), client.player.age + TARGET_RETRY_TICKS);
+			clearTarget();
+			releaseControl();
+			return;
+		}
+		controlling = true;
+		movementInput = navigator.input();
+		Vec3d look = navigator.lookGoal();
+		if (look != null) {
+			aimGoal = look;
+			aimSpeed = navigator.lookSpeed();
+			ownsRotation = true;
+		}
+		if (state == SchematicNavigator.State.ARRIVED) navigator.clear();
+	}
+
+	// ── Reach ──────────────────────────────────────────────────────────────────
+
+	/**
+	 * True when the cell can be worked from where the body already stands. This
+	 * is the whole of reachability now that the builder never moves itself: the
+	 * eye must be inside reach and must have a real ray either to the block or
+	 * to a support face beside it.
+	 */
+	private boolean reachableNow(MinecraftClient client, BlockPos pos) {
+		Vec3d eye = client.player.getEyePos();
+		if (eye.squaredDistanceTo(Vec3d.ofCenter(pos)) > MAX_REACH_SQUARED) return false;
+		return standCanSeeWork(client, eye, pos);
+	}
+
+	/**
+	 * True when this exact cell can be built correctly from where the body is
+	 * standing. Stricter than {@link #reachableNow}, which only proves the cell
+	 * is visible: a block whose rotation would come out wrong from here is not
+	 * workable from here, and answering that now is what sends the builder
+	 * walking to the right side instead of clicking at it for thirty ticks and
+	 * giving up.
+	 */
+	private boolean workableNow(MinecraftClient client, DesiredBlock desired) {
+		Vec3d eye = client.player.getEyePos();
+		if (eye.squaredDistanceTo(desired.center()) > MAX_REACH_SQUARED) return false;
+		if (!client.world.getBlockState(desired.pos()).isReplaceable()) {
+			// Already occupied: this is a bucket/toggle/stack job, and the
+			// placement solver has no opinion on those.
+			return reachableNow(client, desired.pos());
+		}
+		return SchematicPlacementSolver.solveHere(client, desired.pos(), desired.state(),
+				this::placementMatches) != null;
 	}
 
 	private boolean standCanSeeWork(MinecraftClient client, Vec3d eye, BlockPos target) {
@@ -1697,322 +1499,46 @@ public final class SchematicBuildController {
 		return false;
 	}
 
-	private void drivePath(MinecraftClient client) {
-		ClientPlayerEntity player = client.player;
-		if (pathIndex >= path.size()) return;
-		Vec3d position = player.getEntityPos();
-		Vec3d previous = lastDrivePosition == null ? position : lastDrivePosition;
-		lastDrivePosition = position;
-		boolean flying = player.getAbilities().flying;
-
-		// Swept arrival: sprint-flight covers more than a whole cell per tick,
-		// so requiring a sampled position inside the arrival circle would skip
-		// straight over a waypoint and read as "never arrived" while the body
-		// sails past the build. Testing the tick's whole travel segment (and
-		// advancing through every waypoint it passed) makes speed harmless.
-		int advanced = 0;
-		while (pathIndex < path.size() && advanced < 3
-				&& reachedWaypoint(previous, position, path.get(pathIndex),
-						flying, pathIndex == path.size() - 1)) {
-			pathIndex++;
-			advanced++;
-			stuckTicks = 0;
-			unstickTicks = 0;
-			lastWaypointDistance = Double.POSITIVE_INFINITY;
-		}
-		if (pathIndex >= path.size()) {
-			releaseMovementOnly();
-			return;
-		}
-		SchematicPathfinder.Node waypoint = path.get(pathIndex);
-		Vec3d point = new Vec3d(waypoint.x() + 0.5D, waypoint.y(), waypoint.z() + 0.5D);
-		double horizontalSq = horizontalDistanceSq(position, point);
-		double vertical = point.y - player.getY();
-
-		double distance = Math.sqrt(horizontalSq + vertical * vertical);
-		if (distance + 0.025D < lastWaypointDistance) {
-			lastWaypointDistance = distance;
-			stuckTicks = 0;
-		} else if (++stuckTicks == UNSTICK_TRIGGER_TICKS) {
-			// A lip, a fence post, or a corner the path did not model. Try to
-			// shake free before throwing away a route that is otherwise good.
-			unstickTicks = UNSTICK_BURST_TICKS;
-			unstickStrafe = random.nextBoolean() ? 1 : -1;
-		} else if (stuckTicks > 48) {
-			if (!replanTarget(client, false)) abandonTarget(client);
-			return;
-		}
-
-		Vec3d steering = pathLookaheadPoint(player, point);
-		Vec3d travelLook = new Vec3d(steering.x,
-				player.getEyeY() + MathHelper.clamp(steering.y - player.getY(), -0.75D, 0.75D), steering.z);
-		aimGoal = travelLook;
-		aimSpeed = 1.65F;
-		ownsRotation = true;
-		controlling = true;
-
-		double desiredYaw = Math.toDegrees(Math.atan2(point.z - player.getZ(), point.x - player.getX())) - 90.0D;
-		double yawError = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
-		double absoluteYaw = Math.abs(yawError);
-		boolean forward = absoluteYaw < 67.5D;
-		boolean backward = absoluteYaw > 112.5D;
-		boolean left = yawError < -22.5D && yawError > -157.5D;
-		boolean right = yawError > 22.5D && yawError < 157.5D;
-		boolean jump = flying ? vertical > 0.30D : vertical > 0.65D && player.isOnGround();
-		boolean sneak = flying && vertical < -0.30D;
-		// Full pace, always: sprint on the ground and sprint-fly in the air. A
-		// builder that ambles between stands is slower than the player it
-		// replaces, which defeats the point of moving for them. Vanilla still
-		// arbitrates the flag (hunger, sneaking, water), so publishing it every
-		// tick can never produce an illegal state. The one exception is the end
-		// of a flight: a sprint-flying body coasts about six blocks after input
-		// stops, so sprint is released early and the last stretch is flown at
-		// normal speed, with an active counter-input to kill the residue.
-		double remaining = remainingPathDistance(position);
-		boolean sprint = forward && !backward && !player.isTouchingWater()
-				&& (!flying || remaining > 7.0D);
-		if (flying && remaining < 2.2D && player.getVelocity().horizontalLength() > 0.35D) {
-			aimGoal = travelLook;
-			ownsRotation = true;
-			controlling = true;
-			movementInput = brakeInput(player);
-			return;
-		}
-
-		if (unstickTicks > 0) {
-			// Hold the heading, add a hop and a sidestep, and drop sprint so the
-			// body can round whatever the route walked into.
-			unstickTicks--;
-			movementInput = new PlayerInput(forward, backward, unstickStrafe < 0, unstickStrafe > 0,
-					jump || !flying, sneak, false);
-			return;
-		}
-		movementInput = new PlayerInput(forward, backward, left, right, jump, sneak, sprint);
-	}
-
-	/**
-	 * Re-routes the current target. The attempt counter survives
-	 * {@link #beginWork} on purpose: a body that cannot physically move would
-	 * otherwise re-plan the identical route every stuck window forever, because
-	 * the planner is deterministic for an unmoved player. Returns false only
-	 * when the target should be given up on.
-	 */
-	private boolean replanTarget(MinecraftClient client, boolean mustRelocate) {
-		if (target == null) return false;
-		// A pending flight entry is progress of its own. Wait for it rather than
-		// spending an attempt, or the target's retry window, on it.
-		if (flightActivationPhase > 0) return true;
-		if (replanAttempts >= MAX_REPLANS_PER_TARGET) return false;
-		replanAttempts++;
-		NavigationPlan plan = navigationPlan(client, target);
-		if (plan == null) return flightActivationPhase > 0;
-		// A single-node plan means the body already stands on a legal stand. That
-		// is a fine answer for a route that got stuck, and a useless one when the
-		// body is the thing blocking the cell.
-		if (mustRelocate && plan.path().size() <= 1) return false;
-		beginWork(target, workKind, plan);
-		return true;
-	}
-
-	/** Gives up on the current target, blaming the stand it could not work from. */
-	private void abandonTarget(MinecraftClient client) {
-		if (target != null) {
-			trace("abandon " + workKind + " " + describe(target.pos())
-					+ " stuck=" + stuckTicks + " phase=" + phaseTicks);
-		}
-		if (target != null) {
-			if (workKind == WorkKind.TEMP_PLACE) {
-				retryAfter.put(target.pos(), client.player.age + TEMPORARY_CELL_RETRY_TICKS);
-				deferTemporarySupport(client);
-			} else {
-				if (workKind == WorkKind.PILLAR) {
-					// Blame the stand the pillar was meant to create, so the next
-					// scaffold attempt picks a different column.
-					failedStands.computeIfAbsent(target.pos(), ignored -> new HashSet<>())
-							.add(new SchematicPathfinder.Node(pillarColumnX, pillarTopY, pillarColumnZ));
-				} else if (!path.isEmpty()) {
-					failedStands.computeIfAbsent(target.pos(), ignored -> new HashSet<>()).add(path.getLast());
-				}
-				retryAfter.put(target.pos(), client.player.age + TARGET_RETRY_TICKS);
-				if (sameDesiredBlock(temporarySupportGoal, target)) temporarySupportGoal = null;
-			}
-		}
-		clearTarget();
-		releaseAuto();
-	}
-
-	/**
-	 * Publishes ordinary movement toward one point without touching the path
-	 * cursor. Used to nudge a body back onto its stand, where the correction is
-	 * smaller than any waypoint tolerance.
-	 */
-	private void driveToPoint(ClientPlayerEntity player, Vec3d point) {
-		double vertical = point.y - player.getY();
-		aimGoal = new Vec3d(point.x, player.getEyeY(), point.z);
-		aimSpeed = 1.30F;
-		ownsRotation = true;
-		controlling = true;
-
-		double desiredYaw = Math.toDegrees(Math.atan2(point.z - player.getZ(), point.x - player.getX())) - 90.0D;
-		double yawError = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
-		double absoluteYaw = Math.abs(yawError);
-		boolean flying = player.getAbilities().flying;
-		movementInput = new PlayerInput(absoluteYaw < 67.5D, absoluteYaw > 112.5D,
-				yawError < -22.5D && yawError > -157.5D, yawError > 22.5D && yawError < 157.5D,
-				flying ? vertical > 0.30D : vertical > 0.65D && player.isOnGround(),
-				flying && vertical < -0.30D, false);
-	}
-
-	/** The player-sized volume a body occupies while standing on {@code node}. */
-	private Box bodyBox(SchematicPathfinder.Node node) {
-		return new Box(node.x() + 0.20D, node.y(), node.z() + 0.20D,
-				node.x() + 0.80D, node.y() + 1.80D, node.z() + 0.80D);
-	}
-
-	private Vec3d pathLookaheadPoint(ClientPlayerEntity player, Vec3d fallback) {
-		double budget = player.getAbilities().flying ? 6.0D : 2.8D;
-		Vec3d previous = player.getEntityPos();
-		Vec3d lookahead = fallback;
-		for (int i = pathIndex; i < path.size(); i++) {
-			SchematicPathfinder.Node node = path.get(i);
-			Vec3d point = new Vec3d(node.x() + 0.5D, node.y(), node.z() + 0.5D);
-			double segment = previous.distanceTo(point);
-			if (segment > budget) {
-				double amount = budget / Math.max(1.0E-6D, segment);
-				return previous.lerp(point, amount);
-			}
-			lookahead = point;
-			budget -= segment;
-			previous = point;
-			if (budget <= 0.0D) break;
-		}
-		return lookahead;
-	}
-
-	private double remainingPathDistance(Vec3d playerPosition) {
-		double distance = 0.0D;
-		Vec3d previous = playerPosition;
-		for (int i = pathIndex; i < path.size(); i++) {
-			SchematicPathfinder.Node node = path.get(i);
-			Vec3d next = new Vec3d(node.x() + 0.5D, node.y(), node.z() + 0.5D);
-			distance += previous.distanceTo(next);
-			previous = next;
-		}
-		return distance;
-	}
-
-	/**
-	 * Arrival test over the tick's whole travel segment. Intermediate flying
-	 * waypoints accept a wider pass — the lookahead steering rounds them off —
-	 * while the final node keeps the tight band the placement phase needs.
-	 */
-	private boolean reachedWaypoint(Vec3d previous, Vec3d position,
-			SchematicPathfinder.Node waypoint, boolean flying, boolean finalNode) {
-		Vec3d point = new Vec3d(waypoint.x() + 0.5D, waypoint.y(), waypoint.z() + 0.5D);
-		Vec3d closest = closestOnSegment(previous, position, point);
-		double horizontalTolerance = flying && !finalNode ? 0.5625D : 0.20D;
-		double verticalTolerance = flying ? (finalNode ? 0.38D : 0.80D) : 0.60D;
-		return horizontalDistanceSq(closest, point) < horizontalTolerance
-				&& Math.abs(point.y - closest.y) < verticalTolerance;
-	}
-
-	private Vec3d closestOnSegment(Vec3d start, Vec3d end, Vec3d target) {
-		Vec3d segment = end.subtract(start);
-		double lengthSq = segment.lengthSquared();
-		if (lengthSq < 1.0E-9D) return end;
-		double t = MathHelper.clamp(target.subtract(start).dotProduct(segment) / lengthSq, 0.0D, 1.0D);
-		return start.add(segment.multiply(t));
-	}
-
-	/**
-	 * Key combination opposing the current horizontal velocity, the way a
-	 * player taps the reverse key to kill flight momentum before a stop.
-	 */
-	private PlayerInput brakeInput(ClientPlayerEntity player) {
-		Vec3d velocity = player.getVelocity();
-		Vec3d desired = new Vec3d(-velocity.x, 0.0D, -velocity.z);
-		if (desired.lengthSquared() < 1.0E-6D) return PlayerInput.DEFAULT;
-		desired = desired.normalize();
-		double yaw = Math.toRadians(player.getYaw());
-		Vec3d forwardVec = new Vec3d(-Math.sin(yaw), 0.0D, Math.cos(yaw));
-		Vec3d leftVec = new Vec3d(Math.cos(yaw), 0.0D, Math.sin(yaw));
-		double forwardDot = desired.dotProduct(forwardVec);
-		double leftDot = desired.dotProduct(leftVec);
-		return new PlayerInput(forwardDot > 0.2D, forwardDot < -0.2D,
-				leftDot > 0.2D, leftDot < -0.2D, false, false, false);
-	}
-
 	// ── Aim, orientation prediction, placement, waterlogging ──────────────────
 
 	private void alignAndPlace(MinecraftClient client) {
 		ClientPlayerEntity player = client.player;
-		releaseMovementOnly();
-		controlling = true;
 		phaseTicks++;
+		// Hold the stand — and the crouch, if the last solve wanted one — for
+		// the whole alignment, not just the tick of the click. Toggling sneak
+		// on and off around a placement is both slower and more conspicuous
+		// than simply staying down.
+		holdPosture(standSneak || (placementAim != null && placementAim.sneak()));
 
-		Box cell = new Box(target.pos()).shrink(0.05D, 0.05D, 0.05D);
-		if (player.getBoundingBox().intersects(cell)) {
-			// The body overlaps the cell it has to fill, so vanilla will refuse
-			// the placement. Drifting off a legal stand is by far the common
-			// cause, so recentre on it first and only hunt for a different stand
-			// when this one cannot clear the cell at all.
-			SchematicPathfinder.Node stand = path.isEmpty() ? feetNode(player) : path.getLast();
-			// Recentring cannot go through drivePath: the drift that overlaps the
-			// cell is smaller than its arrival tolerance, so it would report the
-			// stand reached and publish no input at all, forever.
-			if (phaseTicks < 40 && !bodyBox(stand).intersects(cell)) {
-				driveToPoint(player, new Vec3d(stand.x() + 0.5D, stand.y(), stand.z() + 0.5D));
-			} else if (!replanTarget(client, true)) {
-				abandonTarget(client);
+		// The body is standing in the cell it has to fill, so vanilla will refuse
+		// the placement. Walking off it is the fix; no stand the router picks
+		// can overlap its own target, so any route out of here resolves this.
+		if (player.getBoundingBox().intersects(new Box(target.pos()).shrink(0.05D, 0.05D, 0.05D))) {
+			blameCurrentStand(client);
+			if (config.schematicAutoMove && routeToPlace(client, target, workKind)) {
+				status(client, "Stepping off the next cell", Formatting.AQUA, 20);
+				return;
+			}
+			status(client, "Standing in the next cell — step aside", Formatting.GOLD, 40);
+			if (phaseTicks > 40) {
+				retryAfter.put(target.pos(), player.age + TARGET_RETRY_TICKS);
+				clearTarget();
+				releaseControl();
 			}
 			return;
 		}
-
-			if (player.getAbilities().flying) {
-			SchematicPathfinder.Node stand = path.isEmpty() ? feetNode(player) : path.getLast();
-			Vec3d center = new Vec3d(stand.x() + 0.5D, stand.y(), stand.z() + 0.5D);
-			double horizontal = (center.x - player.getX()) * (center.x - player.getX())
-					+ (center.z - player.getZ()) * (center.z - player.getZ());
-			// This band has to be no tighter than drivePath's arrival test, or a
-			// hover that has settled between the two reads as "off the stand" to
-			// one and "already arrived" to the other, and nothing ever moves.
-			if (horizontal > 0.20D || Math.abs(center.y - player.getY()) > 0.38D) {
-				pathIndex = Math.max(0, path.size() - 1);
-				drivePath(client);
-					return;
-				}
-			} else if (!player.isOnGround()) {
-				// Mid-air between stands: pre-aim at the work and place on
-				// landing. Sliding momentum on the ground is no reason to wait —
-				// the live raycast below is the real gate, and a body drifting
-				// into the cell is caught by the overlap check above.
-				aimGoal = placementAim != null ? placementAim.aimPoint() : target.center();
-				aimSpeed = 1.60F;
-				ownsRotation = true;
-				return;
-			}
 
 		if (placementAim == null || phaseTicks % 12 == 0) {
 			placementAim = findPlacementAim(client, target);
 			settleTicks = 0;
 			if (placementAim == null) {
-				// Placing while moving means the body can slide a little past
-				// its stand; step back onto it before concluding the stand is
-				// blind. The threshold is far below the waypoint tolerance, so
-				// only a real drift triggers it.
-				SchematicPathfinder.Node stand = path.isEmpty() ? feetNode(player) : path.getLast();
-				Vec3d standCentre = new Vec3d(stand.x() + 0.5D, stand.y(), stand.z() + 0.5D);
-				if (phaseTicks <= 28 && !player.getAbilities().flying
-						&& horizontalDistanceSq(player.getEntityPos(), standCentre) > 0.015D) {
-					driveToPoint(player, standCentre);
-					return;
-				}
 				if (phaseTicks > 28) {
+					blameCurrentStand(client);
 					if (workKind == WorkKind.TEMP_PLACE) {
 						retryAfter.put(target.pos(), player.age + TEMPORARY_CELL_RETRY_TICKS);
 						deferTemporarySupport(client);
 						clearTarget();
-						releaseAuto();
+						releaseControl();
 						return;
 					}
 					if (workKind == WorkKind.SCHEMATIC && config.schematicTemporaryBlocks
@@ -2021,12 +1547,9 @@ public final class SchematicBuildController {
 						clearTarget();
 						return;
 					}
-					if (!path.isEmpty()) {
-						failedStands.computeIfAbsent(target.pos(), ignored -> new HashSet<>()).add(path.getLast());
-					}
 					retryAfter.put(target.pos(), player.age + TARGET_RETRY_TICKS);
 					clearTarget();
-					releaseAuto();
+					releaseControl();
 				}
 				return;
 			}
@@ -2035,9 +1558,30 @@ public final class SchematicBuildController {
 		aimGoal = placementAim.aimPoint();
 		aimSpeed = 1.85F;
 		ownsRotation = true;
-		BlockHitResult liveHit = livePlacementHit(client, placementAim);
+		// Crouch for the click when the block being clicked would otherwise
+		// answer it — a chest would open, a repeater would re-time. Holding
+		// sneak is what tells vanilla to build instead of use.
+		holdPosture(placementAim.sneak());
+		BlockHitResult liveHit = livePlacementHit(client, placementAim, target);
 		if (liveHit == null) {
 			settleTicks = 0;
+			return;
+		}
+		// Sneak is a physics state, not just a bit on a packet: the click has
+		// to happen on a tick the body is already crouched, or the server sees
+		// a standing player and uses the block.
+		if (placementAim.sneak() && !player.isSneaking()) {
+			// Something upstream is eating the published crouch — Freecam owns
+			// the keys, or the player is holding one. Waiting forever is the
+			// one thing this must not do, because no other guard in this method
+			// can fire while the aim keeps resolving.
+			settleTicks = 0;
+			if (phaseTicks > 60) {
+				blameCurrentStand(client);
+				retryAfter.put(target.pos(), player.age + TARGET_RETRY_TICKS);
+				clearTarget();
+				releaseControl();
+			}
 			return;
 		}
 
@@ -2072,16 +1616,253 @@ public final class SchematicBuildController {
 		settleTicks = 0;
 	}
 
+	// ── Auto Move off: silent-aim printer ──────────────────────────────────────
+
+	/**
+	 * One tick of manual-move building, run entirely through silent aim: the
+	 * camera stays under the player's mouse while the body turns to each
+	 * support face and clicks, exactly the way the combat modules aim. Nothing
+	 * is clicked that the body is not genuinely looking at, so rotation, hit
+	 * vector, and movement always agree in the packet stream — the click only
+	 * fires once {@link #livePlacementHit} confirms the body's own ray lands
+	 * on the planned face and vanilla still predicts the right block. The
+	 * player walks; the printer serves what it can from here — the cell under
+	 * the player's view first, then lowest layer first so walls grow upward.
+	 */
+	private void printerTick(MinecraftClient client) {
+		ClientPlayerEntity player = client.player;
+		long now = System.nanoTime();
+		int tick = player.age;
+		printerClickedAt.values().removeIf(at -> now - at > PRINTER_CONFIRM_NS);
+		printerDeferUntil.values().removeIf(until -> tick >= until);
+
+		if (printerTarget != null && !printerTargetStillWanted(client)) printerClearTarget(client, false);
+		if (printerTarget == null) printerChooseTarget(client);
+		if (printerTarget == null) {
+			printerDisengage();
+			ownsRotation = false;
+			aimGoal = null;
+			status(client, "No unbuilt cell in reach (Auto Move is off)", Formatting.GRAY, 160);
+			return;
+		}
+
+		// The first engage snapshots the player's rotation as the camera view;
+		// from here on the body may turn without the screen moving.
+		SilentAimController.instance().engage(player);
+		printerEngaged = true;
+		printerPhaseTicks++;
+
+		if (printerAimPlan == null || printerPhaseTicks % 12 == 0) {
+			PlacementAim plan = findPlacementAim(client, printerTarget);
+			if (plan == null || printerPostureBlocked(client, plan)) {
+				printerClearTarget(client, true);
+				return;
+			}
+			printerAimPlan = plan;
+		}
+
+		aimGoal = printerAimPlan.aimPoint();
+		aimSpeed = 1.85F;
+		ownsRotation = true;
+
+		BlockHitResult live = livePlacementHit(client, printerAimPlan, printerTarget);
+		if (live == null) {
+			// Still turning, or the world changed under the plan. The clock is
+			// what keeps a cell that can never line up from holding the printer.
+			if (printerPhaseTicks > 50) printerClearTarget(client, true);
+			return;
+		}
+		if (now < lastPlaceNanos + jitterMs(22, 38)) return;
+		selectHotbarSlot(client, printerAimPlan.hotbarSlot());
+		ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, live);
+		if (!result.isAccepted() && (printerAimPlan.kind() == PlacementKind.WATERLOG
+				|| printerAimPlan.kind() == PlacementKind.UNWATERLOG)) {
+			result = client.interactionManager.interactItem(player, Hand.MAIN_HAND);
+		}
+		if (!result.isAccepted()) {
+			printerClearTarget(client, true);
+			return;
+		}
+		player.swingHand(Hand.MAIN_HAND);
+		lastPlaceNanos = now;
+		printerClickedAt.put(printerTarget.pos(), now);
+		trace("printer placed " + describe(printerTarget.pos()));
+		printerClearTarget(client, false);
+	}
+
+	/** The buildable-now form of a goal: dry, with the bucket as its own job. */
+	private BlockState dryGoal(BlockState goal) {
+		return SchematicBlockRules.isWaterlogged(goal) ? SchematicBlockRules.dewatered(goal) : goal;
+	}
+
+	/**
+	 * A posture the printer cannot supply, because it never touches the keys:
+	 * a placement that needs a crouch the player is not holding, or a toggle
+	 * tap that a held crouch would turn into a placement. Both get a hint and
+	 * the cell waits — crouching is the player's decision here.
+	 */
+	private boolean printerPostureBlocked(MinecraftClient client, PlacementAim plan) {
+		if (plan.sneak() && !client.player.isSneaking()) {
+			status(client, "Crouch to build against interactive blocks", Formatting.GOLD, 40);
+			return true;
+		}
+		if (plan.kind() == PlacementKind.TOGGLE && client.player.isSneaking()) {
+			status(client, "Stop crouching to adjust blocks", Formatting.GOLD, 40);
+			return true;
+		}
+		return false;
+	}
+
+	/** The target is still wanted, workable, stocked, and in coarse reach. */
+	private boolean printerTargetStillWanted(MinecraftClient client) {
+		DesiredBlock cell = printerTarget;
+		if (printerClickedAt.containsKey(cell.pos())) return false;
+		double slack = (MAX_REACH + 1.0D) * (MAX_REACH + 1.0D);
+		if (client.player.getEyePos().squaredDistanceTo(cell.center()) > slack) return false;
+		BlockState goal = desiredStateAt(cell.pos());
+		if (goal == null || SchematicBlockRules.isFluid(goal)) return false;
+		BlockState wanted = client.world.getBlockState(cell.pos()).isReplaceable() ? dryGoal(goal) : goal;
+		// States are canonical singletons, so a change of phase — the dry block
+		// appeared and only its water is missing now — re-derives the target.
+		if (wanted != cell.state()) return false;
+		if (desiredComplete(client.world, cell.pos(), wanted)
+				|| !canWorkOn(client.world, cell.pos(), wanted)) return false;
+		return materialAvailable(client, cell.pos(), wanted);
+	}
+
+	/**
+	 * The job a cell currently supports, or null: the dry placement while the
+	 * cell is empty, the full goal — water, toggles, stacking — once its block
+	 * exists. Pure fluid cells are auto-move work; the printer skips them.
+	 */
+	private DesiredBlock printerJobAt(MinecraftClient client, BlockPos pos) {
+		if (printerClickedAt.containsKey(pos) || printerDeferUntil.containsKey(pos)) return null;
+		BlockState goal = desiredStateAt(pos);
+		if (goal == null || SchematicBlockRules.isFluid(goal)) return null;
+		BlockState current = client.world.getBlockState(pos);
+		BlockState wanted = current.isReplaceable() ? dryGoal(goal) : goal;
+		if (desiredComplete(client.world, pos, wanted) || !canWorkOn(client.world, pos, wanted)) return null;
+		if (current.isReplaceable()) {
+			if (!hasSupport(client.world, pos)) return null;
+			if (client.player.getBoundingBox().intersects(new Box(pos).shrink(0.05D, 0.05D, 0.05D))) return null;
+		}
+		return new DesiredBlock(pos.toImmutable(), wanted);
+	}
+
+	/**
+	 * Picks the next cell and proves its aim. The cell under the player's view
+	 * goes first, then the rest of reach lowest-first, nearest-first. Proofs
+	 * run through {@link #findPlacementAim} — the same rotation-probed solver
+	 * the auto builder uses, so a directional block is only accepted from a
+	 * body rotation that makes vanilla predict the state the schematic wants.
+	 * A cell that fails is parked for {@link #PRINTER_DEFER_TICKS} so the
+	 * proof budget flows past it instead of starving the cells ranked behind.
+	 */
+	private void printerChooseTarget(MinecraftClient client) {
+		ClientPlayerEntity player = client.player;
+		Vec3d eye = player.getEyePos();
+		List<DesiredBlock> ordered = new ArrayList<>();
+		Set<BlockPos> lookedAt = new HashSet<>();
+
+		// What the PLAYER is looking at — the decoupled view, not the body.
+		BlockHitResult look = viewCrosshair(client);
+		if (look != null) {
+			DesiredBlock finish = printerJobAt(client, look.getBlockPos());
+			if (finish != null && lookedAt.add(finish.pos())) ordered.add(finish);
+			BlockState looked = client.world.getBlockState(look.getBlockPos());
+			BlockPos cell = looked.isReplaceable() ? look.getBlockPos()
+					: look.getBlockPos().offset(look.getSide());
+			DesiredBlock place = printerJobAt(client, cell);
+			if (place != null && lookedAt.add(place.pos())) ordered.add(place);
+		}
+
+		BlockPos base = BlockPos.ofFloored(eye.x, eye.y, eye.z);
+		int radius = (int) Math.ceil(MAX_REACH);
+		List<DesiredBlock> area = new ArrayList<>();
+		for (int dy = -radius; dy <= radius; dy++) {
+			for (int dx = -radius; dx <= radius; dx++) {
+				for (int dz = -radius; dz <= radius; dz++) {
+					BlockPos pos = base.add(dx, dy, dz);
+					if (lookedAt.contains(pos)) continue;
+					if (eye.squaredDistanceTo(Vec3d.ofCenter(pos)) > MAX_REACH_SQUARED) continue;
+					DesiredBlock job = printerJobAt(client, pos);
+					if (job != null) area.add(job);
+				}
+			}
+		}
+		area.sort(Comparator.comparingInt((DesiredBlock cell) -> cell.pos().getY())
+				.thenComparingDouble(cell -> eye.squaredDistanceTo(cell.center())));
+		ordered.addAll(area);
+		if (ordered.isEmpty()) return;
+
+		String missingMaterial = null;
+		int proofs = 0;
+		for (DesiredBlock cell : ordered) {
+			if (proofs >= PRINTER_PROOFS_PER_TICK) break;
+			if (!materialAvailable(client, cell.pos(), cell.state())) {
+				if (missingMaterial == null) missingMaterial = cell.state().getBlock().getName().getString();
+				continue;
+			}
+			proofs++;
+			PlacementAim plan = findPlacementAim(client, cell);
+			if (plan == null || printerPostureBlocked(client, plan)) {
+				printerDeferUntil.put(cell.pos(), player.age + PRINTER_DEFER_TICKS);
+				continue;
+			}
+			printerTarget = cell;
+			printerAimPlan = plan;
+			printerPhaseTicks = 0;
+			return;
+		}
+		if (missingMaterial != null) status(client, "Need " + missingMaterial, Formatting.YELLOW, 40);
+	}
+
+	/** The ray the player sees: the decoupled view while silent aim is live. */
+	private BlockHitResult viewCrosshair(MinecraftClient client) {
+		ClientPlayerEntity player = client.player;
+		boolean silent = SilentAimController.isActive();
+		float yaw = silent ? SilentAimController.viewYaw() : player.getYaw();
+		float pitch = silent ? SilentAimController.viewPitch() : player.getPitch();
+		Vec3d eye = player.getEyePos();
+		Vec3d end = eye.add(Vec3d.fromPolar(pitch, yaw).multiply(MAX_REACH));
+		BlockHitResult hit = client.world.raycast(new RaycastContext(eye, end,
+				RaycastContext.ShapeType.OUTLINE, RaycastContext.FluidHandling.NONE, player));
+		return hit.getType() == HitResult.Type.BLOCK ? hit : null;
+	}
+
+	private void printerClearTarget(MinecraftClient client, boolean defer) {
+		if (defer && printerTarget != null) {
+			printerDeferUntil.put(printerTarget.pos(), client.player.age + PRINTER_DEFER_TICKS);
+		}
+		printerTarget = null;
+		printerAimPlan = null;
+		printerPhaseTicks = 0;
+	}
+
+	/** Hands the camera back; the body walks under it over the next ticks. */
+	private void printerDisengage() {
+		if (!printerEngaged) return;
+		printerEngaged = false;
+		SilentAimController.instance().release();
+	}
+
+	/** Same-tick visible slot switch, synced the way Scaffold's is. */
+	private void selectHotbarSlot(MinecraftClient client, int slot) {
+		if (slot < 0 || slot > 8 || client.player.getInventory().getSelectedSlot() == slot) return;
+		client.player.getInventory().setSelectedSlot(slot);
+		client.player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slot));
+		((ClientPlayerInteractionManagerAccessor) client.interactionManager).profps$setLastSelectedSlot(slot);
+	}
+
 	private void alignAndBreakTemporary(MinecraftClient client) {
 		ClientPlayerEntity player = client.player;
-		releaseMovementOnly();
-		controlling = true;
 		phaseTicks++;
+		holdPosture(false);
 		if (player.getBoundingBox().intersects(new Box(target.pos()).shrink(0.05D, 0.05D, 0.05D))) {
-			NavigationPlan escape = navigationPlan(client, target);
-			if (escape != null && escape.path().size() > 1) {
-				beginWork(target, WorkKind.TEMP_REMOVE, escape);
-			}
+			// Mining the block the body occupies is the player's call, not ours.
+			retryAfter.put(target.pos(), player.age + TARGET_RETRY_TICKS);
+			clearTarget();
+			releaseControl();
 			return;
 		}
 
@@ -2092,7 +1873,7 @@ public final class SchematicBuildController {
 				if (phaseTicks > 40) {
 					retryAfter.put(target.pos(), player.age + 20);
 					clearTarget();
-					releaseAuto();
+					releaseControl();
 				}
 				return;
 			}
@@ -2132,7 +1913,7 @@ public final class SchematicBuildController {
 				Vec3d point = facePoint(pos, side, sample);
 				BlockHitResult actual = raycastTemporarily(client.player, point);
 				if (actual != null && actual.getBlockPos().equals(pos)) {
-					return new PlacementAim(point, actual, tool, PlacementKind.BREAK);
+					return new PlacementAim(point, actual, tool, PlacementKind.BREAK, false);
 				}
 			}
 		}
@@ -2192,13 +1973,13 @@ public final class SchematicBuildController {
 			BlockState supportState = client.world.getBlockState(support);
 			if (supportState.isReplaceable() || supportState.getCollisionShape(client.world, support).isEmpty()) continue;
 			Direction clickedSide = towardSupport.getOpposite();
+			boolean sneak = SchematicBlockRules.mustSneakAgainst(supportState);
 			for (int sample = 0; sample < 5; sample++) {
 				Vec3d point = facePoint(support, clickedSide, sample);
-				BlockHitResult actual = raycastTemporarily(client.player, point);
-				if (actual == null || !actual.getBlockPos().equals(support) || actual.getSide() != clickedSide) continue;
-				HoverTarget predicted = placementForHit(client, client.player, actual, desired.pos(), desired.state());
+				PredictedPlacement predicted = evaluateAim(client, point, support, clickedSide, desired);
 				if (predicted != null) {
-					return new PlacementAim(point, predicted.hit(), predicted.hotbarSlot(), PlacementKind.BLOCK);
+					return new PlacementAim(point, predicted.hit(), predicted.hotbarSlot(),
+							PlacementKind.BLOCK, sneak);
 				}
 			}
 		}
@@ -2206,39 +1987,78 @@ public final class SchematicBuildController {
 	}
 
 	private PlacementAim findDirectPlacementAim(MinecraftClient client, DesiredBlock desired) {
+		boolean sneak = SchematicBlockRules.mustSneakAgainst(client.world.getBlockState(desired.pos()));
 		for (Direction side : Direction.values()) {
 			for (int sample = 0; sample < 5; sample++) {
 				Vec3d point = facePoint(desired.pos(), side, sample);
-				BlockHitResult actual = raycastTemporarily(client.player, point);
-				if (actual == null || !actual.getBlockPos().equals(desired.pos()) || actual.getSide() != side) continue;
-				HoverTarget predicted = placementForHit(client, client.player, actual, desired.pos(), desired.state());
+				PredictedPlacement predicted = evaluateAim(client, point, desired.pos(), side, desired);
 				if (predicted != null) {
-					return new PlacementAim(point, predicted.hit(), predicted.hotbarSlot(), PlacementKind.BLOCK);
+					return new PlacementAim(point, predicted.hit(), predicted.hotbarSlot(),
+							PlacementKind.BLOCK, sneak);
 				}
 			}
 		}
 		return null;
 	}
 
+	/**
+	 * Aim for a right-click that is not a placement — a bucket, or the taps
+	 * that walk a repeater to its delay. These deliberately do <em>not</em>
+	 * sneak: the interaction is the point.
+	 */
 	private PlacementAim findDirectUseAim(MinecraftClient client, BlockPos target, int slot, PlacementKind kind) {
 		for (Direction side : Direction.values()) {
 			for (int sample = 0; sample < 5; sample++) {
 				Vec3d point = facePoint(target, side, sample);
 				BlockHitResult actual = raycastTemporarily(client.player, point);
 				if (actual != null && actual.getBlockPos().equals(target)) {
-					return new PlacementAim(point, actual, slot, kind);
+					return new PlacementAim(point, actual, slot, kind, false);
 				}
 			}
 		}
 		return null;
 	}
 
-	private BlockHitResult livePlacementHit(MinecraftClient client, PlacementAim planned) {
+	private BlockHitResult livePlacementHit(MinecraftClient client, PlacementAim planned, DesiredBlock desired) {
 		HitResult raw = client.player.raycast(MAX_REACH, 1.0F, false);
 		if (!(raw instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return null;
 		if (!hit.getBlockPos().equals(planned.hit().getBlockPos()) || hit.getSide() != planned.hit().getSide()) return null;
 		if (planned.kind() != PlacementKind.BLOCK) return hit;
-		return placementForHit(client, client.player, hit, target.pos(), target.state()) != null ? hit : null;
+		// Re-predicted under the live rotation, which by now is the aim rotation.
+		// This is what makes a half-turned head wait instead of placing a
+		// furnace facing the wrong way.
+		return placementForHit(client, client.player, hit, desired.pos(), desired.state()) != null ? hit : null;
+	}
+
+	/**
+	 * Evaluates one candidate aim point with the head held where aiming at it
+	 * would actually put it.
+	 *
+	 * <p>Vanilla derives a block's horizontal facing from the player's live yaw
+	 * at click time, so the raycast and the placement prediction have to happen
+	 * under the <em>same</em> rotation. Restoring the head between them — which
+	 * is what a bare raycast helper does — asks vanilla what a furnace placed
+	 * while facing some unrelated direction would look like, and gets an answer
+	 * that has nothing to do with the click being planned.
+	 */
+	private PredictedPlacement evaluateAim(MinecraftClient client, Vec3d point, BlockPos expectedHit,
+			Direction expectedSide, DesiredBlock desired) {
+		ClientPlayerEntity player = client.player;
+		if (player.getEyePos().squaredDistanceTo(point) > MAX_REACH_SQUARED) return null;
+		float yaw = player.getYaw();
+		float pitch = player.getPitch();
+		float[] rotation = rotationTo(player.getEyePos(), point);
+		try {
+			player.setYaw(rotation[0]);
+			player.setPitch(rotation[1]);
+			HitResult raw = player.raycast(MAX_REACH, 1.0F, false);
+			if (!(raw instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return null;
+			if (!hit.getBlockPos().equals(expectedHit) || hit.getSide() != expectedSide) return null;
+			return placementForHit(client, player, hit, desired.pos(), desired.state());
+		} finally {
+			player.setYaw(yaw);
+			player.setPitch(pitch);
+		}
 	}
 
 	private BlockHitResult raycastTemporarily(ClientPlayerEntity player, Vec3d point) {
@@ -2257,7 +2077,7 @@ public final class SchematicBuildController {
 		}
 	}
 
-	private HoverTarget placementForHit(MinecraftClient client, ClientPlayerEntity player, BlockHitResult hit,
+	private PredictedPlacement placementForHit(MinecraftClient client, ClientPlayerEntity player, BlockHitResult hit,
 			BlockPos expectedPos, BlockState desired) {
 		int slot = findMaterialSlot(client, desired);
 		if (slot < 0) return null;
@@ -2271,7 +2091,7 @@ public final class SchematicBuildController {
 		if (!placeAt.equals(expectedPos) || predicted == null || !placementMatches(desired, predicted, current)
 				|| !((BlockItemInvoker) blockItem).profps$canPlace(context, predicted)) return null;
 		BlockHitResult copy = new BlockHitResult(hit.getPos(), hit.getSide(), hit.getBlockPos().toImmutable(), hit.isInsideBlock());
-		return new HoverTarget(placeAt, copy, slot, desired);
+		return new PredictedPlacement(placeAt, copy, slot, desired);
 	}
 
 	private int findMaterialSlot(MinecraftClient client, BlockState desired) {
@@ -2381,65 +2201,6 @@ public final class SchematicBuildController {
 		client.interactionManager.clickSlot(client.player.currentScreenHandler.syncId,
 				inventorySlot, hotbar, SlotActionType.SWAP, client.player);
 		return hotbar;
-	}
-
-	// ── Original manual hover mode ─────────────────────────────────────────────
-
-	private void tickManualHover(MinecraftClient client) {
-		ClientPlayerEntity player = client.player;
-		if (client.options.attackKey.isPressed() || client.options.useKey.isPressed() || player.isUsingItem()) {
-			resetHover();
-			return;
-		}
-
-		long now = System.nanoTime();
-		HoverTarget target = targetUnderCrosshair(client, player, now);
-		if (target == null) {
-			resetHover();
-			return;
-		}
-		if (!sameTarget(target, hoverTarget)) {
-			hoverTarget = target;
-			hoverReadyNanos = now;
-		}
-		hoverTarget = target;
-
-		long minimumInterval = lastPlaceNanos + (isMoving(player) ? jitterMs(32, 48) : jitterMs(55, 95));
-		if (now < hoverReadyNanos || now < minimumInterval) return;
-		if (player.getInventory().getSelectedSlot() != target.hotbarSlot()) {
-			player.getInventory().setSelectedSlot(target.hotbarSlot());
-		}
-
-		HoverTarget live = targetUnderCrosshair(client, player, now);
-		if (!sameTarget(target, live)) {
-			resetHover();
-			return;
-		}
-
-		ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, live.hit());
-		if (!result.isAccepted()) {
-			hoverReadyNanos = now + jitterMs(25, 65);
-			return;
-		}
-		player.swingHand(Hand.MAIN_HAND);
-		lastPlaceNanos = now;
-		recentPosition = live.placeAt();
-		recentPositionUntil = now + RECENT_POSITION_NS;
-		resetHover();
-	}
-
-	private HoverTarget targetUnderCrosshair(MinecraftClient client, ClientPlayerEntity player, long now) {
-		HitResult raw = player.raycast(MAX_REACH, 1.0F, false);
-		if (!(raw instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return null;
-		if (player.getEyePos().squaredDistanceTo(hit.getPos()) > MAX_REACH_SQUARED) return null;
-		BlockState supportState = client.world.getBlockState(hit.getBlockPos());
-		BlockPos placeAt = (supportState.isReplaceable() ? hit.getBlockPos()
-				: hit.getBlockPos().offset(hit.getSide())).toImmutable();
-		if (recentPosition != null && recentPosition.equals(placeAt) && now < recentPositionUntil) return null;
-		BlockState desired = remember.desiredStateAt(placeAt);
-		if (desired == null || desired.isAir()) desired = litematica.stateAt(placeAt);
-		if (desired == null || desired.isAir()) return null;
-		return placementForHit(client, player, hit, placeAt, desired);
 	}
 
 	// ── State/property/geometry helpers ────────────────────────────────────────
@@ -2556,22 +2317,14 @@ public final class SchematicBuildController {
 		};
 	}
 
-	private SchematicPathfinder.Node feetNode(ClientPlayerEntity player) {
-		return new SchematicPathfinder.Node(MathHelper.floor(player.getX()),
-				MathHelper.floor(player.getBoundingBox().minY + 0.50D), MathHelper.floor(player.getZ()));
-	}
-
-	private double horizontalDistanceSq(Vec3d a, Vec3d b) {
-		double dx = a.x - b.x;
-		double dz = a.z - b.z;
-		return dx * dx + dz * dz;
-	}
-
-	private boolean manualInput(MinecraftClient client) {
-		return client.options.forwardKey.isPressed() || client.options.backKey.isPressed()
-				|| client.options.leftKey.isPressed() || client.options.rightKey.isPressed()
-				|| client.options.jumpKey.isPressed() || client.options.sneakKey.isPressed()
-				|| client.options.attackKey.isPressed() || client.options.useKey.isPressed();
+	/**
+	 * The player's own clicks always win. Movement keys are deliberately not
+	 * checked: walking the build is now their job, so pausing for it would mean
+	 * never placing anything while they travel.
+	 */
+	private boolean manualInteracting(MinecraftClient client) {
+		return client.options.attackKey.isPressed() || client.options.useKey.isPressed()
+				|| client.player.isUsingItem();
 	}
 
 	private boolean ready(MinecraftClient client) {
@@ -2581,21 +2334,8 @@ public final class SchematicBuildController {
 				&& !client.player.isGliding();
 	}
 
-	private boolean isMoving(ClientPlayerEntity player) {
-		return player.getVelocity().horizontalLengthSquared() > 0.0016D;
-	}
-
 	private long jitterMs(int minimum, int maximum) {
 		return (minimum + random.nextInt(maximum - minimum + 1)) * 1_000_000L;
-	}
-
-	private boolean sameTarget(HoverTarget first, HoverTarget second) {
-		return first != null && second != null
-				&& first.placeAt().equals(second.placeAt())
-				&& first.hit().getBlockPos().equals(second.hit().getBlockPos())
-				&& first.hit().getSide() == second.hit().getSide()
-				&& first.hotbarSlot() == second.hotbarSlot()
-				&& first.desired().equals(second.desired());
 	}
 
 	private boolean sameDesiredBlock(DesiredBlock first, DesiredBlock second) {
@@ -2625,62 +2365,77 @@ public final class SchematicBuildController {
 		nextStatusTick = client.player.age + cooldown;
 	}
 
-	private void releaseMovementOnly() {
-		movementInput = PlayerInput.DEFAULT;
+	/**
+	 * Stands still, optionally crouched. Publishing a held input rather than
+	 * releasing control keeps the body where the stand proof put it — a
+	 * placement proved from one cell is not valid from the next one over.
+	 */
+	private void holdPosture(boolean sneak) {
+		controlling = true;
+		movementInput = sneak
+				? new PlayerInput(false, false, false, false, false, true, false)
+				: PlayerInput.DEFAULT;
 	}
 
-	private void releaseAuto() {
+	/** Hands back the view and the movement keys. */
+	private void releaseControl() {
 		controlling = false;
-		ownsRotation = false;
 		movementInput = PlayerInput.DEFAULT;
+		ownsRotation = false;
 		aimGoal = null;
 	}
 
+	/**
+	 * The pathfinder cell the body occupies.
+	 *
+	 * <p>Rounded the way {@link WorldSpace#passable} measures, not by halves:
+	 * that check starts its body box at {@code y + 0.01}, so a body resting on
+	 * anything thinner than a slab — a carpet, one layer of snow — belongs to
+	 * the cell above the surface. Rounding to the nearest half instead put the
+	 * body a whole block below the node the router had picked for it, so it
+	 * could never be judged to have arrived.
+	 */
+	private SchematicPathfinder.Node feetNode(ClientPlayerEntity player) {
+		return new SchematicPathfinder.Node(MathHelper.floor(player.getX()),
+				MathHelper.ceil(player.getBoundingBox().minY - 0.01D), MathHelper.floor(player.getZ()));
+	}
+
 	private void clearTarget() {
+		navigator.clear();
+		standSneak = false;
 		target = null;
 		workKind = WorkKind.SCHEMATIC;
 		placementAim = null;
-		path = List.of();
-		pathIndex = 0;
-		navigationComplete = true;
-		transitWaitTicks = 0;
 		phaseTicks = 0;
 		settleTicks = 0;
 		confirmationTicks = 0;
-		stuckTicks = 0;
-		unstickTicks = 0;
-		replanAttempts = 0;
-		lastWaypointDistance = Double.POSITIVE_INFINITY;
-		lastDrivePosition = null;
 		breakingTemporary = false;
 		breakSwingTicks = 0;
 		placementSent = false;
-		pillarStallTicks = 0;
-		lastPillarFeetY = Integer.MIN_VALUE;
-	}
-
-	private void resetHover() {
-		hoverTarget = null;
-		hoverReadyNanos = 0L;
 	}
 
 	private void resetAll() {
-		resetHover();
-		releaseAuto();
+		navigator.clear();
+		releaseControl();
 		clearTarget();
 		temporaryQueue.clear();
 		temporarySupportGoal = null;
 		manualPauseTicks = 0;
-		flightActivationPhase = 0;
-		flightAttemptCooldownUntil = 0;
 		lastFrameNanos = 0L;
 		// These are absolute player-age deadlines, and a respawn restarts the age
 		// at zero. Leaving them would freeze the affected cells and the status
 		// line for the whole of the old age.
 		retryAfter.clear();
 		failedStands.clear();
+		printerClickedAt.clear();
+		printerDeferUntil.clear();
+		printerTarget = null;
+		printerAimPlan = null;
+		printerPhaseTicks = 0;
+		printerDisengage();
 		nextMaintenanceTick = 0;
 		nextCleanupAttemptTick = 0;
+		nextRouteAttemptTick = 0;
 		nextStatusTick = 0;
 		layerProgressTick = Integer.MIN_VALUE;
 	}
@@ -2695,6 +2450,11 @@ public final class SchematicBuildController {
 
 	// ── World pathing view ─────────────────────────────────────────────────────
 
+	/**
+	 * The pathfinder's view of the world: which cells a body may stand in, pass
+	 * through, and must not touch. Nothing here knows about schematics — it is
+	 * the same question a player answers by looking.
+	 */
 	private static final class WorldSpace implements SchematicPathfinder.Space {
 		private final MinecraftClient client;
 		private final ClientPlayerEntity player;
@@ -2736,27 +2496,45 @@ public final class SchematicBuildController {
 		}
 	}
 
-	private enum WorkKind { SCHEMATIC, TEMP_PLACE, TEMP_REMOVE, PILLAR }
+	private enum WorkKind { SCHEMATIC, TEMP_PLACE, TEMP_REMOVE }
 	private enum PlacementKind { BLOCK, WATERLOG, UNWATERLOG, TOGGLE, BREAK }
 	private record DesiredBlock(BlockPos pos, BlockState state) {
 		Vec3d center() { return Vec3d.ofCenter(pos); }
 	}
-	private record NavigationPlan(List<SchematicPathfinder.Node> path, boolean complete) {}
-	private record StandCandidate(SchematicPathfinder.Node node, Vec3d eye, double cost) {}
-	private record PlacementAim(Vec3d aimPoint, BlockHitResult hit, int hotbarSlot, PlacementKind kind) {}
-	private record HoverTarget(BlockPos placeAt, BlockHitResult hit, int hotbarSlot, BlockState desired) {}
+	/** {@code sneak} is set when the clicked block would otherwise be used, not built against. */
+	private record PlacementAim(Vec3d aimPoint, BlockHitResult hit, int hotbarSlot,
+			PlacementKind kind, boolean sneak) {}
+	private record PredictedPlacement(BlockPos placeAt, BlockHitResult hit, int hotbarSlot, BlockState desired) {}
 	private record SourceBounds(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, int sourceIdentity) {}
 
-	/** Optional integration: absent or changing Litematica simply yields no source. */
+	/**
+	 * Optional integration with Litematica, over reflection so the mod stays a
+	 * soft dependency.
+	 *
+	 * <p>Litematica renames things between versions, and the old binding here
+	 * pinned one exact name per lookup and swallowed every failure — so a single
+	 * rename anywhere in the chain silently produced "no placement found",
+	 * indistinguishable from having no schematic loaded at all. Three changes
+	 * fix that: every lookup accepts a list of known spellings, the enclosing-box
+	 * getter is discovered by pattern (Litematica shipped it misspelled as
+	 * {@code getEclosingBox} for years and may fix it at any time), and the box's
+	 * own accessors are resolved from the returned object at call time rather
+	 * than from a guessed class name.
+	 *
+	 * <p>Whatever still fails is recorded in {@link #diagnosis()} and logged once,
+	 * naming the piece that could not be found, so the next version bump costs a
+	 * one-line fix instead of an afternoon.
+	 */
 	private static final class LitematicaBridge {
 		private Method worldGetter;
 		private Method placementManagerGetter;
 		private Method getAllPlacements;
 		private Method placementEnabled;
 		private Method placementBox;
-		private Method boxPos1;
-		private Method boxPos2;
 		private boolean initialized;
+		private String failure = "";
+		private int seenPlacements;
+		private int enabledPlacements;
 
 		BlockState stateAt(BlockPos pos) {
 			if (!initialize() || worldGetter == null) return null;
@@ -2770,6 +2548,8 @@ public final class SchematicBuildController {
 		}
 
 		List<SourceBounds> bounds() {
+			seenPlacements = 0;
+			enabledPlacements = 0;
 			if (!initialize() || placementManagerGetter == null) return List.of();
 			try {
 				Object manager = placementManagerGetter.invoke(null);
@@ -2777,20 +2557,93 @@ public final class SchematicBuildController {
 				if (!(raw instanceof Collection<?> placements)) return List.of();
 				List<SourceBounds> out = new ArrayList<>();
 				for (Object placement : placements) {
+					seenPlacements++;
 					if (!Boolean.TRUE.equals(placementEnabled.invoke(placement))) continue;
+					enabledPlacements++;
 					Object box = placementBox.invoke(placement);
 					if (box == null) continue;
-					Object first = boxPos1.invoke(box);
-					Object second = boxPos2.invoke(box);
-					if (!(first instanceof BlockPos a) || !(second instanceof BlockPos b)) continue;
+					int[] corners = readCorners(box);
+					if (corners == null) continue;
 					out.add(new SourceBounds(
-							Math.min(a.getX(), b.getX()), Math.min(a.getY(), b.getY()), Math.min(a.getZ(), b.getZ()),
-							Math.max(a.getX(), b.getX()), Math.max(a.getY(), b.getY()), Math.max(a.getZ(), b.getZ()),
+							Math.min(corners[0], corners[3]), Math.min(corners[1], corners[4]),
+							Math.min(corners[2], corners[5]), Math.max(corners[0], corners[3]),
+							Math.max(corners[1], corners[4]), Math.max(corners[2], corners[5]),
 							System.identityHashCode(placement)));
 				}
 				return List.copyOf(out);
-			} catch (ReflectiveOperationException | RuntimeException ignored) {
+			} catch (ReflectiveOperationException | RuntimeException exception) {
+				note("calling Litematica failed: " + exception);
 				return List.of();
+			}
+		}
+
+		/** Placements Litematica reported, before the enabled filter. */
+		int seenPlacements() {
+			return seenPlacements;
+		}
+
+		/** Placements that were both reported and switched on. */
+		int enabledPlacements() {
+			return enabledPlacements;
+		}
+
+		/** The first reflection lookup that failed, or empty when the binding is sound. */
+		String failure() {
+			return failure;
+		}
+
+		/** Why no Litematica source came back, phrased for the status line. */
+		String diagnosis() {
+			if (!FabricLoader.getInstance().isModLoaded("litematica")) {
+				return "No Remember capture; Litematica is not installed";
+			}
+			if (!failure.isEmpty()) {
+				return "Litematica's API is not recognised — " + failure;
+			}
+			if (seenPlacements > 0 && enabledPlacements == 0) {
+				return "Litematica has " + seenPlacements + " placement(s), none enabled";
+			}
+			if (seenPlacements == 0) {
+				return "No Remember capture; Litematica has no placement loaded";
+			}
+			return "No Remember capture or enabled Litematica placement";
+		}
+
+		/**
+		 * Both corners of a placement box as {@code {x1,y1,z1,x2,y2,z2}}.
+		 * Accepts either a pair of {@code BlockPos} getters or the flat
+		 * {@code minX..maxZ} shape, because Litematica has shipped both.
+		 */
+		private int[] readCorners(Object box) {
+			Class<?> type = box.getClass();
+			Method first = findMethod(type, "getPos1", "getCorner1", "getMinPos");
+			Method second = findMethod(type, "getPos2", "getCorner2", "getMaxPos");
+			try {
+				if (first != null && second != null
+						&& first.invoke(box) instanceof BlockPos a && second.invoke(box) instanceof BlockPos b) {
+					return new int[]{a.getX(), a.getY(), a.getZ(), b.getX(), b.getY(), b.getZ()};
+				}
+				int[] flat = new int[6];
+				String[] names = {"minX", "minY", "minZ", "maxX", "maxY", "maxZ"};
+				for (int i = 0; i < names.length; i++) {
+					Integer value = readInt(box, type, names[i]);
+					if (value == null) return null;
+					flat[i] = value;
+				}
+				return flat;
+			} catch (ReflectiveOperationException | RuntimeException ignored) {
+				return null;
+			}
+		}
+
+		private Integer readInt(Object box, Class<?> type, String name) {
+			try {
+				Method getter = findMethod(type, name,
+						"get" + Character.toUpperCase(name.charAt(0)) + name.substring(1));
+				if (getter != null && getter.invoke(box) instanceof Integer value) return value;
+				return type.getField(name).getInt(box);
+			} catch (ReflectiveOperationException | RuntimeException ignored) {
+				return null;
 			}
 		}
 
@@ -2800,21 +2653,70 @@ public final class SchematicBuildController {
 			if (!FabricLoader.getInstance().isModLoaded("litematica")) return false;
 			try {
 				Class<?> handler = Class.forName("fi.dy.masa.litematica.world.SchematicWorldHandler");
-				worldGetter = handler.getMethod("getSchematicWorld");
+				worldGetter = require(findMethod(handler, "getSchematicWorld"),
+						"SchematicWorldHandler.getSchematicWorld");
 				Class<?> dataManager = Class.forName("fi.dy.masa.litematica.data.DataManager");
-				placementManagerGetter = dataManager.getMethod("getSchematicPlacementManager");
-				Class<?> manager = Class.forName("fi.dy.masa.litematica.schematic.placement.SchematicPlacementManager");
-				getAllPlacements = manager.getMethod("getAllSchematicsPlacements");
-				Class<?> placement = Class.forName("fi.dy.masa.litematica.schematic.placement.SchematicPlacement");
-				placementEnabled = placement.getMethod("isEnabled");
-				placementBox = placement.getMethod("getEclosingBox");
-				Class<?> selectionBox = Class.forName("fi.dy.masa.litematica.selection.Box");
-				boxPos1 = selectionBox.getMethod("getPos1");
-				boxPos2 = selectionBox.getMethod("getPos2");
-			} catch (ReflectiveOperationException | LinkageError ignored) {
-				worldGetter = null;
+				placementManagerGetter = require(findMethod(dataManager, "getSchematicPlacementManager"),
+						"DataManager.getSchematicPlacementManager");
+				Class<?> manager = Class.forName(
+						"fi.dy.masa.litematica.schematic.placement.SchematicPlacementManager");
+				getAllPlacements = require(findMethod(manager,
+						"getAllSchematicsPlacements", "getAllSchematicPlacements", "getAllPlacements"),
+						"SchematicPlacementManager.getAllSchematicsPlacements");
+				Class<?> placement = Class.forName(
+						"fi.dy.masa.litematica.schematic.placement.SchematicPlacement");
+				placementEnabled = require(findMethod(placement, "isEnabled"), "SchematicPlacement.isEnabled");
+				// Litematica has shipped this misspelled as "getEclosingBox" — no
+				// N — for years. Both spellings are tried by name first; the stem
+				// search is only a backstop, and it deliberately ignores boolean
+				// and void methods, because "shouldRenderEnclosingBox" and
+				// "toggleRenderEnclosingBox" sit right next to the real one and
+				// would otherwise be matched instead.
+				placementBox = require(findMethod(placement, "getEclosingBox", "getEnclosingBox"),
+						"SchematicPlacement.getEclosingBox");
+				if (placementBox == null) placementBox = findBoxGetter(placement);
+			} catch (ReflectiveOperationException | LinkageError exception) {
+				note("missing class: " + exception);
 			}
+			if (!failure.isEmpty()) worldGetter = null;
 			return worldGetter != null;
+		}
+
+		private Method require(Method method, String description) {
+			if (method == null) note("cannot find " + description);
+			return method;
+		}
+
+		private void note(String message) {
+			if (!failure.isEmpty()) return;
+			failure = message;
+			ProFPS.LOGGER.warn("[AutoBuild] Litematica integration unavailable — {}", message);
+		}
+
+		private static Method findMethod(Class<?> owner, String... names) {
+			for (String name : names) {
+				try {
+					return owner.getMethod(name);
+				} catch (NoSuchMethodException ignored) {
+					// Try the next spelling.
+				}
+			}
+			return null;
+		}
+
+		/**
+		 * Last-resort search for the enclosing-box getter under a name nobody
+		 * has seen yet. Only no-argument methods that actually return an object
+		 * qualify — the neighbouring {@code shouldRender…} and {@code toggle…}
+		 * methods share the stem and would otherwise win.
+		 */
+		private static Method findBoxGetter(Class<?> owner) {
+			for (Method method : owner.getMethods()) {
+				if (method.getParameterCount() != 0 || method.getReturnType().isPrimitive()
+						|| method.getReturnType() == void.class) continue;
+				if (method.getName().toLowerCase().contains("closingbox")) return method;
+			}
+			return null;
 		}
 	}
 }

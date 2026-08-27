@@ -1,18 +1,15 @@
 package com.profps.client.crystalpvp;
 
-import com.profps.client.aim.MouseGcd;
 import com.profps.client.combatmode.CombatModeRuntime;
 import com.profps.client.config.ProFPSConfig;
-import com.profps.client.mixin.ClientPlayerInteractionManagerAccessor;
+import com.profps.client.mixin.MinecraftClientInvoker;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.RespawnAnchorBlock;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
@@ -37,18 +34,14 @@ public final class AnchorMacroController {
 	 * already drew it, and re-clicking too early is what stacks a second anchor.
 	 */
 	private static final long PLACE_GRACE_NS = 400_000_000L;
-	/** Hard cap on physical placement clicks per sequence. Without it a bad target loops until timeout. */
-	private static final int MAX_PLACE_ATTEMPTS = 2;
-	/** Ticks Safe Anchor may spend trying to aim at cover before it gives up and detonates anyway. */
-	private static final int MAX_SHIELD_TICKS = 6;
+	/** Hard cap on macro placement attempts per sequence. Physical On Place clicks can start over. */
+	private static final int MAX_PLACE_ATTEMPTS = 3;
 	/** Bound on phase hand-offs collapsed into a single tick. */
 	private static final int MAX_STEPS_PER_TICK = 4;
 	/** Vanilla {@code RespawnAnchorBlock.MAX_CHARGES}; {@code canCharge} is {@code charges < 4}. */
 	private static final int MAX_CHARGES = 4;
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
-	private final MouseGcd mouse = new MouseGcd();
-	private static AnchorMacroController instance;
 
 	private Phase phase = Phase.IDLE;
 	private BlockPos supportPos;
@@ -62,59 +55,40 @@ public final class AnchorMacroController {
 	private long shieldConfirmStartedNanos;
 	private long chargeConfirmStartedNanos;
 	private long detonateConfirmStartedNanos;
-	private int aimReadyAge = -1;
 	private boolean selfInteracting;
 	private boolean bindStarted;
 	private boolean shieldDone;
 	private int placeAttempts;
-	private int shieldAttempts;
-	private float silentYaw = Float.NaN;
-	private float silentPitch = Float.NaN;
-	private float cameraYaw;
-	private float cameraPitch;
-	private int silentPacketAge = -1;
-	private boolean silentApplied;
+	/** Client age of the last real or macro block-use; keep uses in separate flying intervals. */
+	private int lastUseAge = Integer.MIN_VALUE;
 	private String status = "Idle";
 
 	public AnchorMacroController(ProFPSConfig config) {
 		this.config = config;
-		instance = this;
-	}
-
-	/** Called around vanilla's movement packet construction to provide Vape-style silent aim. */
-	public static void beforeMovementPacket(ClientPlayerEntity player) {
-		AnchorMacroController self = instance;
-		if (self == null || player == null || !self.config.anchorMacro || !self.config.anchorAimAssist
-				|| !self.config.anchorSilentAim || self.phase == Phase.IDLE
-				|| !Float.isFinite(self.silentYaw) || !Float.isFinite(self.silentPitch)) return;
-		self.cameraYaw = player.getYaw();
-		self.cameraPitch = player.getPitch();
-		player.setYaw(self.silentYaw);
-		player.setPitch(self.silentPitch);
-		self.silentPacketAge = player.age;
-		self.silentApplied = true;
-	}
-
-	public static void afterMovementPacket(ClientPlayerEntity player) {
-		AnchorMacroController self = instance;
-		if (self == null || player == null || !self.silentApplied) return;
-		player.setYaw(self.cameraYaw);
-		player.setPitch(self.cameraPitch);
-		player.headYaw = player.getYaw();
-		self.silentApplied = false;
 	}
 
 	/** On Place mode begins only after the player's real anchor placement click. */
 	public ActionResult onUseBlock(net.minecraft.entity.player.PlayerEntity player, World world,
 			Hand hand, BlockHitResult hit) {
 		if (!config.anchorMacro || !world.isClient() || selfInteracting) return ActionResult.PASS;
-		if (player == null || !player.getStackInHand(hand).isOf(Items.RESPAWN_ANCHOR)) return ActionResult.PASS;
+		if (player == null) return ActionResult.PASS;
+		boolean holdingAnchor = player.getStackInHand(hand).isOf(Items.RESPAWN_ANCHOR);
 		BlockState clicked = world.getBlockState(hit.getBlockPos());
-		// Once a sequence owns the interaction, suppress every additional physical
-		// anchor-item click until it completes. The original On Place click has already
-		// been returned to vanilla; any later one can only create an unintended second
-		// placement during confirmation, swapping, or detonation.
+
+		// A real placement click must always win in On Place mode. Previously every
+		// click was returned as FAIL while an older sequence was still confirming,
+		// charging, or waiting to time out. That produced the repeatable 3–4 second
+		// period where right-click simply could not place another anchor. Re-arm from
+		// this click and let vanilla send it, even if it replaces a stale sequence.
+		if (config.anchorMode == 1 && holdingAnchor && !clicked.isOf(Blocks.RESPAWN_ANCHOR)) {
+			beginPhysicalPlacement(player, world, hit);
+			return ActionResult.PASS;
+		}
+
+		// Once a live anchor sequence owns charge/detonation, suppress additional
+		// physical interactions. The explicit placement path above is the exception.
 		if (phase != Phase.IDLE) return ActionResult.FAIL;
+		if (!holdingAnchor) return ActionResult.PASS;
 		if (config.anchorMode != 1) return ActionResult.PASS;
 
 		previousSlot = player.getInventory().getSelectedSlot();
@@ -126,13 +100,23 @@ public final class AnchorMacroController {
 			armDeadline();
 			return ActionResult.FAIL;
 		}
+		return ActionResult.PASS;
+	}
+
+	private void beginPhysicalPlacement(net.minecraft.entity.player.PlayerEntity player,
+			World world, BlockHitResult hit) {
+		previousSlot = player.getInventory().getSelectedSlot();
 		supportPos = hit.getBlockPos().toImmutable();
 		supportFace = hit.getSide();
 		anchorPos = placementTarget(world, hit);
 		phase = Phase.WAIT_ANCHOR;
 		armDeadline();
 		anchorConfirmStartedNanos = System.nanoTime();
-		return ActionResult.PASS;
+		// This callback runs before vanilla sends the player's placement. Reserve the
+		// rest of the tick so confirmation cannot append a second use behind it.
+		lastUseAge = player.age;
+		placeAttempts = 1;
+		schedule();
 	}
 
 	public void tick(MinecraftClient client) {
@@ -154,12 +138,9 @@ public final class AnchorMacroController {
 		if (phase == Phase.IDLE) { status = config.anchorMode == 0 ? "Aim and press bind" : "Waiting for anchor"; return; }
 		if (System.nanoTime() > deadlineNanos) { finish(client, "Timed out", true); return; }
 
-		// Run consecutive phases within one tick while they are due. A phase that hands off with
-		// "act immediately" used to still wait for the NEXT tick, because the switch had already
-		// run — and place -> confirm -> charge -> confirm -> detonate is four such hand-offs, so
-		// the glowstone and the blast were arriving a full 200ms later than intended. Anything that
-		// genuinely has to wait (aim settling, server confirmation) pushes nextActionNanos out and
-		// breaks the loop on its own, so this only removes dead time.
+		// Collapse state-only hand-offs, but never two physical uses: claim(client) also gates on
+		// lastUseAge. This lets a confirmation become the next ready phase without producing an
+		// impossible place/charge/detonate burst inside one client tick.
 		for (int step = 0; step < MAX_STEPS_PER_TICK; step++) {
 			long now = System.nanoTime();
 			if (phase == Phase.IDLE || now < nextActionNanos) return;
@@ -216,7 +197,6 @@ public final class AnchorMacroController {
 			}
 			supportPos = resolved.support();
 			supportFace = resolved.face();
-			aimReadyAge = -1;
 		}
 		// An anchor already standing where we were going to build one means the previous click DID
 		// land and we simply mis-predicted the cell. Adopt it rather than placing a second.
@@ -234,14 +214,18 @@ public final class AnchorMacroController {
 		if (placeAttempts >= MAX_PLACE_ATTEMPTS) {
 			finish(client, "Anchor placement kept failing", true); return;
 		}
-		Vec3d point = facePoint(supportPos, supportFace);
-		BlockHitResult hit = exactBlockHit(client, supportPos, supportFace, point);
+		BlockHitResult hit = exactPlacementHit(client, anchorPos);
 		if (hit == null) return;
+		// The player may still be aiming into the same placement cell through a
+		// different legal face than the one that began the sequence. Keep the live
+		// face authoritative so a tiny crosshair movement cannot strand a retry.
+		supportPos = hit.getBlockPos().toImmutable();
+		supportFace = hit.getSide();
 		int slot = findHotbarSlot(client, Items.RESPAWN_ANCHOR);
 		if (slot < 0) { finish(client, "No respawn anchor", true); return; }
-		if (!claim()) return;
+		if (!claim(client)) return;
 		selectHotbarSlot(client, slot);
-		if (!useBlock(client, Hand.MAIN_HAND, hit)) { retry("Anchor refused"); return; }
+		if (!useBlock(client, hit)) { retry("Anchor refused"); return; }
 		placeAttempts++;
 		phase = Phase.WAIT_ANCHOR;
 		anchorConfirmStartedNanos = System.nanoTime();
@@ -263,7 +247,6 @@ public final class AnchorMacroController {
 			if (glowstone < 0) { finish(client, "No glowstone", true); return; }
 			selectHotbarSlot(client, glowstone);
 			phase = nextChargePhase();
-			aimReadyAge = -1;
 			nextActionNanos = System.nanoTime();
 			status = phase.label;
 			return;
@@ -276,7 +259,6 @@ public final class AnchorMacroController {
 			// placeAnchor re-checks for an existing anchor and caps the attempts.
 			phase = Phase.PLACE_ANCHOR;
 			nextActionNanos = now;
-			aimReadyAge = -1;
 			status = "Retrying anchor";
 			return;
 		}
@@ -284,7 +266,7 @@ public final class AnchorMacroController {
 	}
 
 	private Phase nextChargePhase() {
-		return config.anchorSafe && !shieldDone ? Phase.PLACE_SHIELD : Phase.CHARGE;
+		return !shieldDone ? Phase.PLACE_SHIELD : Phase.CHARGE;
 	}
 
 	private Phase afterChargePhase() {
@@ -311,17 +293,10 @@ public final class AnchorMacroController {
 			charge(client);
 			return;
 		}
-		BlockHitResult hit = exactBlockHit(client, placement.support(), placement.face(), placement.point());
+		BlockHitResult hit = exactPlacementHit(client, shieldPos);
 		if (hit == null) {
-			// The chosen cover stopped being clickable between choosing it and
-			// now. Look once for another and carry on in this same tick — cover
-			// is a bonus, and making the blast wait on it is worse than going
-			// without it.
-			shieldPos = shieldAttempts++ < MAX_SHIELD_TICKS ? findShieldPosition(client) : null;
-			if (shieldPos != null) {
-				placeShield(client);
-				return;
-			}
+			// Cover is strictly opportunistic now. Never rotate or replace the player's
+			// crosshair to reach it; if their real crosshair is elsewhere, continue.
 			shieldDone = true;
 			phase = Phase.CHARGE;
 			charge(client);
@@ -335,9 +310,9 @@ public final class AnchorMacroController {
 			schedule();
 			return;
 		}
-		if (!claim()) return;
+		if (!claim(client)) return;
 		selectHotbarSlot(client, slot);
-		if (!useBlock(client, Hand.MAIN_HAND, hit)) { retry("Shield refused"); return; }
+		if (!useBlock(client, hit)) { retry("Shield refused"); return; }
 		shieldConfirmStartedNanos = System.nanoTime();
 		phase = Phase.WAIT_SHIELD;
 		schedule();
@@ -349,7 +324,6 @@ public final class AnchorMacroController {
 			shieldDone = true;
 			phase = Phase.CHARGE;
 			nextActionNanos = System.nanoTime();
-			aimReadyAge = -1;
 			status = "Charging anchor";
 			return;
 		}
@@ -358,7 +332,6 @@ public final class AnchorMacroController {
 		if (now - shieldConfirmStartedNanos >= CONFIRM_GRACE_NS) {
 			phase = Phase.PLACE_SHIELD;
 			nextActionNanos = now;
-			aimReadyAge = -1;
 			status = "Retrying shield";
 			return;
 		}
@@ -381,20 +354,18 @@ public final class AnchorMacroController {
 		int slot = findHotbarSlot(client, Items.GLOWSTONE);
 		boolean offhandGlowstone = client.player.getOffHandStack().isOf(Items.GLOWSTONE);
 		if (slot < 0 && !offhandGlowstone) { finish(client, "No glowstone", true); return; }
-		if (!claim()) return;
+		if (!claim(client)) return;
 		// Hotbar glowstone can run out while topping the anchor up for the offhand rule. Charging
 		// from the offhand then drains the very stack that was blocking detonation, so the sequence
 		// resolves itself instead of dead-ending on "No glowstone".
 		Hand chargeHand = slot >= 0 ? Hand.MAIN_HAND : Hand.OFF_HAND;
 		if (chargeHand == Hand.MAIN_HAND) selectHotbarSlot(client, slot);
-		if (!useBlock(client, chargeHand, hit)) { retry("Charge refused"); return; }
-		// Charge and detonation use the same anchor face. Preserve the already-settled
-		// aim so confirmation can detonate on the very next client tick.
-		aimReadyAge = client.player.age - 1;
+		if (!useBlock(client, hit)) { retry("Charge refused"); return; }
+		// Charge and detonation use the same anchor face. Preserve the already-stable
+		// crosshair state so confirmation can proceed on the next eligible tick.
 		chargeConfirmStartedNanos = System.nanoTime();
 		phase = Phase.WAIT_CHARGE;
-		nextActionNanos = chargeConfirmStartedNanos;
-		status = "Confirming charge";
+		schedule();
 	}
 
 	private void waitCharge(MinecraftClient client) {
@@ -420,7 +391,6 @@ public final class AnchorMacroController {
 		if (now - chargeConfirmStartedNanos >= CONFIRM_GRACE_NS) {
 			phase = Phase.CHARGE;
 			nextActionNanos = now;
-			aimReadyAge = -1;
 			chargeConfirmStartedNanos = 0L;
 			status = "Retrying charge";
 			return;
@@ -445,27 +415,21 @@ public final class AnchorMacroController {
 		}
 		if (needsCharge(client)) { phase = Phase.CHARGE; schedule(); return; }
 		float damage = ExplosionDamageService.anchorDamage(client.world, client.player, Vec3d.ofCenter(anchorPos));
-		if (config.anchorStopWhenNoTotem && !hasTotem(client)) {
-			finish(client, "No totem", true); return;
-		}
 		// Safe Anchor is cover, not a veto. It used to refuse a blast it judged lethal, which meant
 		// standing too close to fit glowstone between you and the anchor silently cancelled the
 		// whole macro. It now always detonates; the damage estimate only colours the status.
-		if (config.anchorSafe && damage >= client.player.getHealth() + client.player.getAbsorptionAmount()
-				&& !hasTotem(client)) {
+		if (damage >= client.player.getHealth() + client.player.getAbsorptionAmount() && !hasTotem(client)) {
 			status = "Detonating uncovered";
 		}
 		BlockHitResult hit = exactAnchorHit(client);
 		if (hit == null) return;
 		int slot = explosionSlot(client);
-		Hand explosionHand = Hand.MAIN_HAND;
-		if (slot < 0 && offhandExplosionAllowed(client)) explosionHand = Hand.OFF_HAND;
-		else if (slot < 0 && !config.anchorExplosionItemWhitelist)
+		if (slot < 0 && !config.anchorExplosionItemWhitelist)
 			slot = findHotbarSlot(client, Items.RESPAWN_ANCHOR);
-		if (slot < 0 && explosionHand == Hand.MAIN_HAND) { finish(client, "No explosion item", true); return; }
-		if (!claim()) return;
-		if (explosionHand == Hand.MAIN_HAND) selectHotbarSlot(client, slot);
-		if (!useBlock(client, explosionHand, hit)) { retry("Detonation refused"); return; }
+		if (slot < 0) { finish(client, "No main-hand explosion item", true); return; }
+		if (!claim(client)) return;
+		selectHotbarSlot(client, slot);
+		if (!useBlock(client, hit)) { retry("Detonation refused"); return; }
 		detonateConfirmStartedNanos = System.nanoTime();
 		phase = Phase.WAIT_DETONATE;
 		nextActionNanos = detonateConfirmStartedNanos;
@@ -484,7 +448,6 @@ public final class AnchorMacroController {
 		if (now - detonateConfirmStartedNanos >= CONFIRM_GRACE_NS) {
 			phase = Phase.DETONATE;
 			nextActionNanos = now;
-			aimReadyAge = -1;
 			detonateConfirmStartedNanos = 0L;
 			status = "Retrying detonation";
 			return;
@@ -495,57 +458,36 @@ public final class AnchorMacroController {
 
 	private BlockHitResult exactAnchorHit(MinecraftClient client) {
 		if (!anchorPresent(client)) return null;
-		Vec3d point = bestAnchorAimPoint(client);
-		if (point == null) {
-			aimReadyAge = -1;
-			status = "No visible anchor face";
-			return null;
-		}
-		if (config.anchorAimAssist) turnToward(client.player, point);
-		HitResult fresh = config.anchorAimAssist && config.anchorSilentAim ? silentBlockHit(client) : freshHit(client);
+		HitResult fresh = freshHit(client);
 		if (!(fresh instanceof BlockHitResult hit) || !hit.getBlockPos().equals(anchorPos)
 				|| !withinReach(client, hit.getPos())) {
-			aimReadyAge = -1;
-			status = config.anchorAimAssist ? "Aiming" : "Keep aim on anchor";
+			status = "Keep crosshair on anchor";
 			return null;
 		}
-		if (!settled(client.player)) return null;
 		return hit;
 	}
 
-	private BlockHitResult exactBlockHit(MinecraftClient client, BlockPos block, Direction face, Vec3d point) {
-		if (config.anchorAimAssist) turnToward(client.player, point);
-		HitResult fresh = config.anchorAimAssist && config.anchorSilentAim ? silentBlockHit(client) : freshHit(client);
-		if (!(fresh instanceof BlockHitResult hit) || !hit.getBlockPos().equals(block) || hit.getSide() != face
+	/**
+	 * Returns the player's current, real block ray when clicking it would place in
+	 * {@code placeAt}. Checking the resulting cell is intentionally more robust
+	 * than pinning a support block and face from an earlier tick: several visible
+	 * faces can legally lead to the same placement cell.
+	 */
+	private BlockHitResult exactPlacementHit(MinecraftClient client, BlockPos placeAt) {
+		HitResult fresh = freshHit(client);
+		if (!(fresh instanceof BlockHitResult hit)
+				|| !placementTarget(client.world, hit).equals(placeAt)
 				|| !withinReach(client, hit.getPos())) {
-			aimReadyAge = -1;
-			status = config.anchorAimAssist ? "Aiming" : "Keep aim on target";
+			status = "Keep crosshair on target";
 			return null;
 		}
-		if (!settled(client.player)) return null;
 		return hit;
 	}
 
-	private boolean settled(ClientPlayerEntity player) {
-		if (aimReadyAge < 0) { aimReadyAge = player.age; return false; }
-		if (config.anchorAimAssist && config.anchorSilentAim && silentPacketAge <= aimReadyAge) return false;
-		return player.age > aimReadyAge;
-	}
-
-	private void turnToward(ClientPlayerEntity player, Vec3d point) {
-		Vec3d d = point.subtract(player.getEyePos());
-		float yaw = (float) (Math.toDegrees(Math.atan2(d.z, d.x)) - 90.0D);
-		float pitch = (float) -Math.toDegrees(Math.atan2(d.y, Math.hypot(d.x, d.z)));
-		if (config.anchorSilentAim) {
-			silentYaw = yaw;
-			silentPitch = MathHelper.clamp(pitch, -90.0F, 90.0F);
-			return;
-		}
-		float speed = MathHelper.clamp(config.anchorAimSpeedTenths / 10.0F, 1.0F, 15.0F);
-		player.setYaw(player.getYaw() + mouse.yaw(MathHelper.clamp(MathHelper.wrapDegrees(yaw - player.getYaw()), -speed, speed)));
-		player.setPitch(MathHelper.clamp(player.getPitch()
-				+ mouse.pitch(MathHelper.clamp(pitch - player.getPitch(), -speed, speed)), -90.0F, 90.0F));
-		player.headYaw = player.getYaw();
+	/** Re-raycast at action time; the cached client target can be one render behind. */
+	private HitResult freshHit(MinecraftClient client) {
+		return client.player.getCrosshairTarget(1.0F,
+				client.getCameraEntity() == null ? client.player : client.getCameraEntity());
 	}
 
 	/**
@@ -564,8 +506,7 @@ public final class AnchorMacroController {
 	 */
 	private BlockPos findShieldPosition(MinecraftClient client) {
 		Vec3d from = new Vec3d(client.player.getX(), client.player.getY() + 0.5D, client.player.getZ());
-		Vec3d to = bestAnchorAimPoint(client);
-		if (to == null) to = Vec3d.ofCenter(anchorPos);
+		Vec3d to = Vec3d.ofCenter(anchorPos);
 		Vec3d delta = to.subtract(from);
 		double distance = delta.length();
 		if (distance < 0.1D) return null;
@@ -596,11 +537,9 @@ public final class AnchorMacroController {
 				if (!checked.add(pos) || pos.equals(anchorPos)
 						|| !client.world.getBlockState(pos).isReplaceable()) continue;
 				if (new net.minecraft.util.math.Box(pos).intersects(client.player.getBoundingBox())) continue;
-				// Deliberately only a reach/support test. Proving the exact click
-				// here would mean calling the aim path, which turns the player
-				// toward every candidate it tries — the search would spin you
-				// around and reset the aim it had already settled. An unusable
-				// cell is cheap now that the failure path retries in the same tick.
+				// Deliberately only a reach/support test. The real crosshair is
+				// checked only after a candidate is chosen; the search itself never
+				// changes or substitutes the player's view.
 				if (placementFor(client, pos, true) != null) return pos.toImmutable();
 			}
 		}
@@ -614,7 +553,7 @@ public final class AnchorMacroController {
 			if (client.world.getBlockState(support).getCollisionShape(client.world, support).isEmpty()) continue;
 			Vec3d point = facePoint(support, face);
 			if (withinReach(client, point))
-				return new Placement(support.toImmutable(), face, point);
+				return new Placement(support.toImmutable(), face);
 		}
 		return null;
 	}
@@ -657,62 +596,6 @@ public final class AnchorMacroController {
 		return Vec3d.ofCenter(block).add(Vec3d.of(face.getVector()).multiply(0.5D));
 	}
 
-	/**
-	 * Finds the closest-angle anchor surface that vanilla's current block ray can actually see.
-	 * Center-only aiming fails at ordinary three-block spacing and after Safe Anchor adds cover.
-	 */
-	private Vec3d bestAnchorAimPoint(MinecraftClient client) {
-		if (anchorPos == null) return null;
-		double x = anchorPos.getX();
-		double y = anchorPos.getY();
-		double z = anchorPos.getZ();
-		// Keep samples just inside the anchor outline. Exact block-boundary points can
-		// be attributed to the support/adjacent block by vanilla's raycast, especially
-		// when the anchor is mounted at eye height.
-		double low = 0.01D;
-		double high = 0.99D;
-		Vec3d[] candidates = {
-				new Vec3d(x + 0.5D, y + high, z + 0.5D),
-				new Vec3d(x + 0.5D, y + low, z + 0.5D),
-				new Vec3d(x + low, y + 0.5D, z + 0.5D),
-				new Vec3d(x + high, y + 0.5D, z + 0.5D),
-				new Vec3d(x + 0.5D, y + 0.5D, z + low),
-				new Vec3d(x + 0.5D, y + 0.5D, z + high),
-				new Vec3d(x + 0.25D, y + high, z + 0.5D),
-				new Vec3d(x + 0.75D, y + high, z + 0.5D),
-				new Vec3d(x + 0.25D, y + low, z + 0.5D),
-				new Vec3d(x + 0.75D, y + low, z + 0.5D),
-				new Vec3d(x + low, y + 0.25D, z + 0.5D),
-				new Vec3d(x + high, y + 0.75D, z + 0.5D),
-				new Vec3d(x + 0.5D, y + 0.25D, z + low),
-				new Vec3d(x + 0.5D, y + 0.75D, z + high)
-		};
-		Vec3d eye = client.player.getEyePos();
-		double reach = interactionRange(client);
-		Vec3d best = null;
-		double bestScore = Double.MAX_VALUE;
-		for (Vec3d candidate : candidates) {
-			Vec3d delta = candidate.subtract(eye);
-			double distance = delta.length();
-			if (distance < 1.0E-4D || distance > reach + 0.1D) continue;
-			Vec3d end = eye.add(delta.normalize().multiply(reach));
-			HitResult ray = client.world.raycast(new net.minecraft.world.RaycastContext(eye, end,
-					net.minecraft.world.RaycastContext.ShapeType.OUTLINE,
-					net.minecraft.world.RaycastContext.FluidHandling.NONE, client.player));
-			if (!(ray instanceof BlockHitResult block) || !block.getBlockPos().equals(anchorPos)) continue;
-			float yaw = (float) (Math.toDegrees(Math.atan2(delta.z, delta.x)) - 90.0D);
-			float pitch = (float) -Math.toDegrees(Math.atan2(delta.y, Math.hypot(delta.x, delta.z)));
-			double yawError = MathHelper.wrapDegrees(yaw - client.player.getYaw());
-			double pitchError = pitch - client.player.getPitch();
-			double score = yawError * yawError + pitchError * pitchError + distance * 0.01D;
-			if (score < bestScore) {
-				bestScore = score;
-				best = candidate;
-			}
-		}
-		return best;
-	}
-
 	private double interactionRange(MinecraftClient client) {
 		return Math.max(1.0D, client.player.getBlockInteractionRange());
 	}
@@ -720,20 +603,6 @@ public final class AnchorMacroController {
 	private boolean withinReach(MinecraftClient client, Vec3d point) {
 		double reach = interactionRange(client) + 0.1D;
 		return client.player.getEyePos().squaredDistanceTo(point) <= reach * reach;
-	}
-
-	private HitResult freshHit(MinecraftClient client) {
-		return client.player.getCrosshairTarget(1.0F,
-				client.getCameraEntity() == null ? client.player : client.getCameraEntity());
-	}
-
-	private HitResult silentBlockHit(MinecraftClient client) {
-		if (!Float.isFinite(silentYaw) || !Float.isFinite(silentPitch)) return null;
-		Vec3d start = client.player.getEyePos();
-		Vec3d end = start.add(Vec3d.fromPolar(silentPitch, silentYaw).multiply(interactionRange(client)));
-		return client.world.raycast(new net.minecraft.world.RaycastContext(start, end,
-				net.minecraft.world.RaycastContext.ShapeType.OUTLINE,
-				net.minecraft.world.RaycastContext.FluidHandling.NONE, client.player));
 	}
 
 	private boolean anchorPresent(MinecraftClient client) {
@@ -780,23 +649,40 @@ public final class AnchorMacroController {
 		return state.contains(RespawnAnchorBlock.CHARGES) && state.get(RespawnAnchorBlock.CHARGES) > 0;
 	}
 
-	private boolean useBlock(MinecraftClient client, Hand hand, BlockHitResult hit) {
-		ActionResult result;
+	private boolean useBlock(MinecraftClient client, BlockHitResult hit) {
+		MinecraftClientInvoker vanilla = (MinecraftClientInvoker) client;
+		if (client.interactionManager.isBreakingBlock()) return false;
+		// The sequence owns block use at this point, so bypass only the local repeat-key
+		// cooldown for this scheduled action. Use the exact fresh ray that passed the
+		// checks above; client.crosshairTarget can otherwise still describe the previous
+		// render frame and make vanilla silently click the wrong block. doItemUse restores
+		// vanilla's cooldown afterward; held physical input remains suppressed by onUseBlock.
+		vanilla.profps$setItemUseCooldown(0);
+		client.crosshairTarget = hit;
 		selfInteracting = true;
 		try {
-			client.crosshairTarget = hit;
-			result = client.interactionManager.interactBlock(client.player, hand, hit);
+			vanilla.invokeDoItemUse();
 		} finally {
 			selfInteracting = false;
 		}
-		if (!result.isAccepted()) return false;
-		client.player.swingHand(hand);
-		aimReadyAge = -1;
+		lastUseAge = client.player.age;
 		return true;
 	}
 
-	private boolean claim() {
-		return CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_ANCHOR);
+	private boolean claim(MinecraftClient client) {
+		// A physical interaction can happen at most once in a client tick. Timing above
+		// that floor is randomized by schedule() and controlled by Anchor Speed.
+		return useSeparatedByTick(lastUseAge, client.player.age)
+				&& CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_ANCHOR);
+	}
+
+	/** True only while Anchor Macro owns the block-use sequence. */
+	public boolean isSequencing() {
+		return phase != Phase.IDLE;
+	}
+
+	static boolean useSeparatedByTick(int lastAge, int currentAge) {
+		return lastAge == Integer.MIN_VALUE || currentAge > lastAge;
 	}
 
 	private int explosionSlot(MinecraftClient client) {
@@ -819,14 +705,6 @@ public final class AnchorMacroController {
 			if (safeExplosionStack(client, slot)) return slot;
 		}
 		return -1;
-	}
-
-	private boolean offhandExplosionAllowed(MinecraftClient client) {
-		var stack = client.player.getOffHandStack();
-		if (stack.isEmpty() || stack.isOf(Items.GLOWSTONE) || stack.isOf(Items.RESPAWN_ANCHOR)
-				|| stack.getItem() instanceof BlockItem) return false;
-		if (!config.anchorExplosionItemWhitelist) return true;
-		return config.anchorExplosionItems.contains(Registries.ITEM.getId(stack.getItem()).toString());
 	}
 
 	private boolean safeExplosionStack(MinecraftClient client, int slot) {
@@ -880,22 +758,51 @@ public final class AnchorMacroController {
 	private void selectHotbarSlot(MinecraftClient client, int slot) {
 		if (slot < 0 || slot > 8 || client.player.getInventory().getSelectedSlot() == slot) return;
 		client.player.getInventory().setSelectedSlot(slot);
-		client.player.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(slot));
-		((ClientPlayerInteractionManagerAccessor) client.interactionManager).profps$setLastSelectedSlot(slot);
 	}
 
 	private void schedule() {
-		int min = MathHelper.clamp(config.anchorDelayMinMs, 0, 500);
-		int max = MathHelper.clamp(config.anchorDelayMaxMs, min, 500);
+		int min = actionDelayMinMsForSpeed(config.anchorSpeed);
+		int max = actionDelayMaxMsForSpeed(config.anchorSpeed);
 		int delay = min + (max <= min ? 0 : rng.nextInt(max - min + 1));
 		nextActionNanos = System.nanoTime() + delay * 1_000_000L;
 		status = phase.label;
 	}
 
+	/** Randomized action gaps; the one-use-per-tick gate remains authoritative at every level. */
+	static int actionDelayMinMsForSpeed(int speed) {
+		return switch (MathHelper.clamp(speed, 1, 10)) {
+			case 10 -> 0;
+			case 9 -> 4;
+			case 8 -> 10;
+			case 7 -> 22;
+			case 6 -> 35;
+			case 5 -> 55;
+			case 4 -> 80;
+			case 3 -> 115;
+			case 2 -> 155;
+			default -> 205;
+		};
+	}
+
+	/** A small bounded jitter keeps repeated sequences from landing on one exact interval. */
+	static int actionDelayMaxMsForSpeed(int speed) {
+		return switch (MathHelper.clamp(speed, 1, 10)) {
+			case 10 -> 52;
+			case 9 -> 70;
+			case 8 -> 82;
+			case 7 -> 95;
+			case 6 -> 115;
+			case 5 -> 140;
+			case 4 -> 175;
+			case 3 -> 215;
+			case 2 -> 255;
+			default -> 320;
+		};
+	}
+
 	private void retry(String retryStatus) {
 		status = retryStatus;
-		nextActionNanos = System.nanoTime() + 50_000_000L;
-		aimReadyAge = -1;
+		nextActionNanos = System.nanoTime() + (110L + rng.nextInt(81)) * 1_000_000L;
 	}
 
 	private void armDeadline() {
@@ -903,17 +810,11 @@ public final class AnchorMacroController {
 		nextActionNanos = System.nanoTime();
 		shieldDone = false;
 		placeAttempts = 0;
-		shieldAttempts = 0;
-		silentYaw = Float.NaN;
-		silentPitch = Float.NaN;
-		silentPacketAge = -1;
-		silentApplied = false;
 		shieldPos = null;
 		anchorConfirmStartedNanos = 0L;
 		shieldConfirmStartedNanos = 0L;
 		chargeConfirmStartedNanos = 0L;
 		detonateConfirmStartedNanos = 0L;
-		aimReadyAge = -1;
 		status = phase.label;
 	}
 
@@ -940,10 +841,8 @@ public final class AnchorMacroController {
 		shieldConfirmStartedNanos = 0L;
 		chargeConfirmStartedNanos = 0L;
 		detonateConfirmStartedNanos = 0L;
-		aimReadyAge = -1;
 		shieldDone = false;
 		placeAttempts = 0;
-		shieldAttempts = 0;
 		status = finalStatus;
 		if (disableBind && config.anchorMode == 0) config.anchorMacro = false;
 	}
@@ -987,5 +886,5 @@ public final class AnchorMacroController {
 		Phase(String label) { this.label = label; }
 	}
 
-	private record Placement(BlockPos support, Direction face, Vec3d point) {}
+	private record Placement(BlockPos support, Direction face) {}
 }

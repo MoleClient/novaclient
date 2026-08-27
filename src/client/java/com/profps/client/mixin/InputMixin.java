@@ -6,8 +6,8 @@ import com.profps.client.ai.SwordAiController;
 import com.profps.client.aim.SilentAimController;
 import com.profps.client.donutsmp.FreecamController;
 import com.profps.client.donutsmp.TunnelController;
-import com.profps.client.extras.SchematicBuildController;
 import com.profps.client.extras.ScaffoldController;
+import com.profps.client.extras.SchematicBuildController;
 import net.minecraft.client.input.KeyboardInput;
 import net.minecraft.util.PlayerInput;
 import net.minecraft.util.math.Vec2f;
@@ -19,19 +19,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Overrides the local player's movement AFTER the keyboard has been read.
  *
- * <ul>
- *   <li><b>Tunnel controlling</b> — drive the body from the bot's published
- *       {@link PlayerInput}, so it keeps tunnelling even while Freecam reads the
- *       raw keybindings to fly the camera (no WASD tug-of-war).</li>
- *   <li><b>Freecam (no tunnel)</b> — freeze the body so WASD only moves the
- *       camera.</li>
- * </ul>
+ * <p>When the Tunnel bot is controlling, the body is driven from its published
+ * {@link PlayerInput} rather than the raw keybindings — so it keeps tunnelling
+ * even while Freecam reads those same keys to fly the camera. With Freecam on
+ * (and no tunnel), the body reads dead keys so WASD only moves the camera.
+ * Otherwise the player's own input is passed through the module layers below.
  *
  * <p>Targets {@link KeyboardInput#tick()} — the override the player actually
  * runs. The previous {@code Input.tick} target never fired, because
- * KeyboardInput overrides tick without calling super, so the freeze was a no-op
- * and the body only stayed put by brute-force repositioning (which is what made
- * it — and the chunks streamed around it — glitch). The movement fields live on
+ * KeyboardInput overrides tick without calling super. The movement fields live on
  * the {@code Input} superclass, so they're written through {@link InputAccessor}
  * rather than a (illegal) cross-class field shadow.
  */
@@ -45,6 +41,8 @@ public abstract class InputMixin {
 			self.profps$setPlayerInput(input);
 			self.profps$setMovementVector(vectorFor(input));
 		} else if (FreecamController.isActive()) {
+			// WASD belongs to the camera now; the body must read dead keys or it
+			// would walk blind underneath the flight.
 			self.profps$setPlayerInput(PlayerInput.DEFAULT);
 			self.profps$setMovementVector(Vec2f.ZERO);
 		} else {
@@ -56,16 +54,16 @@ public abstract class InputMixin {
 				overridden = true;
 			}
 
+			// Any physical movement key immediately hands the body back. The
+			// builder is the only layer here that walks the player somewhere
+			// they did not ask to go, so it is the only one that has to yield
+			// on the very same frame rather than a tick later.
 			boolean schematicMoving = SchematicBuildController.isAutoMoving();
 			boolean manualMovement = input.forward() || input.backward() || input.left() || input.right()
 					|| input.jump() || input.sneak();
-			if (schematicMoving) {
-				// Any physical movement key immediately wins. Do not let a lower-priority
-				// combat controller replace that manual escape input on this same frame.
-				if (!manualMovement) {
-					input = SchematicBuildController.movementInput();
-					overridden = true;
-				}
+			if (schematicMoving && !manualMovement) {
+				input = SchematicBuildController.movementInput();
+				overridden = true;
 			} else if (SwordAiController.isControlling()) {
 				PlayerInput ai = SwordAiController.movementInput(input);
 				if (ai != null) {
@@ -82,10 +80,10 @@ public abstract class InputMixin {
 				}
 			}
 
-			// Sword mode may add only the vanilla sprint-key bit while the player is
-			// already holding forward. It yields during the post-hit retreat and never
-			// creates movement by itself.
 			if (!schematicMoving) {
+				// Sword mode may add only the vanilla sprint-key bit while the player is
+				// already holding forward. It yields during the post-hit retreat and never
+				// creates movement by itself.
 				PlayerInput swordSprint = StrafeImprovementsController.swordSprintOverride(input);
 				if (swordSprint != null) {
 					input = swordSprint;

@@ -2,6 +2,7 @@ package com.profps.client.crystalpvp;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -48,5 +49,24 @@ class AnchorChargeRuleTest {
 	void anOverFullAnchorIsNeverToppedUp() {
 		assertFalse(AnchorMacroController.needsChargeFor(5, true));
 		assertFalse(AnchorMacroController.needsChargeFor(5, false));
+	}
+
+	@Test
+	void anchorSpeedIsFastButAlwaysRandomized() {
+		assertEquals(0, AnchorMacroController.actionDelayMinMsForSpeed(10));
+		assertEquals(52, AnchorMacroController.actionDelayMaxMsForSpeed(10));
+		assertEquals(10, AnchorMacroController.actionDelayMinMsForSpeed(8));
+		assertEquals(82, AnchorMacroController.actionDelayMaxMsForSpeed(8));
+		assertEquals(35, AnchorMacroController.actionDelayMinMsForSpeed(6));
+		assertEquals(115, AnchorMacroController.actionDelayMaxMsForSpeed(6));
+		assertEquals(205, AnchorMacroController.actionDelayMinMsForSpeed(1));
+		assertEquals(320, AnchorMacroController.actionDelayMaxMsForSpeed(1));
+	}
+
+	@Test
+	void blockUsesNeedSeparateClientTicks() {
+		assertTrue(AnchorMacroController.useSeparatedByTick(Integer.MIN_VALUE, 5));
+		assertFalse(AnchorMacroController.useSeparatedByTick(20, 20));
+		assertTrue(AnchorMacroController.useSeparatedByTick(20, 21));
 	}
 }

@@ -2,686 +2,610 @@ package com.profps.client.donutsmp;
 
 import com.profps.ProFPS;
 import com.profps.client.config.ProFPSConfig;
-import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
+import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.BlockEntityType;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.render.RenderTickCounter;
+import net.minecraft.client.render.VertexConsumer;
+import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.client.world.ClientWorld;
-import net.minecraft.sound.SoundCategory;
-import net.minecraft.sound.SoundEvents;
+import net.minecraft.text.Style;
+import net.minecraft.text.StyleSpriteSource;
 import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.Heightmap;
+import net.minecraft.world.chunk.ChunkSection;
 import net.minecraft.world.chunk.WorldChunk;
-import org.joml.Matrix3x2fStack;
+import org.joml.Matrix4fc;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
-public final class StashPinger implements HudRenderCallback {
-	private static final int SCAN_INTERVAL_TICKS = 40;
-	private static final int PING_TTL_TICKS = 520;
-	private static final int MAX_ACTIVE_PINGS = 6;
-	private static final int MAX_SCAN_BLOCKS_PER_AREA = 28 * 16 * 28;
-	private static final int BASE_COLOR = 0xFF38FF7A;
-	private static final int SPAWNER_COLOR = 0xFF2EECFF;
-	/** Pings closer together than this are the SAME base (stops one build pinging 4×). */
-	private static final double BASE_MERGE_SQ = 48.0 * 48.0;
+/**
+ * Stash Pinger — decides what is actually a BASE, then points you at it.
+ *
+ * <p>The classifier is deliberately opinionated, because "player was here" is
+ * not "player lives here":
+ *
+ * <ul>
+ *   <li><b>Furniture makes a base.</b> Crafting/smelting/enchanting stations,
+ *       containers, redstone machinery (pistons, observers, comparators,
+ *       hoppers) and craft-only mineral blocks are what a stash is FOR.
+ *       Each family scores separately, so a farm full of redstone and a vault
+ *       full of diamond blocks both classify without needing the other.</li>
+ *   <li><b>A player-placed spawner IS a base, alone.</b> Natural spawners are
+ *       recognisable by their context — dungeon mossy cobblestone, mineshaft
+ *       cobwebs, trial-chamber spawner/vault types — and are ignored. A mob
+ *       spawner with none of that context did not generate there; somebody
+ *       paid for it, placed it, and farms it. Unconditional flag.</li>
+ *   <li><b>Carved rooms count.</b> Natural caves have irregular floors; player
+ *       rooms are boxes. Columns are sampled through each underground section,
+ *       and when most of the found floor surfaces share one Y level, that is a
+ *       dug room with a flat floor — a farm chamber or storage hall — even
+ *       before furniture goes in.</li>
+ *   <li><b>Crystal-fight debris is NOT a base.</b> Obsidian, crying obsidian,
+ *       respawn anchors and scattered glowstone are what anchor fights leave
+ *       behind. Debris scores negatively: a site that is mostly debris is
+ *       suppressed outright unless a player spawner proves otherwise.</li>
+ *   <li><b>Underground or sky, never ground level.</b> Evidence only counts
+ *       well below the local surface — except on floating platforms (a solid
+ *       deck with a long air drop beneath), which are classified with the same
+ *       furniture rules. Surface builds never flag.</li>
+ * </ul>
+ *
+ * <p>Adjacent evidence chunks merge into sites with a DIMINISHING sum — the
+ * strongest chunk at full volume, the rest fading — so a base that concentrates
+ * evidence scores while a thin natural smear (a render-clipped geode shell, a
+ * mineshaft corridor) cannot creep over the line by width alone. The
+ * Temperature slider (0.0–1.0) moves the site threshold from paranoid to
+ * eager. Confirmed sites drive a live action-bar readout in the Nova font
+ * ("Base Found x2 — 214m away", nearest first) and a yellow tracer through
+ * the shared {@link NovaTracers} system. It composes with the rest of the kit:
+ * chunks already flagged by {@link PrimeChunkFinder} get a corroboration
+ * bonus, so the prime-chunk → dig → Storage ESP → Stash Pinger chain converges
+ * on the same coordinates.
+ */
+public final class StashPinger {
+	// ── Family weights ────────────────────────────────────────────────────────
+	private static final double W_FUNCTIONAL = 1.1;   // per distinct hit, capped
+	private static final double CAP_FUNCTIONAL = 4.4;
+	private static final double W_CONTAINER = 1.0;
+	private static final double CAP_CONTAINER = 4.0;
+	private static final double W_REDSTONE = 0.8;
+	private static final double CAP_REDSTONE = 3.2;
+	private static final double W_RESOURCE = 1.2;     // mineral blocks are deliberate wealth
+	private static final double CAP_RESOURCE = 3.6;
+	private static final double W_CARVED = 1.6;       // per boxed-out section, capped
+	private static final double CAP_CARVED = 3.2;
+	private static final double W_CROP = 0.4;         // per sampled farm block, capped
+	private static final double CAP_CROP = 3.0;
+	private static final double W_DEBRIS = 1.0;       // anti-signal accumulator
+	private static final double PRIME_CORROBORATION = 1.0;
 
-	/** One chat line per found position per ~5 minutes — rescans must not spam. */
-	private static final int CHAT_ALERT_COOLDOWN_TICKS = 6000;
-	/** Bases alert on the FIRST solid detection now — the engine's own fast intel
-	 *  alert already covers mask-pierced finds, so the slow double-confirm just
-	 *  added the multi-minute lag the user saw. */
-	private static final int CONFIRMATIONS_REQUIRED = 1;
+	/** Site threshold line: temperature 0 → 8.0, temperature 1 → 1.5. */
+	private static final double THRESHOLD_STRICT = 8.0;
+	private static final double THRESHOLD_LOOSE = 1.5;
+	/** Mostly-debris sites are suppressed: debris must exceed this × furniture. */
+	private static final double DEBRIS_DOMINANCE = 2.0;
+
+	private static final int BURIED_MARGIN = 10;      // "well below the surface"
+	private static final int SKY_MIN_Y = 100;         // floating platforms live up here
+	private static final int SKY_AIR_GAP = 16;        // required drop under a platform
+	private static final int RESCAN_INTERVAL_TICKS = 240;
+	private static final int ACTIONBAR_INTERVAL_TICKS = 10;
+	private static final int MAX_TRACERS = 12;
+	private static final int TRACER_COLOR = 0xF2D24B; // stash yellow
+	private static final int PING_COLOR = 0xFFE066;
+
+	private static final Style NOVA_FONT = Style.EMPTY
+			.withFont(new StyleSpriteSource.Font(Identifier.of(ProFPS.MOD_ID, "nova")));
+
+	private static final Set<Block> FUNCTIONAL = Set.of(
+			Blocks.CRAFTING_TABLE, Blocks.FURNACE, Blocks.BLAST_FURNACE, Blocks.SMOKER,
+			Blocks.ENCHANTING_TABLE, Blocks.BREWING_STAND, Blocks.ANVIL, Blocks.CHIPPED_ANVIL,
+			Blocks.DAMAGED_ANVIL, Blocks.GRINDSTONE, Blocks.SMITHING_TABLE, Blocks.STONECUTTER,
+			Blocks.LOOM, Blocks.CARTOGRAPHY_TABLE, Blocks.FLETCHING_TABLE, Blocks.LECTERN,
+			Blocks.BEACON, Blocks.ENDER_CHEST, Blocks.CAMPFIRE, Blocks.SOUL_CAMPFIRE,
+			Blocks.BELL, Blocks.COMPOSTER, Blocks.CAULDRON, Blocks.WATER_CAULDRON);
+	// Rails are deliberately absent: mineshafts lay them below zero for free.
+	private static final Set<Block> REDSTONE = Set.of(
+			Blocks.PISTON, Blocks.STICKY_PISTON, Blocks.OBSERVER, Blocks.REPEATER,
+			Blocks.COMPARATOR, Blocks.REDSTONE_WIRE, Blocks.REDSTONE_BLOCK, Blocks.REDSTONE_LAMP,
+			Blocks.HOPPER, Blocks.DROPPER, Blocks.DISPENSER, Blocks.NOTE_BLOCK, Blocks.TARGET,
+			Blocks.LEVER, Blocks.DAYLIGHT_DETECTOR, Blocks.CRAFTER);
+	// No amethyst (geodes), no bone (fossils), no copper (trial chambers):
+	// every entry here is craft-only, so it cannot generate under the ground.
+	private static final Set<Block> RESOURCE = Set.of(
+			Blocks.IRON_BLOCK, Blocks.GOLD_BLOCK, Blocks.DIAMOND_BLOCK, Blocks.EMERALD_BLOCK,
+			Blocks.NETHERITE_BLOCK, Blocks.COAL_BLOCK, Blocks.REDSTONE_BLOCK,
+			Blocks.LAPIS_BLOCK, Blocks.SLIME_BLOCK, Blocks.HONEY_BLOCK,
+			Blocks.HAY_BLOCK, Blocks.DRIED_KELP_BLOCK);
+	/** Ancient-city signature: presence zeroes carved scoring and halves furniture. */
+	private static final Set<Block> CITY_MARKERS = Set.of(
+			Blocks.SCULK, Blocks.SCULK_SHRIEKER, Blocks.SCULK_CATALYST, Blocks.SCULK_SENSOR,
+			Blocks.SOUL_LANTERN, Blocks.REINFORCED_DEEPSLATE);
+	private static final Set<Block> DEBRIS = Set.of(
+			Blocks.OBSIDIAN, Blocks.CRYING_OBSIDIAN, Blocks.RESPAWN_ANCHOR, Blocks.GLOWSTONE);
+	private static final Set<Block> CONTAINERS = Set.of(
+			Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.BARREL);
+	// None of these generate under the ground (kelp/seagrass excluded exactly
+	// because oceans do): below the hidden line they are a player's farm.
+	private static final Set<Block> CROPS = Set.of(
+			Blocks.BAMBOO, Blocks.SUGAR_CANE, Blocks.CACTUS, Blocks.MELON, Blocks.PUMPKIN,
+			Blocks.MELON_STEM, Blocks.PUMPKIN_STEM, Blocks.WHEAT, Blocks.CARROTS,
+			Blocks.POTATOES, Blocks.BEETROOTS, Blocks.NETHER_WART, Blocks.SWEET_BERRY_BUSH,
+			Blocks.COCOA, Blocks.FARMLAND, Blocks.DIRT_PATH);
+
+	private static StashPinger instance;
 
 	private final ProFPSConfig config;
-	private final StorageEspRenderer storageEsp;
-	private final List<StashPing> pings = new ArrayList<>();
-	private final List<StorageEspRenderer.AreaSnapshot> areaQueue = new ArrayList<>();
-	private final List<PendingConfirm> pendingConfirms = new ArrayList<>();
-	private final java.util.Map<BlockPos, Integer> recentChatAlerts = new java.util.HashMap<>();
-	/** How close you have to still be for the action-bar line to keep showing. */
-	private static final double TEXT_RADIUS = 72.0D;
-	private boolean overlayShowing;
-	private int nextScanTick;
-	private int nextActionBarTick;
-	private int nextMusicTick;
-	private boolean failedClosed;
-	private boolean wasActive;
-	private ClientWorld lastWorld;
 
-	public StashPinger(ProFPSConfig config, StorageEspRenderer storageEsp) {
-		this.config = config;
-		this.storageEsp = storageEsp;
+	private static final class ChunkEvidence {
+		double functional, container, redstone, resource, carved, crops, debris;
+		boolean playerSpawner;
+		double ySum;
+		int ySamples;
+
+		double furniture() {
+			return functional + container + redstone + resource + carved + crops;
+		}
 	}
 
+	private record Site(int minChunkX, int minChunkZ, int maxChunkX, int maxChunkZ,
+			Vec3d centre, double score, boolean spawnerSite, long id) {}
+
+	private final Map<Long, ChunkEvidence> evidence = new HashMap<>();
+	private final ArrayDeque<long[]> scanQueue = new ArrayDeque<>();
+	private List<Site> sites = List.of();
+	private int nextRescanTick;
+	private int nextActionBarTick;
+	private int scanCentreChunkX = Integer.MIN_VALUE;
+	private int scanCentreChunkZ = Integer.MIN_VALUE;
+	private ClientWorld trackedWorld;
+	private boolean failedClosed;
+
+	public StashPinger(ProFPSConfig config) {
+		this.config = config;
+		instance = this;
+	}
+
+	// ── Tick ──────────────────────────────────────────────────────────────────
+
 	public void tick(MinecraftClient client) {
-		if (!isActive()) {
-			// Turning the module off has to take its action-bar line with it, or
-			// the last "Base found" sits there until vanilla times it out.
-			if (client != null && client.player != null) clearOverlayIfShowing(client);
-			overlayShowing = false;
-			pings.clear();
-			areaQueue.clear();
-			failedClosed = false;
-			wasActive = false;
+		if (failedClosed || !config.enabled || !config.donutStashPinger) {
+			if (!evidence.isEmpty()) reset();
 			return;
 		}
-		if (failedClosed || client.world == null || client.player == null) return;
-
-		int tick = client.player.age;
-		if (!wasActive || client.world != lastWorld) {
-			areaQueue.clear();
-			pendingConfirms.clear();
-			recentChatAlerts.clear();
-			nextScanTick = 0;
-			wasActive = true;
-			lastWorld = client.world;
+		if (client.player == null || client.world == null) {
+			if (!evidence.isEmpty()) reset();
+			return;
 		}
-		// player.age resets on world change; never let a stale clock stall scans.
-		if (nextScanTick > tick + SCAN_INTERVAL_TICKS) nextScanTick = 0;
-		pings.removeIf(ping -> tick - ping.lastSeenTick > PING_TTL_TICKS || !shouldShowPing(ping));
-		pendingConfirms.removeIf(confirm -> tick < confirm.lastTick || tick - confirm.lastTick > SCAN_INTERVAL_TICKS * 6);
-		if (collapseNotifications() || pings.isEmpty() || !nearAnyPing(client)) {
-			clearOverlayIfShowing(client);
-		} else if (tick >= nextActionBarTick) {
-			client.inGameHud.setOverlayMessage(baseFoundMessage(client), false);
-			overlayShowing = true;
-			nextActionBarTick = tick + 12;
-		}
-
 		try {
-			if (areaQueue.isEmpty()) {
-				if (tick < nextScanTick) return;
-				// Defer if another heavy scanner already owns this tick, so scans never stack.
-				if (!ScanBudget.tryClaim(tick)) return;
-				nextScanTick = tick + SCAN_INTERVAL_TICKS;
-				beginScan(client);
-				if (!areaQueue.isEmpty()) {
-					stepScan(client, tick);
-				} else {
-					// Advanced ESP may still be resolving its first nearby chunks.
-					// Poll candidates soon instead of looking dead for two seconds.
-					nextScanTick = tick + 5;
-				}
-			} else {
-				stepScan(client, tick);
+			if (client.world != trackedWorld) {
+				reset();
+				trackedWorld = client.world;
+			}
+			int tick = client.player.age;
+			if (scanQueue.isEmpty() && (tick >= nextRescanTick
+					|| ScanBudget.leftScanArea(client, scanCentreChunkX, scanCentreChunkZ, 4))) {
+				nextRescanTick = tick + RESCAN_INTERVAL_TICKS;
+				enqueueScans(client);
+			}
+			boolean scanned = drainScanQueue(client, tick);
+			if (scanned) rebuildSites(client);
+			if (tick >= nextActionBarTick) {
+				nextActionBarTick = tick + ACTIONBAR_INTERVAL_TICKS;
+				updateActionBar(client);
 			}
 		} catch (RuntimeException exception) {
-			ProFPS.LOGGER.error("Stash Pinger scan failed; disabling Stash Pinger to protect the client.", exception);
-			pings.clear();
-			areaQueue.clear();
+			ProFPS.LOGGER.error("Stash Pinger failed; disabling it to protect the client.", exception);
+			reset();
 			config.donutStashPinger = false;
-			config.save();
+			// Not saved: a transient failure must not persist as an off switch.
 			failedClosed = true;
 		}
 	}
 
-	@Override
-	public void onHudRender(DrawContext context, RenderTickCounter tickCounter) {
-		if (!isActive() || failedClosed || pings.isEmpty()) return;
-		MinecraftClient mc = MinecraftClient.getInstance();
-		if (mc.world == null || mc.player == null || mc.options.hudHidden) return;
-
-		int width = context.getScaledWindowWidth();
-		int height = context.getScaledWindowHeight();
-		int crossX = width / 2;
-		int crossY = height / 2;
-		Vec3d camera = mc.gameRenderer.getCamera().getCameraPos();
-		float renderTick = mc.player.age + tickCounter.getTickProgress(false);
-
-		int drawn = 0;
-		for (StashPing ping : sortedPings(mc)) {
-			if (!shouldShowPing(ping)) continue;
-			double range = MathHelper.clamp(config.donutStashPingerRange, 48, 1024);
-			if (mc.player.squaredDistanceTo(ping.center) > range * range) continue;
-			if (drawn++ >= MAX_ACTIVE_PINGS) break;
-			ScreenPoint point = ping.displayPoint(projectToScreen(mc, ping.center, camera, width, height), 0.28F);
-			float fade = ping.fade(renderTick);
-			int color = withAlpha(ping.color(), fade);
-			drawTracer(context, crossX, crossY, point.x, point.y, color, fade);
-			String label = ping.hudLabel(mc);
-			int textWidth = mc.textRenderer.getWidth(label);
-			context.fill(point.x - textWidth / 2 - 5, point.y - 18, point.x + textWidth / 2 + 5, point.y - 6, withAlpha(0xB0000000, fade));
-			context.drawText(mc.textRenderer, label, point.x - textWidth / 2, point.y - 16, color, false);
-		}
+	private void reset() {
+		evidence.clear();
+		scanQueue.clear();
+		sites = List.of();
+		trackedWorld = null;
+		scanCentreChunkX = Integer.MIN_VALUE;
+		scanCentreChunkZ = Integer.MIN_VALUE;
 	}
 
-	private boolean isActive() {
-		// Stash Pinger reads the Advanced ESP block scan for its data, so it needs
-		// that running — but it has nothing to do with Mob ESP (entity ESP), which
-		// is why toggling Mob ESP must NOT affect it.
-		return config.enabled && config.donutStashPinger && config.donutStorageEsp;
-	}
-
-	public BaseTarget bestBaseTarget(MinecraftClient client) {
-		if (client == null || client.player == null || pings.isEmpty()) return null;
-		StashPing best = null;
-		double bestScore = Double.NEGATIVE_INFINITY;
-		for (StashPing ping : pings) {
-			if (ping.isSpawner() || !shouldShowPing(ping)) continue;
-			double distance = Math.sqrt(client.player.squaredDistanceTo(ping.center));
-			double score = ping.score - distance * 0.12;
-			if (score > bestScore) {
-				best = ping;
-				bestScore = score;
+	private void enqueueScans(MinecraftClient client) {
+		Vec3d centre = client.player.getEntityPos();
+		scanCentreChunkX = MathHelper.floor(centre.x) >> 4;
+		scanCentreChunkZ = MathHelper.floor(centre.z) >> 4;
+		int radius = MathHelper.clamp((int) Math.ceil(
+				MathHelper.clamp(config.donutStashRange, 48, 1024) / 16.0), 3, 32);
+		List<long[]> order = new ArrayList<>();
+		for (int dx = -radius; dx <= radius; dx++) {
+			for (int dz = -radius; dz <= radius; dz++) {
+				order.add(new long[]{scanCentreChunkX + dx, scanCentreChunkZ + dz, (long) dx * dx + (long) dz * dz});
 			}
 		}
-		return best == null ? null : new BaseTarget(best.center, best.score);
+		order.sort(Comparator.comparingLong(entry -> entry[2]));
+		scanQueue.clear();
+		scanQueue.addAll(order);
 	}
 
-	private boolean collapseNotifications() {
-		return config.donutTunnel;
-	}
-
-	/**
-	 * Quiet green line naming what was found and how far off it is. It is
-	 * deliberately not bold: this sits in the action bar for as long as you are
-	 * near the find, and shouting for that whole time is what made the old gold
-	 * bold version feel like an error message.
-	 */
-	private Text baseFoundMessage(MinecraftClient client) {
-		boolean spawner = false;
-		boolean base = false;
-		double nearestSq = Double.POSITIVE_INFINITY;
-		for (StashPing ping : pings) {
-			if (ping.isSpawner()) spawner = true;
-			else base = true;
-			nearestSq = Math.min(nearestSq, client.player.squaredDistanceTo(ping.center));
+	private boolean drainScanQueue(MinecraftClient client, int tick) {
+		if (scanQueue.isEmpty() || ScanBudget.isChunkLoadBusy(client)) return false;
+		long pool = ScanBudget.takeBudget(tick, ScanBudget.Lane.STASH_PINGER, config);
+		if (pool <= 0) return false;
+		long start = System.nanoTime();
+		boolean any = false;
+		while (!scanQueue.isEmpty()) {
+			if (System.nanoTime() - start > pool) break;
+			long[] next = scanQueue.poll();
+			scanChunk(client, (int) next[0], (int) next[1]);
+			any = true;
 		}
-		String label = base && spawner ? "Base + spawner found"
-				: spawner ? "Spawner found"
-				: "Base found";
-		String count = pings.size() > 1 ? " x" + pings.size() : "";
-		String distance = nearestSq == Double.POSITIVE_INFINITY ? ""
-				: " · " + (int) Math.round(Math.sqrt(nearestSq)) + "m";
-		return Text.literal(label + count + distance).formatted(Formatting.GREEN);
+		ScanBudget.reportUsed(tick, ScanBudget.Lane.STASH_PINGER, System.nanoTime() - start);
+		return any;
+	}
+
+	// ── Per-chunk classification ──────────────────────────────────────────────
+
+	private void scanChunk(MinecraftClient client, int chunkX, int chunkZ) {
+		ClientWorld world = client.world;
+		WorldChunk chunk = world.getChunkManager().getWorldChunk(chunkX, chunkZ);
+		if (chunk == null) return;
+		long key = ChunkPos.toLong(chunkX, chunkZ);
+		ChunkEvidence cell = new ChunkEvidence();
+
+		// The surface line for this chunk: evidence must sit well below it —
+		// unless the chunk holds a floating platform, whose deck band counts.
+		int surfaceMin = Integer.MAX_VALUE;
+		for (int corner = 0; corner < 4; corner++) {
+			int x = (chunkX << 4) + ((corner & 1) == 0 ? 2 : 13);
+			int z = (chunkZ << 4) + ((corner & 2) == 0 ? 2 : 13);
+			surfaceMin = Math.min(surfaceMin, world.getTopY(Heightmap.Type.MOTION_BLOCKING, x, z));
+		}
+		int hiddenBelow = surfaceMin - BURIED_MARGIN;
+		int[] skyBand = skyPlatformBand(world, chunk, chunkX, chunkZ, surfaceMin);
+
+		// Block entities: cheap, precise, and where spawner judgement happens.
+		boolean cityContext = false;
+		int containers = 0;
+		for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
+			BlockPos pos = entry.getKey();
+			if (!inCountedSpace(pos.getY(), hiddenBelow, skyBand)) continue;
+			BlockEntityType<?> type = entry.getValue().getType();
+			if (type == BlockEntityType.MOB_SPAWNER) {
+				if (!isNaturalSpawnerContext(world, pos)) cell.playerSpawner = true;
+				// Natural dungeon spawners contribute nothing either way.
+			} else if (type == BlockEntityType.CHEST || type == BlockEntityType.TRAPPED_CHEST
+					|| type == BlockEntityType.BARREL || type == BlockEntityType.SHULKER_BOX
+					|| type == BlockEntityType.HOPPER || type == BlockEntityType.FURNACE
+					|| type == BlockEntityType.BLAST_FURNACE || type == BlockEntityType.SMOKER
+					|| type == BlockEntityType.BREWING_STAND) {
+				containers++;
+				touchY(cell, pos.getY());
+			}
+		}
+		cell.container = Math.min(CAP_CONTAINER, containers * W_CONTAINER);
+
+		// Section passes: palette prescreen first, strided count only on a hit.
+		int bottomY = world.getBottomY();
+		ChunkSection[] sections = chunk.getSectionArray();
+		for (int index = 0; index < sections.length; index++) {
+			ChunkSection section = sections[index];
+			if (section == null || section.isEmpty()) continue;
+			int sectionBottom = bottomY + (index << 4);
+			if (!sectionCounted(sectionBottom, hiddenBelow, skyBand)) continue;
+			boolean furniturePalette = section.hasAny(state -> {
+				Block block = state.getBlock();
+				return FUNCTIONAL.contains(block) || REDSTONE.contains(block)
+						|| RESOURCE.contains(block) || CONTAINERS.contains(block)
+						|| CROPS.contains(block);
+			});
+			boolean debrisPalette = section.hasAny(state -> DEBRIS.contains(state.getBlock()));
+			if (furniturePalette || debrisPalette) {
+				countSection(world, chunk, cell, chunkX, chunkZ, sectionBottom);
+			}
+			if (section.hasAny(state -> CITY_MARKERS.contains(state.getBlock()))) {
+				cityContext = true;
+			}
+			// No carving credit in the ancient-city band: their platforms are
+			// the flattest floors worldgen makes.
+			if (sectionBottom < hiddenBelow && sectionBottom >= -48) {
+				cell.carved += carvedRoomScore(world, chunkX, chunkZ, sectionBottom);
+			}
+		}
+		cell.functional = Math.min(CAP_FUNCTIONAL, cell.functional);
+		cell.redstone = Math.min(CAP_REDSTONE, cell.redstone);
+		cell.resource = Math.min(CAP_RESOURCE, cell.resource);
+		cell.carved = Math.min(CAP_CARVED, cell.carved);
+		cell.crops = Math.min(CAP_CROP, cell.crops);
+		if (cityContext) {
+			cell.carved = 0.0;
+			cell.functional *= 0.5;
+			cell.container *= 0.5;
+			cell.redstone *= 0.5;
+			cell.resource *= 0.5;
+		}
+
+		if (cell.playerSpawner || cell.furniture() > 0.0 || cell.debris > 0.0) {
+			evidence.put(key, cell);
+		} else {
+			evidence.remove(key);
+		}
+	}
+
+	/** Strided category count through one 16-block section. */
+	private void countSection(ClientWorld world, WorldChunk chunk, ChunkEvidence cell,
+			int chunkX, int chunkZ, int sectionBottom) {
+		BlockPos.Mutable pos = new BlockPos.Mutable();
+		int baseX = chunkX << 4, baseZ = chunkZ << 4;
+		for (int y = sectionBottom; y < sectionBottom + 16; y += 2) {
+			for (int x = 0; x < 16; x += 2) {
+				for (int z = 0; z < 16; z += 2) {
+					pos.set(baseX + x, y, baseZ + z);
+					Block block = chunk.getBlockState(pos).getBlock();
+					if (FUNCTIONAL.contains(block)) {
+						cell.functional += W_FUNCTIONAL;
+						touchY(cell, y);
+					} else if (REDSTONE.contains(block)) {
+						cell.redstone += W_REDSTONE;
+						touchY(cell, y);
+					} else if (RESOURCE.contains(block)) {
+						cell.resource += W_RESOURCE;
+						touchY(cell, y);
+					} else if (CROPS.contains(block)) {
+						cell.crops += W_CROP;
+						touchY(cell, y);
+					} else if (DEBRIS.contains(block)) {
+						cell.debris += W_DEBRIS * 0.25; // strided; scale to actual density
+					}
+				}
+			}
+		}
 	}
 
 	/**
-	 * True while the player is still standing in the find. Walking away has to
-	 * take the text with it — a line that lingers after you have left says
-	 * something is here when nothing is.
+	 * Natural spawners advertise their origin: dungeon mossy cobblestone or
+	 * mineshaft cobwebs within a few blocks. A spawner with sterile
+	 * surroundings was placed by a player.
 	 */
-	private boolean nearAnyPing(MinecraftClient client) {
-		for (StashPing ping : pings) {
-			if (client.player.squaredDistanceTo(ping.center) <= TEXT_RADIUS * TEXT_RADIUS) return true;
+	private static boolean isNaturalSpawnerContext(ClientWorld world, BlockPos spawner) {
+		BlockPos.Mutable pos = new BlockPos.Mutable();
+		for (int dx = -4; dx <= 4; dx++) {
+			for (int dy = -2; dy <= 2; dy++) {
+				for (int dz = -4; dz <= 4; dz++) {
+					pos.set(spawner.getX() + dx, spawner.getY() + dy, spawner.getZ() + dz);
+					Block block = world.getBlockState(pos).getBlock();
+					if (block == Blocks.MOSSY_COBBLESTONE || block == Blocks.COBWEB) return true;
+				}
+			}
 		}
 		return false;
 	}
 
-	/** Wipes the action bar once on the way out instead of letting it time out. */
-	private void clearOverlayIfShowing(MinecraftClient client) {
-		if (!overlayShowing) return;
-		overlayShowing = false;
-		client.inGameHud.setOverlayMessage(Text.empty(), false);
-	}
-
-	/** Open a scan cycle over the Advanced ESP findings, nearest areas first. */
-	private void beginScan(MinecraftClient client) {
-		areaQueue.clear();
-		List<StorageEspRenderer.AreaSnapshot> areas = storageEsp.areaSnapshots();
-		if (areas.isEmpty()) return;
-		double range = MathHelper.clamp(config.donutStashPingerRange, 48, 1024);
-		for (StorageEspRenderer.AreaSnapshot area : areas) {
-			if (client.player.squaredDistanceTo(area.center()) > range * range) continue;
-			areaQueue.add(area);
-		}
-		// Farthest first in the list — areas pop off the tail, so nearest resolve soonest.
-		areaQueue.sort(Comparator.comparingDouble(
-				(StorageEspRenderer.AreaSnapshot area) -> client.player.squaredDistanceTo(area.center())).reversed());
-	}
-
-	/** Verify queued areas until the shared time budget runs out; commit when drained. */
-	private void stepScan(MinecraftClient client, int tick) {
-		long pool = ScanBudget.takeBudget(tick, ScanBudget.Lane.STASH_PINGER, config);
-		if (pool <= 0L) return;
-		long start = System.nanoTime();
-		boolean expired = false;
-		while (!areaQueue.isEmpty()) {
-			if (System.nanoTime() - start > pool) {
-				expired = true;
-				break;
-			}
-			StorageEspRenderer.AreaSnapshot area = areaQueue.remove(areaQueue.size() - 1);
-			if (isSpawnerArea(area)) {
-				if (!config.donutStashShowSpawners) continue;
-				upsertPing(client, new StashPing(area.center(), "Spawner", 120.0, tick), tick);
-				continue;
-			}
-			if (!config.donutStashShowBases) continue;
-			StashStats stats = scanArea(client.world, area.box().expand(2.0, 1.0, 2.0));
-			if (!stats.isLikelyBase()) continue;
-			upsertPing(client, new StashPing(area.center(), "Base", stats.score(), tick), tick);
-		}
-		ScanBudget.reportUsed(tick, ScanBudget.Lane.STASH_PINGER, System.nanoTime() - start);
-		if (expired || !areaQueue.isEmpty()) return;
-
-		pings.sort(Comparator.comparingDouble((StashPing ping) -> ping.score).reversed());
-		while (pings.size() > MAX_ACTIVE_PINGS) {
-			pings.remove(pings.size() - 1);
-		}
-	}
-
-	private boolean isSpawnerArea(StorageEspRenderer.AreaSnapshot area) {
-		return "Spawner".equals(area.label());
-	}
-
-	private boolean shouldShowPing(StashPing ping) {
-		return ping.isSpawner() ? config.donutStashShowSpawners : config.donutStashShowBases;
-	}
-
-	private void upsertPing(MinecraftClient client, StashPing raw, int tick) {
-		StashPing existing = findMatching(raw);
-		if (existing != null) {
-			existing.center = existing.center.lerp(raw.center, 0.34);
-			existing.score = Math.max(existing.score * 0.88, raw.score);
-			existing.lastSeenTick = tick;
-			return;
-		}
-		if (!raw.isSpawner()) {
-			// A base must be confirmed twice before it may alert — one-off
-			// misreads used to flash "Base Found" and fade seconds later.
-			// Confirmations match by DISTANCE: detection centers drift a few
-			// blocks between passes, and the old fixed-grid keying could land
-			// each pass in a different cell so nothing ever confirmed at all.
-			PendingConfirm match = null;
-			for (PendingConfirm confirm : pendingConfirms) {
-				if (confirm.center.squaredDistanceTo(raw.center) < BASE_MERGE_SQ) {
-					match = confirm;
+	/**
+	 * Boxed-room heuristic: sample columns through the section, find the floor
+	 * under each standing-height air pocket, and score when one Y level
+	 * dominates. Caves do not dig themselves flat.
+	 */
+	private static double carvedRoomScore(ClientWorld world, int chunkX, int chunkZ, int sectionBottom) {
+		BlockPos.Mutable pos = new BlockPos.Mutable();
+		int baseX = chunkX << 4, baseZ = chunkZ << 4;
+		int[] floorHistogram = new int[18];
+		int floorsFound = 0;
+		for (int x = 1; x < 16; x += 2) {
+			for (int z = 1; z < 16; z += 2) {
+				for (int y = sectionBottom + 1; y < sectionBottom + 15; y++) {
+					pos.set(baseX + x, y, baseZ + z);
+					if (!world.getBlockState(pos).isAir()) continue;
+					pos.setY(y + 1);
+					if (!world.getBlockState(pos).isAir()) break;
+					pos.setY(y - 1);
+					BlockState floor = world.getBlockState(pos);
+					// Farmland is 15/16 tall and farm channels are water; both
+					// are floors a player laid, so both count toward flatness.
+					if (floor.isOpaqueFullCube() || floor.getBlock() == Blocks.FARMLAND
+							|| floor.getBlock() == Blocks.DIRT_PATH
+							|| !floor.getFluidState().isEmpty()) {
+						floorHistogram[y - sectionBottom]++;
+						floorsFound++;
+					}
 					break;
 				}
 			}
-			if (match == null) {
-				match = new PendingConfirm();
-				match.center = raw.center;
-				pendingConfirms.add(match);
-			} else {
-				match.center = match.center.lerp(raw.center, 0.4);
-			}
-			if (tick < match.lastTick || tick - match.lastTick > SCAN_INTERVAL_TICKS * 5) match.hits = 0;
-			match.hits++;
-			match.lastTick = tick;
-			if (match.hits < CONFIRMATIONS_REQUIRED) return;
-			pendingConfirms.remove(match);
 		}
-		pings.add(raw);
-		alert(client, raw, tick);
+		if (floorsFound < 24) return 0.0;
+		int dominant = 0;
+		for (int count : floorHistogram) dominant = Math.max(dominant, count);
+		// 64 sampled columns; a flat floor across most found pockets is a room.
+		return dominant >= floorsFound * 0.6 && dominant >= 24 ? W_CARVED : 0.0;
 	}
 
-	private static final class PendingConfirm {
-		Vec3d center;
-		int hits;
-		int lastTick;
-	}
-
-	private StashPing findMatching(StashPing raw) {
-		// Bases merge generously — the same build kept pinging 3-4 times from
-		// several nearby detection areas, each with its own tracer. Spawners
-		// stay tight so genuine double-dungeons keep both pings.
-		double mergeSq = raw.isSpawner() ? 64.0 : BASE_MERGE_SQ;
-		for (StashPing ping : pings) {
-			if (!ping.type.equals(raw.type)) continue;
-			if (ping.center.squaredDistanceTo(raw.center) < mergeSq) return ping;
-		}
-		return null;
-	}
-
-	private void alert(MinecraftClient client, StashPing ping, int tick) {
-		if (client.player == null || client.world == null) return;
-		// Every find goes to chat with exact coordinates (the action bar keeps
-		// rolling alongside) — a located base/spawner is worth a permanent line.
-		chatAlertPing(client, ping, tick);
-		if (collapseNotifications()) {
-			nextActionBarTick = tick + 12;
-			return;
-		}
-		client.inGameHud.setOverlayMessage(baseFoundMessage(client), false);
-		overlayShowing = true;
-		client.player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_PLING.value(), 1.0F, 1.25F);
-		if (tick >= nextMusicTick) {
-			client.world.playSoundClient(client.player.getX(), client.player.getY(), client.player.getZ(),
-					SoundEvents.MUSIC_DISC_OTHERSIDE.value(), SoundCategory.RECORDS, 0.55F, 1.0F, false);
-			nextMusicTick = tick + 260;
-		}
-		nextActionBarTick = tick + 12;
-	}
-
-	private void chatAlertPing(MinecraftClient client, StashPing ping, int tick) {
-		BlockPos pos = BlockPos.ofFloored(ping.center);
-		// Base centers drift between rescans; dedupe on a 32-block cell so the
-		// same base can't alert again from a slightly shifted center.
-		BlockPos key = new BlockPos(pos.getX() >> 5, pos.getY() >> 5, pos.getZ() >> 5);
-		Integer last = recentChatAlerts.get(key);
-		if (last != null && tick >= last && tick - last < CHAT_ALERT_COOLDOWN_TICKS) return;
-		recentChatAlerts.put(key, tick);
-		if (recentChatAlerts.size() > 128) recentChatAlerts.clear();
-		String label = ping.displayName();
-		Formatting accent = ping.isSpawner() ? Formatting.AQUA : Formatting.GOLD;
-		Text message = Text.literal("[").formatted(Formatting.WHITE)
-				.append(Text.literal(label).formatted(accent))
-				.append(Text.literal("] ").formatted(Formatting.WHITE))
-				.append(Text.literal(label + " Detected At ").formatted(Formatting.GRAY, Formatting.BOLD))
-				.append(Text.literal(pos.getX() + ", " + pos.getY() + ", " + pos.getZ()).formatted(Formatting.GREEN));
-		client.inGameHud.getChatHud().addMessage(message);
-	}
-
-	private StashStats scanArea(ClientWorld world, Box box) {
-		int minX = MathHelper.floor(box.minX);
-		int minY = MathHelper.floor(Math.max(world.getBottomY(), box.minY));
-		int minZ = MathHelper.floor(box.minZ);
-		int maxX = MathHelper.floor(box.maxX);
-		int maxY = MathHelper.floor(Math.min(world.getBottomY() + world.getHeight() - 1, box.maxY));
-		int maxZ = MathHelper.floor(box.maxZ);
-		int estimatedBlocks = Math.max(1, (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1));
-		if (estimatedBlocks > MAX_SCAN_BLOCKS_PER_AREA) {
-			int trim = MathHelper.ceil((estimatedBlocks - MAX_SCAN_BLOCKS_PER_AREA) / 512.0F);
-			minX += trim;
-			maxX -= trim;
-			minZ += trim;
-			maxZ -= trim;
-		}
-
-		StashStats stats = new StashStats();
+	/** {minY, maxY} of a floating platform's counted band, or null. */
+	private static int[] skyPlatformBand(ClientWorld world, WorldChunk chunk,
+			int chunkX, int chunkZ, int surfaceMin) {
+		if (surfaceMin < SKY_MIN_Y) return null;
 		BlockPos.Mutable pos = new BlockPos.Mutable();
-		for (int y = minY; y <= maxY; y++) {
-			for (int z = minZ; z <= maxZ; z++) {
-				for (int x = minX; x <= maxX; x++) {
-					if (!world.isChunkLoaded(x >> 4, z >> 4)) continue;
-					pos.set(x, y, z);
-					stats.accept(world.getBlockState(pos));
-				}
+		int floating = 0, samples = 0;
+		for (int corner = 0; corner < 4; corner++) {
+			int x = (chunkX << 4) + ((corner & 1) == 0 ? 3 : 12);
+			int z = (chunkZ << 4) + ((corner & 2) == 0 ? 3 : 12);
+			int top = world.getTopY(Heightmap.Type.MOTION_BLOCKING, x, z) - 1;
+			if (top < SKY_MIN_Y) continue;
+			samples++;
+			// Walk down through the deck (≤12 thick), then demand a long drop.
+			int y = top;
+			int walked = 0;
+			pos.set(x, y, z);
+			while (y > world.getBottomY() && walked < 12 && !world.getBlockState(pos).isAir()) {
+				y--;
+				walked++;
+				pos.set(x, y, z);
 			}
+			int gap = 0;
+			while (y > world.getBottomY() && gap < SKY_AIR_GAP && world.getBlockState(pos).isAir()) {
+				y--;
+				gap++;
+				pos.set(x, y, z);
+			}
+			if (gap >= SKY_AIR_GAP) floating++;
 		}
+		if (samples == 0 || floating < Math.max(2, samples / 2)) return null;
+		return new int[]{surfaceMin - 14, surfaceMin + 6};
+	}
 
-		// Anti-xray masks the block PALETTE at distance, so the loop above sees
-		// deepslate where the chests are — bases only flagged once the player
-		// was practically inside and the real blocks streamed. Block ENTITIES
-		// are never masked: count them too and take the larger of the two
-		// views, so storage-heavy bases ping from the full scan range.
-		int beStorage = 0, beShulkers = 0, beEnderChests = 0, beRedstone = 0, beCrafted = 0;
-		for (int chunkZ = minZ >> 4; chunkZ <= maxZ >> 4; chunkZ++) {
-			for (int chunkX = minX >> 4; chunkX <= maxX >> 4; chunkX++) {
-				if (!world.isChunkLoaded(chunkX, chunkZ)) continue;
-				WorldChunk chunk = world.getChunk(chunkX, chunkZ);
-				if (chunk == null) continue;
-				for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
-					BlockPos bePos = entry.getKey();
-					if (bePos.getX() < minX || bePos.getX() > maxX || bePos.getY() < minY || bePos.getY() > maxY
-							|| bePos.getZ() < minZ || bePos.getZ() > maxZ) {
-						continue;
+	private static boolean inCountedSpace(int y, int hiddenBelow, int[] skyBand) {
+		if (y < hiddenBelow) return true;
+		return skyBand != null && y >= skyBand[0] && y <= skyBand[1];
+	}
+
+	private static boolean sectionCounted(int sectionBottom, int hiddenBelow, int[] skyBand) {
+		if (sectionBottom + 16 <= hiddenBelow) return true;
+		return skyBand != null && sectionBottom + 16 > skyBand[0] && sectionBottom <= skyBand[1];
+	}
+
+	private static void touchY(ChunkEvidence cell, int y) {
+		cell.ySum += y;
+		cell.ySamples++;
+	}
+
+	// ── Site merge, threshold, announcements ──────────────────────────────────
+
+	private double threshold() {
+		double temperature = MathHelper.clamp(config.donutStashTemperature, 0, 100) / 100.0;
+		return MathHelper.lerp(temperature, THRESHOLD_STRICT, THRESHOLD_LOOSE);
+	}
+
+	private void rebuildSites(MinecraftClient client) {
+		double line = threshold();
+		Set<Long> unvisited = new HashSet<>(evidence.keySet());
+		List<Site> next = new ArrayList<>();
+		while (!unvisited.isEmpty()) {
+			long seed = unvisited.iterator().next();
+			// Flood-fill adjacent evidence chunks into one candidate site.
+			ArrayDeque<Long> frontier = new ArrayDeque<>();
+			frontier.add(seed);
+			unvisited.remove(seed);
+			List<Long> members = new ArrayList<>();
+			while (!frontier.isEmpty()) {
+				long current = frontier.poll();
+				members.add(current);
+				int cx = ChunkPos.getPackedX(current);
+				int cz = ChunkPos.getPackedZ(current);
+				for (int dx = -1; dx <= 1; dx++) {
+					for (int dz = -1; dz <= 1; dz++) {
+						long neighbour = ChunkPos.toLong(cx + dx, cz + dz);
+						if (unvisited.remove(neighbour)) frontier.add(neighbour);
 					}
-					BlockEntityType<?> type = entry.getValue().getType();
-					if (type == BlockEntityType.CHEST || type == BlockEntityType.TRAPPED_CHEST
-							|| type == BlockEntityType.BARREL) beStorage++;
-					else if (type == BlockEntityType.SHULKER_BOX) beShulkers++;
-					else if (type == BlockEntityType.ENDER_CHEST) beEnderChests++;
-					else if (type == BlockEntityType.HOPPER || type == BlockEntityType.DISPENSER
-							|| type == BlockEntityType.DROPPER) beRedstone++;
-					else if (type == BlockEntityType.FURNACE || type == BlockEntityType.BLAST_FURNACE
-							|| type == BlockEntityType.SMOKER || type == BlockEntityType.BREWING_STAND
-							|| type == BlockEntityType.ENCHANTING_TABLE || type == BlockEntityType.BEACON) beCrafted++;
 				}
 			}
+			Site site = buildSite(members, line);
+			if (site != null) next.add(site);
 		}
-		stats.storage = Math.max(stats.storage, beStorage);
-		stats.shulkers = Math.max(stats.shulkers, beShulkers);
-		stats.enderChests = Math.max(stats.enderChests, beEnderChests);
-		stats.redstone = Math.max(stats.redstone, beRedstone);
-		stats.crafted = Math.max(stats.crafted, beCrafted);
-		return stats;
+		next.sort(Comparator.comparingDouble(site ->
+				site.centre().squaredDistanceTo(client.player.getEntityPos())));
+		sites = List.copyOf(next);
 	}
 
-	private List<StashPing> sortedPings(MinecraftClient mc) {
-		List<StashPing> sorted = new ArrayList<>(pings);
-		sorted.sort(Comparator.comparingDouble((StashPing ping) -> mc.player.squaredDistanceTo(ping.center)));
-		return sorted;
+	private Site buildSite(List<Long> members, double line) {
+		double debris = 0.0, ySum = 0.0;
+		int ySamples = 0;
+		boolean spawnerSite = false;
+		int minX = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
+		int maxX = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
+		boolean primeCorroborated = false;
+		List<Double> perChunk = new ArrayList<>();
+		for (long key : members) {
+			ChunkEvidence cell = evidence.get(key);
+			if (cell == null) continue;
+			perChunk.add(cell.furniture());
+			debris += cell.debris;
+			spawnerSite |= cell.playerSpawner;
+			ySum += cell.ySum;
+			ySamples += cell.ySamples;
+			int cx = ChunkPos.getPackedX(key);
+			int cz = ChunkPos.getPackedZ(key);
+			minX = Math.min(minX, cx);
+			maxX = Math.max(maxX, cx);
+			minZ = Math.min(minZ, cz);
+			maxZ = Math.max(maxZ, cz);
+			primeCorroborated |= PrimeChunkFinder.isFlagged(key);
+		}
+		// Diminishing sum: the strongest chunk speaks at full volume, the second
+		// at half, the tail at a quarter. A real base concentrates evidence, so
+		// it still scores; a natural smear spread thin across many chunks (a
+		// render-clipped geode shell, a mineshaft corridor) cannot creep over
+		// the line by width alone.
+		perChunk.sort(Comparator.reverseOrder());
+		double furniture = 0.0;
+		for (int i = 0; i < perChunk.size(); i++) {
+			// Strongest chunk at full volume, everything else at half. Sprawling
+			// farms keep their breadth; naturally-generated smears stay near
+			// zero because their blocks are no longer in any evidence set.
+			furniture += perChunk.get(i) * (i == 0 ? 1.0 : 0.5);
+		}
+		double score = furniture + (primeCorroborated ? PRIME_CORROBORATION : 0.0);
+		// A debris-dominated crater is an anchor fight, not a stash — but a
+		// RAIDED base is furniture plus debris, and the furniture still counts.
+		// Debris only suppresses sites that were never furnished to begin with.
+		if (!spawnerSite && furniture < 3.0 && debris > furniture * DEBRIS_DOMINANCE) return null;
+		if (!spawnerSite && score < line) return null;
+		double centreY = ySamples > 0 ? ySum / ySamples : 0.0;
+		Vec3d centre = new Vec3d(((minX + maxX + 1) / 2.0) * 16.0, centreY, ((minZ + maxZ + 1) / 2.0) * 16.0);
+		// Site identity survives rescans: anchored to the bounding box corner.
+		long id = ChunkPos.toLong(minX, minZ);
+		return new Site(minX, minZ, maxX, maxZ, centre, score, spawnerSite, id);
 	}
 
-	private ScreenPoint projectToScreen(MinecraftClient mc, StashPing ping, Vec3d camera, int width, int height) {
-		return projectToScreen(mc, ping.center, camera, width, height);
+	private void updateActionBar(MinecraftClient client) {
+		if (sites.isEmpty()) return;
+		Site nearest = sites.get(0);
+		int distance = (int) Math.sqrt(nearest.centre().squaredDistanceTo(client.player.getEntityPos()));
+		Text bar = Text.literal("Base Found ").setStyle(NOVA_FONT.withColor(PING_COLOR))
+				.copy().append(Text.literal("x" + sites.size()).setStyle(NOVA_FONT.withColor(0xFFFFFF)))
+				.append(Text.literal("  —  " + distance + "m away").setStyle(NOVA_FONT.withColor(0xD8D8D8)));
+		client.player.sendMessage(bar, true);
 	}
 
-	private ScreenPoint projectToScreen(MinecraftClient mc, Vec3d marker, Vec3d camera, int width, int height) {
-		Vec3d projected = mc.gameRenderer.project(marker);
-		double dx = marker.x - camera.x;
-		double dz = marker.z - camera.z;
-		double yaw = Math.toRadians(mc.gameRenderer.getCamera().getYaw());
-		double forwardX = -Math.sin(yaw);
-		double forwardZ = Math.cos(yaw);
-		boolean inFront = dx * forwardX + dz * forwardZ > 0.1;
-		boolean onScreen = inFront
-				&& projected.x >= -1.0 && projected.x <= 1.0
-				&& projected.y >= -1.0 && projected.y <= 1.0
-				&& projected.z >= -1.0 && projected.z <= 1.0;
-		if (onScreen) {
-			return new ScreenPoint(
-					(int) Math.round((projected.x + 1.0) * 0.5 * width),
-					(int) Math.round((1.0 - projected.y) * 0.5 * height)
-			);
-		}
+	// ── Tracers ───────────────────────────────────────────────────────────────
 
-		double relative = Math.atan2(dx, dz) - yaw;
-		double radiusX = width * 0.5 - 22.0;
-		double radiusY = height * 0.5 - 22.0;
-		return new ScreenPoint(
-				(int) Math.round(width * 0.5 + Math.sin(relative) * radiusX),
-				(int) Math.round(height * 0.5 - Math.cos(relative) * radiusY)
-		);
-	}
-
-	/**
-	 * Soft-edged tracer. A single hard quad rotated off-axis rasterises with a
-	 * stair-stepped edge, which is what made the old line look drawn pixel by
-	 * pixel even though it was already one straight quad. Stacking a wide faint
-	 * pass, a mid pass and a bright core reproduces the falloff an antialiased
-	 * line would have, so the edge reads as smooth at any angle.
-	 */
-	private void drawTracer(DrawContext context, float x0, float y0, float x1, float y1, int color, float fade) {
-		drawLine(context, x0, y0, x1, y1, 5.0F, withAlpha((color & 0x00FFFFFF) | 0x30000000, fade));
-		drawLine(context, x0, y0, x1, y1, 3.0F, withAlpha((color & 0x00FFFFFF) | 0x70000000, fade));
-		drawLine(context, x0, y0, x1, y1, 1.4F, color);
-	}
-
-	/**
-	 * One straight quad from end to end. Endpoints stay in float space: rounding
-	 * them to whole pixels first is what bent the line off its true angle and
-	 * made it look hand-plotted.
-	 */
-	private void drawLine(DrawContext context, float x0, float y0, float x1, float y1, float thickness, int color) {
-		float dx = x1 - x0;
-		float dy = y1 - y0;
-		float length = (float) Math.sqrt(dx * dx + dy * dy);
-		if (length < 1.0F) return;
-		Matrix3x2fStack matrices = context.getMatrices();
-		matrices.pushMatrix();
-		matrices.translate(x0, y0);
-		matrices.rotate((float) Math.atan2(dy, dx));
-		// Scale a unit-height bar to the wanted thickness so fractional widths
-		// survive; context.fill only accepts whole numbers.
-		matrices.translate(0.0F, -thickness * 0.5F);
-		matrices.scale(1.0F, thickness);
-		context.fill(0, 0, Math.round(length), 1, color);
-		matrices.popMatrix();
-	}
-
-	private int withAlpha(int color, float alphaScale) {
-		int alpha = MathHelper.clamp(Math.round(((color >>> 24) & 0xFF) * alphaScale), 0, 255);
-		return (color & 0x00FFFFFF) | (alpha << 24);
-	}
-
-	private static final class StashStats {
-		private int storage;
-		private int shulkers;
-		private int enderChests;
-		private int redstone;
-		private int crafted;
-		private int dungeon;
-		private int decor;
-
-		void accept(BlockState state) {
-			if (state.isOf(Blocks.CHEST) || state.isOf(Blocks.TRAPPED_CHEST) || state.isOf(Blocks.BARREL)) storage++;
-			if (isShulker(state)) shulkers++;
-			if (state.isOf(Blocks.ENDER_CHEST)) enderChests++;
-			if (isRedstoneBaseBlock(state)) redstone++;
-			if (isCraftedBaseBlock(state)) crafted++;
-			if (isDungeonBlock(state)) dungeon++;
-			if (PlayerPlacedBlocks.isBuildDecor(state, false)) decor++;
-		}
-
-		boolean isLikelyBase() {
-			int special = shulkers + enderChests;
-			if (dungeon >= 2 && storage <= 2 && special == 0 && redstone == 0 && decor < 12) return false;
-			if (special >= 1 && storage + redstone + crafted >= 1) return true;
-			if (storage >= 3) return true;
-			if (storage >= 2 && redstone + crafted >= 2) return true;
-			if (redstone >= 3 && crafted >= 2) return true;
-			// A raided/destroyed base keeps none of its loot blocks — but the
-			// built shell (stained glass, concrete, glowstone, candles...) stays.
-			if (special >= 1 && decor >= 6) return true;
-			return decor >= 24;
-		}
-
-		double score() {
-			return storage * 8.0 + shulkers * 18.0 + enderChests * 18.0 + redstone * 5.0 + crafted * 4.0
-					+ Math.min(decor, 120) * 1.1 - dungeon * 7.0;
-		}
-
-		private static boolean isShulker(BlockState state) {
-			return state.isOf(Blocks.SHULKER_BOX)
-					|| state.isOf(Blocks.WHITE_SHULKER_BOX)
-					|| state.isOf(Blocks.ORANGE_SHULKER_BOX)
-					|| state.isOf(Blocks.MAGENTA_SHULKER_BOX)
-					|| state.isOf(Blocks.LIGHT_BLUE_SHULKER_BOX)
-					|| state.isOf(Blocks.YELLOW_SHULKER_BOX)
-					|| state.isOf(Blocks.LIME_SHULKER_BOX)
-					|| state.isOf(Blocks.PINK_SHULKER_BOX)
-					|| state.isOf(Blocks.GRAY_SHULKER_BOX)
-					|| state.isOf(Blocks.LIGHT_GRAY_SHULKER_BOX)
-					|| state.isOf(Blocks.CYAN_SHULKER_BOX)
-					|| state.isOf(Blocks.PURPLE_SHULKER_BOX)
-					|| state.isOf(Blocks.BLUE_SHULKER_BOX)
-					|| state.isOf(Blocks.BROWN_SHULKER_BOX)
-					|| state.isOf(Blocks.GREEN_SHULKER_BOX)
-					|| state.isOf(Blocks.RED_SHULKER_BOX)
-					|| state.isOf(Blocks.BLACK_SHULKER_BOX);
-		}
-
-		private static boolean isRedstoneBaseBlock(BlockState state) {
-			return state.isOf(Blocks.REDSTONE_BLOCK)
-					|| state.isOf(Blocks.REPEATER)
-					|| state.isOf(Blocks.COMPARATOR)
-					|| state.isOf(Blocks.PISTON)
-					|| state.isOf(Blocks.STICKY_PISTON)
-					|| state.isOf(Blocks.OBSERVER)
-					|| state.isOf(Blocks.HOPPER)
-					|| state.isOf(Blocks.DISPENSER)
-					|| state.isOf(Blocks.DROPPER)
-					|| state.isOf(Blocks.REDSTONE_TORCH)
-					|| state.isOf(Blocks.REDSTONE_WALL_TORCH);
-		}
-
-		private static boolean isCraftedBaseBlock(BlockState state) {
-			return state.isOf(Blocks.CRAFTING_TABLE)
-					|| state.isOf(Blocks.FURNACE)
-					|| state.isOf(Blocks.BLAST_FURNACE)
-					|| state.isOf(Blocks.SMOKER)
-					|| state.isOf(Blocks.ENCHANTING_TABLE)
-					|| state.isOf(Blocks.ANVIL)
-					|| state.isOf(Blocks.CHIPPED_ANVIL)
-					|| state.isOf(Blocks.DAMAGED_ANVIL)
-					|| state.isOf(Blocks.BREWING_STAND)
-					|| state.isOf(Blocks.BEACON)
-					|| state.isOf(Blocks.RESPAWN_ANCHOR)
-					|| state.isOf(Blocks.LODESTONE)
-					|| state.isOf(Blocks.JUKEBOX);
-		}
-
-		private static boolean isDungeonBlock(BlockState state) {
-			return state.isOf(Blocks.SPAWNER)
-					|| state.isOf(Blocks.TRIAL_SPAWNER)
-					|| state.isOf(Blocks.COBWEB)
-					|| state.isOf(Blocks.MOSSY_COBBLESTONE)
-					|| state.isOf(Blocks.MOSSY_STONE_BRICKS)
-					|| state.isOf(Blocks.RAIL)
-					|| state.isOf(Blocks.POWERED_RAIL)
-					|| state.isOf(Blocks.DETECTOR_RAIL)
-					|| state.isOf(Blocks.ACTIVATOR_RAIL);
-		}
-	}
-
-	private static final class StashPing {
-		private Vec3d center;
-		private final String type;
-		private double score;
-		private final int firstSeenTick;
-		private int lastSeenTick;
-		private boolean hasScreenPoint;
-		private float screenX;
-		private float screenY;
-
-		StashPing(Vec3d center, String type, double score, int tick) {
-			this.center = center;
-			this.type = type;
-			this.score = score;
-			this.firstSeenTick = tick;
-			this.lastSeenTick = tick;
-		}
-
-		boolean isSpawner() {
-			return "Spawner".equals(type);
-		}
-
-		int color() {
-			return isSpawner() ? SPAWNER_COLOR : BASE_COLOR;
-		}
-
-		String displayName() {
-			return isSpawner() ? "Spawner" : "Base";
-		}
-
-		String hudLabel(MinecraftClient mc) {
-			int distance = mc.player == null ? 0 : MathHelper.floor(Math.sqrt(mc.player.squaredDistanceTo(center)));
-			return displayName() + " " + distance + "m";
-		}
-
-		ScreenPoint displayPoint(ScreenPoint raw, float blend) {
-			if (!hasScreenPoint) {
-				screenX = raw.x();
-				screenY = raw.y();
-				hasScreenPoint = true;
-			} else {
-				screenX = MathHelper.lerp(blend, screenX, raw.x());
-				screenY = MathHelper.lerp(blend, screenY, raw.y());
+	public void renderWorld(WorldRenderContext ctx) {
+		if (failedClosed || !config.enabled || !config.donutStashPinger || sites.isEmpty()) return;
+		if (!config.donutStashTracers) return;
+		try {
+			MinecraftClient mc = MinecraftClient.getInstance();
+			if (mc.world == null || mc.player == null) return;
+			MatrixStack matrices = ctx.matrices();
+			if (matrices == null) return;
+			MatrixStack.Entry entry = matrices.peek();
+			Matrix4fc pos = entry.getPositionMatrix();
+			VertexConsumer lines = ctx.consumers().getBuffer(DonutWorldRenderer.LINES);
+			NovaTracers.Basis basis = NovaTracers.basisFor(mc.gameRenderer.getCamera());
+			int drawn = 0;
+			for (Site site : sites) {
+				if (drawn++ >= MAX_TRACERS) break;
+				NovaTracers.draw(lines, pos, entry, basis, site.centre(), TRACER_COLOR, 0.9F);
 			}
-			return new ScreenPoint(Math.round(screenX), Math.round(screenY));
+		} catch (RuntimeException exception) {
+			ProFPS.LOGGER.error("Stash Pinger render failed; disabling it to protect the client.", exception);
+			reset();
+			config.donutStashPinger = false;
+			failedClosed = true;
 		}
-
-		float fade(float renderTick) {
-			float in = MathHelper.clamp((renderTick - firstSeenTick) / 14.0F, 0.0F, 1.0F);
-			float out = MathHelper.clamp((lastSeenTick + PING_TTL_TICKS - renderTick) / 30.0F, 0.0F, 1.0F);
-			return smooth(in) * smooth(out);
-		}
-
-		private static float smooth(float value) {
-			return value * value * (3.0F - 2.0F * value);
-		}
-	}
-
-	private record ScreenPoint(int x, int y) {
-	}
-
-	public record BaseTarget(Vec3d center, double score) {
 	}
 }

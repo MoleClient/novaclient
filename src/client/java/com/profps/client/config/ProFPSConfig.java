@@ -347,8 +347,14 @@ public final class ProFPSConfig {
 	public boolean pingEqualizerEnabled = false; // match your reported ping to the opponent you're fighting
 	public boolean antiFireballAssist = false; // smooth-aim + sword-deflect incoming bedwars fireballs
 	public boolean rememberEnabled = false;    // capture multiple builds as translucent real-block ghosts
-	public boolean schematicBuildEnabled = false; // hover-to-place from Remember or an optional loaded Litematica placement
-	public boolean schematicAutoMove = true;  // walk/fly the build itself, interior-first, instead of hover-to-place
+	public boolean schematicBuildEnabled = false; // auto-place in-reach cells from Remember or a loaded Litematica placement
+	public boolean schematicAutoMove = true;   // walk the build itself, choosing stands that produce the right block rotation
+	public boolean schematicShowGhost = true;  // translucent hologram of what the loaded schematic still needs
+	public String schematicLibraryFile = "";   // .litematic loaded by us, read straight from the schematics folder
+	public int schematicLibrarySelection;      // dropdown index, remembered between openings
+	public int schematicLibraryOriginX;        // where Load anchored the schematic
+	public int schematicLibraryOriginY;
+	public int schematicLibraryOriginZ;
 	public boolean schematicTemporaryBlocks = true; // bridge/stair/platform supports for otherwise unsupported schematic cells
 	public boolean swordAiEnabled = false;     // distilled local movement model for sword combat
 	public boolean swordAiAim = true;          // let the AI turn your view (pitch + yaw) onto the target
@@ -395,15 +401,10 @@ public final class ProFPSConfig {
 	public int anchorMode = 1;
 	/** When false, stop after charging and finish on a safe/whitelisted hotbar item. */
 	public boolean anchorDetonate = true;
-	public boolean anchorSafe = false;
 	public boolean anchorExplosionItemWhitelist = false;
 	public java.util.List<String> anchorExplosionItems = new java.util.ArrayList<>(java.util.List.of("minecraft:totem_of_undying"));
-	public boolean anchorAimAssist = true;
-	public boolean anchorSilentAim = true;
-	public int anchorAimSpeedTenths = 120;
-	public int anchorDelayMinMs = 0;
-	public int anchorDelayMaxMs = 25;
-	public boolean anchorStopWhenNoTotem = false; // off: detonate anyway; on: abort unless a totem is in reach
+	/** Anchor action speed: 1 deliberate, 10 immediate. */
+	public int anchorSpeed = 6;
 	public boolean totemTweaks = false;
 	/**
 	 * Last resort for a totem that is not in the hotbar. The normal refill is the
@@ -463,21 +464,16 @@ public final class ProFPSConfig {
 	public boolean lungeSwapHumanize = true;
 	/** Sprint-jump into the burst; on the ground friction scrubs the velocity off almost at once. */
 	public boolean lungeSwapJump = true;
-	/** Visible aim support only while the player manually holds a spear charge. */
-	/** Auto Spear: arms the kinetic charge so a fly-through lands on contact. */
+	/** Auto Spear: holds the kinetic charge and aims it at whoever is close enough to hit. */
 	public boolean autoSpearEnabled = false;
-	public int autoSpearFov = 75;
-	public int autoSpearRange = 42;
-	public int autoSpearTurnSpeed = 48;
+	public int autoSpearFov = 90;
+	/** Contact happens at 2–4.5m; the range is how early the spear comes out, not its reach. */
+	public int autoSpearRange = 20;
+	public int autoSpearTurnSpeed = 55;
 	/** Pull the spear from the hotbar for the run in, and put the old slot back after. */
 	public boolean autoSpearAutoSwitch = true;
-	/** Camera stays under your own mouse while the approach is aimed. Off by default. */
+	/** Aim the body while the camera stays under the player's own mouse. */
 	public boolean autoSpearSilentAim = false;
-	public boolean donutStashPinger = false;
-	public boolean donutFreecam = false;
-	public int donutFreecamSpeed = 5; // 1 (slow / precise) .. 10 (fast); 5 = the classic default
-	public boolean donutChunkActivity = false;
-	public boolean donutChunkFinder = false;   // "Activity Chunks" in the UI — flags chunks by recent activity
 	/** Storage ESP: containers and redstone machinery, independent of Hole/Tunnel/Stairs ESP. */
 	public boolean donutStorageEsp = false;
 	public int donutStorageEspRange = 128;
@@ -487,28 +483,30 @@ public final class ProFPSConfig {
 	public boolean donutStorageShowRedstone = true;
 	public boolean donutStorageShowFurnaces = true;
 	public boolean donutStorageEspExpanded = false;
-	/** Suspicious Chunks: scarce, base-evidence-only chunk flags for depths you cannot see. */
-	public boolean donutSuspiciousChunks = false;
-	public int donutSuspiciousChunksRange = 256;
-	public int donutSuspiciousChunksCeiling = 8;  // only evidence at or below this Y counts
-	public boolean donutSuspiciousChunksLabels = true;
-	public boolean donutSuspiciousChunksExpanded = false;
+	/** Prime Chunk Finder: flags chunks with under-render base evidence. */
+	public boolean donutPrimeChunk = false;
+	public int donutPrimeChunkWeight = 40;  // flag sensitivity ×100 → 0.0 (strict) .. 1.0 (loose)
+	public int donutPrimeChunkRange = 256;
+	public boolean donutPrimeChunkTracers = true;
+	public boolean donutPrimeChunkExpanded = false;
+	/** Stash Pinger: base classifier with toast/action-bar pings and tracers. */
+	public boolean donutStashPinger = false;
+	public int donutStashTemperature = 45; // flag sensitivity ×100 → 0.0 (strict) .. 1.0 (loose)
+	public int donutStashRange = 256;
+	public boolean donutStashTracers = true;
+	public boolean donutStashPingerExpanded = false;
 	public boolean donutAmethystDetector = false;
-	public boolean donutNetherPortalMapper = false;
-	public boolean donutPlayerSightings = false;
+	/** Freecam: detached flying camera; forced off at startup by its controller. */
+	public boolean donutFreecam = false;
+	public int donutFreecamSpeed = 40; // stored ×10 → 0.1..10.0 flight speed, 40 = the 4.0 default
+	public boolean donutFreecamTurbo = false; // ×2.5 on top of the slider
 	public boolean donutTunnel = false;
 	public boolean donutTunnelExpanded = false;
 	public boolean donutBasicEspExpanded = false;
 	public boolean donutAdvancedEspExpanded = false;
-	public boolean donutStashPingerExpanded = false;
-	public boolean donutChunkActivityExpanded = false;
-	public boolean donutChunkFinderExpanded = false;
 	public boolean donutAmethystDetectorExpanded = false;
 	public int donutBasicEspRange = 192;
 	public int donutAdvancedEspRange = 192;
-	public int donutStashPingerRange = 192;
-	public int donutChunkActivityRange = 192;
-	public int donutChunkFinderRange = 192;
 	public int donutAmethystDetectorRange = 192;
 	public int donutTunnelHpThreshold = 10;
 	public boolean donutBasicShowPlayers = true;
@@ -520,12 +518,6 @@ public final class ProFPSConfig {
 	public boolean donutAdvancedShowShafts = true;
 	public boolean donutAdvancedShowPlaced = true;
 	public boolean donutAdvancedShowSpawners = true;
-	public boolean donutStashShowBases = true;
-	public boolean donutStashShowSpawners = true;
-	public boolean donutChunkFinderTracers = true;
-	public boolean donutChunkFinderLabels = true;
-	/** Aggressive side-channel mining (off by default): exact container intel from loaded chunks + boosted light-leak sensitivity. */
-	public boolean donutChunkExperimental = false;
 
 	/** GLFW key code per module id, assigned from the Nova GUI keybind rows. */
 	public Map<String, Integer> moduleKeybinds = new HashMap<>();
@@ -570,7 +562,7 @@ public final class ProFPSConfig {
 	 */
 	public String dataContributionSalt = "";
 
-	public int configVersion = 104;
+	public int configVersion = 112;
 
 	/** Plain HTTP is tolerated only to your own machine, where there is nothing to intercept. */
 	static boolean isLoopback(String endpoint) {
@@ -894,9 +886,9 @@ public final class ProFPSConfig {
 		crystalDelayMinMs = MathHelper.clamp(crystalDelayMinMs, 0, 500);
 		crystalDelayMaxMs = MathHelper.clamp(crystalDelayMaxMs, crystalDelayMinMs, 500);
 		crystalMaxSelfDamage = MathHelper.clamp(crystalMaxSelfDamage, 0, 20);
-		anchorAimSpeedTenths = MathHelper.clamp(anchorAimSpeedTenths, 10, 150);
-		anchorDelayMinMs = MathHelper.clamp(anchorDelayMinMs, 0, 500);
-		anchorDelayMaxMs = MathHelper.clamp(anchorDelayMaxMs, anchorDelayMinMs, 500);
+		int oldAnchorSpeed = anchorSpeed;
+		anchorSpeed = MathHelper.clamp(anchorSpeed, 1, 10);
+		changed |= oldAnchorSpeed != anchorSpeed;
 		if (lungeFov < 20 || lungeFov > 120) {
 			lungeFov = MathHelper.clamp(lungeFov, 20, 120);
 			changed = true;
@@ -913,8 +905,8 @@ public final class ProFPSConfig {
 			autoSpearFov = MathHelper.clamp(autoSpearFov, 20, 140);
 			changed = true;
 		}
-		if (autoSpearRange < 8 || autoSpearRange > 96) {
-			autoSpearRange = MathHelper.clamp(autoSpearRange, 8, 96);
+		if (autoSpearRange < 4 || autoSpearRange > 64) {
+			autoSpearRange = MathHelper.clamp(autoSpearRange, 4, 64);
 			changed = true;
 		}
 		if (autoSpearTurnSpeed < 20 || autoSpearTurnSpeed > 90) {
@@ -933,14 +925,6 @@ public final class ProFPSConfig {
 			donutAdvancedEspRange = MathHelper.clamp(donutAdvancedEspRange, 48, 1024);
 			changed = true;
 		}
-		if (donutStashPingerRange < 48 || donutStashPingerRange > 1024) {
-			donutStashPingerRange = MathHelper.clamp(donutStashPingerRange, 48, 1024);
-			changed = true;
-		}
-		if (donutChunkActivityRange < 48 || donutChunkActivityRange > 1024) {
-			donutChunkActivityRange = MathHelper.clamp(donutChunkActivityRange, 48, 1024);
-			changed = true;
-		}
 		if (donutStorageEspRange < 32 || donutStorageEspRange > 512) {
 			donutStorageEspRange = MathHelper.clamp(donutStorageEspRange, 32, 512);
 			changed = true;
@@ -949,20 +933,28 @@ public final class ProFPSConfig {
 			donutStorageEspOpacity = MathHelper.clamp(donutStorageEspOpacity, 5, 60);
 			changed = true;
 		}
-		if (donutSuspiciousChunksRange < 48 || donutSuspiciousChunksRange > 1024) {
-			donutSuspiciousChunksRange = MathHelper.clamp(donutSuspiciousChunksRange, 48, 1024);
-			changed = true;
-		}
-		if (donutSuspiciousChunksCeiling < -64 || donutSuspiciousChunksCeiling > 64) {
-			donutSuspiciousChunksCeiling = MathHelper.clamp(donutSuspiciousChunksCeiling, -64, 64);
-			changed = true;
-		}
-		if (donutChunkFinderRange < 48 || donutChunkFinderRange > 1024) {
-			donutChunkFinderRange = MathHelper.clamp(donutChunkFinderRange, 48, 1024);
-			changed = true;
-		}
 		if (donutAmethystDetectorRange < 48 || donutAmethystDetectorRange > 1024) {
 			donutAmethystDetectorRange = MathHelper.clamp(donutAmethystDetectorRange, 48, 1024);
+			changed = true;
+		}
+		if (donutFreecamSpeed < 1 || donutFreecamSpeed > 100) {
+			donutFreecamSpeed = MathHelper.clamp(donutFreecamSpeed, 1, 100);
+			changed = true;
+		}
+		if (donutPrimeChunkWeight < 0 || donutPrimeChunkWeight > 100) {
+			donutPrimeChunkWeight = MathHelper.clamp(donutPrimeChunkWeight, 0, 100);
+			changed = true;
+		}
+		if (donutPrimeChunkRange < 48 || donutPrimeChunkRange > 1024) {
+			donutPrimeChunkRange = MathHelper.clamp(donutPrimeChunkRange, 48, 1024);
+			changed = true;
+		}
+		if (donutStashTemperature < 0 || donutStashTemperature > 100) {
+			donutStashTemperature = MathHelper.clamp(donutStashTemperature, 0, 100);
+			changed = true;
+		}
+		if (donutStashRange < 48 || donutStashRange > 1024) {
+			donutStashRange = MathHelper.clamp(donutStashRange, 48, 1024);
 			changed = true;
 		}
 		if (donutTunnelHpThreshold < 4 || donutTunnelHpThreshold > 20) {
@@ -978,14 +970,12 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 14) {
-			donutStashPinger = false;
 			configVersion = 14;
 			changed = true;
 		}
 		if (configVersion < 15) {
 			donutBasicEspRange = 192;
 			donutAdvancedEspRange = 192;
-			donutStashPingerRange = 192;
 			donutBasicShowPlayers = true;
 			donutBasicShowMonsters = true;
 			donutBasicShowPassive = true;
@@ -995,20 +985,15 @@ public final class ProFPSConfig {
 			donutAdvancedShowShafts = true;
 			donutAdvancedShowPlaced = true;
 			donutAdvancedShowSpawners = true;
-			donutStashShowBases = true;
-			donutStashShowSpawners = true;
 			configVersion = 15;
 			changed = true;
 		}
 		if (configVersion < 16) {
-			donutFreecam = false;
 			configVersion = 16;
 			changed = true;
 		}
 		if (configVersion < 17) {
-			donutChunkActivity = false;
 			donutAmethystDetector = false;
-			donutChunkActivityRange = 192;
 			donutAmethystDetectorRange = 192;
 			configVersion = 17;
 			changed = true;
@@ -1021,8 +1006,6 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 19) {
-			donutNetherPortalMapper = false;
-			donutPlayerSightings = false;
 			configVersion = 19;
 			changed = true;
 		}
@@ -1032,9 +1015,6 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 21) {
-			donutChunkFinder = false;
-			donutChunkFinderExpanded = false;
-			donutChunkFinderRange = 192;
 			configVersion = 21;
 			changed = true;
 		}
@@ -1055,13 +1035,10 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 24) {
-			donutChunkFinderTracers = true;
-			donutChunkFinderLabels = true;
 			configVersion = 24;
 			changed = true;
 		}
 		if (configVersion < 25) {
-			donutChunkExperimental = false;
 			configVersion = 25;
 			changed = true;
 		}
@@ -1079,10 +1056,6 @@ public final class ProFPSConfig {
 		if (instantClickAllowedItems == null) { instantClickAllowedItems = new java.util.ArrayList<>(); changed = true; }
 		if (scaffoldSpeed < 0 || scaffoldSpeed > 10) {
 			scaffoldSpeed = MathHelper.clamp(scaffoldSpeed, 0, 10);
-			changed = true;
-		}
-		if (donutFreecamSpeed < 1 || donutFreecamSpeed > 10) {
-			donutFreecamSpeed = MathHelper.clamp(donutFreecamSpeed, 1, 10);
 			changed = true;
 		}
 		if (flightSpeed < 1 || flightSpeed > 10) {
@@ -1255,7 +1228,6 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 35) {
-			donutFreecamSpeed = 5;    // new 1-10 freecam speed meter (5 = the classic default)
 			configVersion = 35;
 			changed = true;
 		}
@@ -1537,10 +1509,9 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 72) {
-			// Auto Schem Build v72 gains a physical, vanilla-input navigation layer.
-			// It is intentionally on by default; switching it off preserves the original
-			// manual hover-to-place behavior exactly.
-			schematicAutoMove = true;
+			// v72 added an Auto Move navigation layer to Auto Schem Build. It has
+			// since been removed entirely, so this step now only carries the
+			// version forward.
 			configVersion = 72;
 			changed = true;
 		}
@@ -1571,19 +1542,14 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 77) {
-			// Auto Move remains implemented internally, but is no longer exposed or
-			// active. Force old saved profiles off so removing its toggle cannot
-			// leave invisible movement ownership behind.
-			schematicAutoMove = false;
 			configVersion = 77;
 			changed = true;
 		}
 		if (configVersion < 78) {
-			// Auto Move returns with its own toggle, an interior-first placement
-			// order, and repeated verify sweeps. Hover-to-place can only ever fill
-			// what the crosshair can already see, so a thick or wide schematic
-			// needs this on to finish; v77 profiles are restored to it.
-			schematicAutoMove = true;
+			// v77/v78 toggled Auto Move off and back on. The feature is gone, so
+			// both steps now only carry the version forward. Gson keys are matched
+			// by field name, so the stale schematicAutoMove in old saved JSON is
+			// simply ignored.
 			configVersion = 78;
 			changed = true;
 		}
@@ -1672,13 +1638,7 @@ public final class ProFPSConfig {
 			crystalManualPlaceObsidian = false;
 			crystalManualShowTargetBlock = true;
 			anchorMode = 1;
-			anchorSafe = false;
 			anchorExplosionItemWhitelist = false;
-			anchorAimAssist = true;
-			anchorSilentAim = true;
-			anchorAimSpeedTenths = 120;
-			anchorDelayMinMs = 50;
-			anchorDelayMaxMs = 100;
 			configVersion = 85;
 			changed = true;
 		}
@@ -1732,10 +1692,8 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 89) {
-			// Anchor confirmation now gates every action, so the former 50-100 ms padding
-			// only made charge-to-detonation sluggish. Keep a small configurable jitter.
-			anchorDelayMinMs = 0;
-			anchorDelayMaxMs = 25;
+			// Anchor confirmation now gates every action. The retired raw delay fields
+			// were replaced by a single speed control in v105.
 			configVersion = 89;
 			changed = true;
 		}
@@ -1787,12 +1745,6 @@ public final class ProFPSConfig {
 			donutStorageShowRedstone = true;
 			donutStorageShowFurnaces = true;
 			donutAdvancedShowStairs = true;
-			// Off by default: it is meant to be rare and acted on, not left on as
-			// background decoration.
-			donutSuspiciousChunks = false;
-			donutSuspiciousChunksRange = 256;
-			donutSuspiciousChunksCeiling = 8;
-			donutSuspiciousChunksLabels = true;
 			configVersion = 93;
 			changed = true;
 		}
@@ -1869,6 +1821,72 @@ public final class ProFPSConfig {
 			// pinned to an endpoint that does not exist and silently never uploads.
 			dataContributionEndpoint = new ProFPSConfig().dataContributionEndpoint;
 			configVersion = 104;
+			changed = true;
+		}
+		if (configVersion < 105) {
+			// The former maximum-speed anchor sequence could charge and detonate in the
+			// same client tick. Start every existing profile at the requested quick but
+			// human-readable speed; players can still opt back into immediate level 10.
+			anchorSpeed = 6;
+			configVersion = 105;
+			changed = true;
+		}
+		if (configVersion < 106) {
+			// The old visible aim-assist path and its rotation-speed setting are retired.
+			configVersion = 106;
+			changed = true;
+		}
+		if (configVersion < 107) {
+			// The manual-crosshair path stopped changing camera or packet rotation.
+			configVersion = 107;
+			changed = true;
+		}
+		if (configVersion < 108) {
+			// Safe Anchor's best-effort glowstone cover is now the one Anchor Macro
+			// behavior instead of a mode. Existing profiles start with detonation on.
+			anchorDetonate = true;
+			configVersion = 108;
+			changed = true;
+		}
+		if (configVersion < 109) {
+			// Remove Anchor rotation handling completely. Actions now use the real
+			// crosshair and Minecraft's own doItemUse/held-slot synchronization path.
+			configVersion = 109;
+			changed = true;
+		}
+		if (configVersion < 110) {
+			// Freecam's launch default (1.0) flew like a rowboat. Existing saves
+			// move to the new 4.0 base once; the slider still goes both ways.
+			donutFreecamSpeed = 40;
+			configVersion = 110;
+			changed = true;
+		}
+		if (configVersion < 111) {
+			// Auto Move returns, rebuilt: it now picks where to stand from the
+			// block rotation the schematic asks for, crouches to place against
+			// interactive blocks, and holds fluids back to a final pass. Old
+			// profiles get it on, including the v77 ones that had it forced off.
+			schematicAutoMove = true;
+			configVersion = 111;
+			changed = true;
+		}
+		if (configVersion < 112) {
+			// Auto Spear rebuilt. It used to wait for a 0.28 blocks/tick closing run before it
+			// would even start the charge — a bar that reads true only when you are already
+			// sprinting straight down the line to somebody, by which point the spear's 8–10
+			// tick arm delay has eaten the pass. It also never aimed, so the contact ray it
+			// was arming pointed wherever the player happened to be looking.
+			//
+			// The rebuild holds the charge whenever an opponent is close (a spear charge
+			// costs no speed and does not block sprinting) and turns the head onto them. The
+			// old range was tuned for arming at elytra distance, so 42m of "come out now" is
+			// far too eager for a weapon that connects at 4.5m; 20m is the fight you are in.
+			autoSpearFov = 90;
+			autoSpearRange = 20;
+			autoSpearTurnSpeed = 55;
+			// Silent aim decouples the camera; it must never arrive switched on.
+			autoSpearSilentAim = false;
+			configVersion = 112;
 			changed = true;
 		}
 

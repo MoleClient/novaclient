@@ -636,7 +636,7 @@ public final class NovaScreenV2 extends Screen {
 	private float settingHeight(NovaModules.Module mod, NovaModules.Setting setting) {
 		if (setting instanceof NovaModules.IntSetting) return SET_H + SLIDER_H;
 		if (setting instanceof NovaModules.ChoiceSetting choice) {
-			return SET_H + dropOpen(mod, setting) * (choice.options.size() * OPT_H + 4.0F);
+			return SET_H + dropOpen(mod, setting) * (choice.options().size() * OPT_H + 4.0F);
 		}
 		if (setting instanceof NovaModules.ButtonSetting) return FIELD_H;
 		if (setting instanceof NovaModules.StringSetting) return FIELD_H;
@@ -844,14 +844,14 @@ public final class NovaScreenV2 extends Screen {
 	/** Standard module mode selector. Unlike the coloured combat tier selector, choices use the active accent. */
 	private void drawChoiceDrop(DrawContext ctx, float mx, float my, NovaModules.Module mod,
 			NovaModules.ChoiceSetting setting, float x, float y, float w, float h) {
-		int selected = MathHelper.clamp(setting.get.getAsInt(), 0, setting.options.size() - 1);
+		int selected = MathHelper.clamp(setting.get.getAsInt(), 0, setting.options().size() - 1);
 		String key = mod.id + "|" + setting.label;
 		float open = dropOpen(mod, setting);
 		boolean headHovered = inside(mx, my, x - 3.0F, y, w + 6.0F, SET_H) && insideClip(mx, my);
 		float hov = anim("ch_" + key, headHovered ? 1.0F : 0.0F, 15.0F);
 
 		textScaled(ctx, regular(setting.label), x, y + 3.5F, NovaRender.lerpColor(hov, FAINT, TEXT), T_SET);
-		Text current = bold(setting.options.get(selected));
+		Text current = bold(setting.options().get(selected));
 		float currentW = textRenderer.getWidth(current) * T_VAL;
 		textScaled(ctx, current, x + w - currentW, y + 3.5F,
 				NovaRender.lerpColor(hov, 0xFFB6BBC4, accentSoft), T_VAL);
@@ -866,9 +866,9 @@ public final class NovaScreenV2 extends Screen {
 		ctx.enableScissor(floor(x - 4.0F), floor(y + SET_H), ceil(x + w + 4.0F), ceil(y + SET_H + listH));
 		float[] previousClip = pushClipIntersect(x - 4.0F, y + SET_H, w + 8.0F, listH);
 		float oy = y + SET_H + 2.0F;
-		for (int i = 0; i < setting.options.size(); i++) {
+		for (int i = 0; i < setting.options().size(); i++) {
 			final int pick = i;
-			drawOptionRow(ctx, mx, my, "choice_" + key + "_" + i, setting.options.get(i), i == selected,
+			drawOptionRow(ctx, mx, my, "choice_" + key + "_" + i, setting.options().get(i), i == selected,
 					0, x, oy, w, () -> {
 						setting.set.accept(pick);
 						config.save();

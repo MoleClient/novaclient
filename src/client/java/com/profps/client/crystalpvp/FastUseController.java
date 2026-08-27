@@ -11,13 +11,15 @@ import java.security.SecureRandom;
 
 public final class FastUseController {
 	private final ProFPSConfig config;
+	private final AnchorMacroController anchorMacro;
 	private final SecureRandom rng = new SecureRandom();
 
 	private long nextRerollNanos;
 	private int itemUseCap = 3;
 
-	public FastUseController(ProFPSConfig config) {
+	public FastUseController(ProFPSConfig config, AnchorMacroController anchorMacro) {
 		this.config = config;
+		this.anchorMacro = anchorMacro;
 	}
 
 	public void tick(MinecraftClient client) {
@@ -62,11 +64,19 @@ public final class FastUseController {
 	}
 
 	private boolean crystalPvpContext(MinecraftClient client) {
+		// Anchor Macro owns its sequence and deliberately retains vanilla's use
+		// cooldown. Fast Use must not shorten it, even if the physical key is held.
+		boolean anchorSequenceActive = anchorMacro != null && anchorMacro.isSequencing();
+		if (!canAccelerate(client.options.useKey.isPressed(), anchorSequenceActive)) return false;
 		ItemStack main = client.player.getMainHandStack();
 		ItemStack off = client.player.getOffHandStack();
 		boolean combatItem = isCrystalPvpItem(main) || isCrystalPvpItem(off);
-		if (!combatItem) return false;
-		return client.options.useKey.isPressed() || config.autoCrystal || config.anchorMacro;
+		return combatItem;
+	}
+
+	/** Pure policy helper pinned by tests: macros never impersonate held input. */
+	static boolean canAccelerate(boolean physicalUsePressed, boolean anchorSequenceActive) {
+		return physicalUsePressed && !anchorSequenceActive;
 	}
 
 	private boolean isCrystalPvpItem(ItemStack stack) {

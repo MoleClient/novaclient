@@ -11,7 +11,7 @@ import java.util.Arrays;
  * Two jobs:
  *   1. Stagger the start of heavy scan cycles so their setup work never stacks.
  *   2. Fairly divide per-tick scan time between every enabled scanner. A single
- *      large Advanced ESP scan must not starve Stash Pinger or Chunk Finder.
+ *      large Advanced ESP scan must not starve Storage ESP or the Amethyst Finder.
  *   3. When the client is actively receiving new chunks (the render-thread is
  *      busy compiling geometry), skip heavy scans entirely until things settle.
  *      This eliminates the ~500ms freeze that appeared every time a new chunk
@@ -21,11 +21,9 @@ public final class ScanBudget {
 	public enum Lane {
 		ADVANCED_ESP,
 		STORAGE_ESP,
-		SUSPICIOUS_CHUNKS,
-		STASH_PINGER,
-		BASE_FINDER,
 		AMETHYST,
-		NETHER_PORTAL
+		PRIME_CHUNK,
+		STASH_PINGER
 	}
 
 	// How many ticks chunk-load activity keeps the pool in reduced mode.
@@ -189,11 +187,9 @@ public final class ScanBudget {
 		return switch (lane) {
 			case ADVANCED_ESP -> config.donutAdvancedEsp;
 			case STORAGE_ESP -> config.donutStorageEsp;
-			case SUSPICIOUS_CHUNKS -> config.donutSuspiciousChunks;
-			case STASH_PINGER -> config.donutStorageEsp && config.donutStashPinger;
-			case BASE_FINDER -> config.donutChunkActivity || config.donutChunkFinder;
 			case AMETHYST -> config.donutAmethystDetector;
-			case NETHER_PORTAL -> config.donutNetherPortalMapper;
+			case PRIME_CHUNK -> config.donutPrimeChunk;
+			case STASH_PINGER -> config.donutStashPinger;
 		};
 	}
 

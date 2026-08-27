@@ -2,10 +2,12 @@ package com.profps.client.ui.nova;
 
 import com.profps.client.config.NickEntry;
 import com.profps.client.config.ProFPSConfig;
+import com.profps.client.extras.SchematicLibrary;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.PotionContentsComponent;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.Items;
 import net.minecraft.potion.Potions;
 
@@ -20,10 +22,8 @@ import java.util.function.Supplier;
 /**
  * Declarative catalogue of every NovaClient module, bound straight to
  * {@link ProFPSConfig} fields. Both the GUI and the in-game keybind handler
- * work off this model, so toggling from either place behaves identically
- * (including the one real cross-module dependency: Stash Pinger feeds off the
- * Storage ESP container scan, so enabling it pulls Storage ESP on — Mob ESP and
- * Hole/Tunnel/Stairs ESP are independent of both).
+ * work off this model, so toggling from either place behaves identically.
+ * Every module here is independent; none pulls another on.
  */
 public final class NovaModules {
 	/** Mode module ids. These match the keybind ids the Modes panel used, so existing binds survive. */
@@ -160,20 +160,43 @@ public final class NovaModules {
 
 	/** An ordinary inline mode selector, rendered with the same dropdown language as combat tiers. */
 	public static final class ChoiceSetting extends Setting {
-		public final List<String> options;
+		private final Supplier<List<String>> options;
 		public final IntSupplier get;
 		public final IntConsumer set;
 
 		ChoiceSetting(String label, List<String> options, IntSupplier get, IntConsumer set) {
 			super(label);
 			if (options == null || options.isEmpty()) throw new IllegalArgumentException("ChoiceSetting needs options");
-			this.options = List.copyOf(options);
+			List<String> fixed = List.copyOf(options);
+			this.options = () -> fixed;
 			this.get = get;
 			this.set = set;
 		}
 
 		ChoiceSetting(String label, String[] options, IntSupplier get, IntConsumer set) {
 			this(label, List.of(options), get, set);
+		}
+
+		/**
+		 * Options computed on read, for lists that change while the game runs —
+		 * the schematic picker, whose folder the player edits from outside.
+		 * Categories are built once at startup, so a fixed list would be a
+		 * snapshot of whatever existed when the game launched.
+		 *
+		 * <p>Read during rendering, so the supplier must be cheap: cache the
+		 * work and refresh it on an explicit action, never scan a disk here.
+		 */
+		ChoiceSetting(String label, Supplier<List<String>> options, IntSupplier get, IntConsumer set) {
+			super(label);
+			this.options = options == null ? List::of : options;
+			this.get = get;
+			this.set = set;
+		}
+
+		/** Never empty, so the dropdown always has a row to draw. */
+		public List<String> options() {
+			List<String> live = options.get();
+			return live == null || live.isEmpty() ? List.of("(none)") : live;
 		}
 	}
 
@@ -329,7 +352,7 @@ public final class NovaModules {
 		d.put("automace", "Auto-attacks the nearest player with mace.");
 		d.put("autobreachswap", "Server-ordered sword-to-Breach-mace jump-crit swap and restore.");
 		d.put("autolunge", "Swaps a Lunge spear in on the attack frame for a fast movement burst.");
-		d.put("autospear", "Times the spear charge so flying through a player lands the kinetic hit.");
+		d.put("autospear", "Keeps a spear charged during a player-steered fly-through; never changes aim or movement.");
 		d.put("anchor", "Reliably places and charges an anchor, with optional detonation or safe-item finish.");
 		d.put("totem", "Rapidly refills your offhand and prepares a hotbar backup after a pop.");
 		d.put("autocrystal", "Hold right click on obsidian to place and break crystals in a loop.");
@@ -345,15 +368,14 @@ public final class NovaModules {
 		d.put("mobesp", "Outlines living entities through walls.");
 		d.put("advesp", "Finds dug shafts, tunnels, staircases and rooms.");
 		d.put("storageesp", "Outlines every container and redstone build through walls.");
-		d.put("suschunks", "Flags chunks holding base evidence you cannot see from above.");
-		d.put("heatmap", "Marks where players were recently seen.");
-		d.put("baseheat", "Colors chunks by player activity.");
-		d.put("chunkfinder", "Colors chunks by how much has been happening in them.");
-		d.put("stash", "Pings storage stashes the scan finds.");
+		d.put("primechunk", "Flags chunks with under-render base evidence below deepslate. "
+				+ "Reads leaked light, containers and palettes, sideways-placed deepslate that "
+				+ "generation never makes, and cultivated growth like thick bamboo, ripe cocoa "
+				+ "and picked-over glow berries.");
+		d.put("stash", "Classifies real bases and pings you with distance and tracers.");
 		d.put("amethyst", "Highlights amethyst geodes through the ground.");
-		d.put("portals", "Maps nether portals and their links.");
+		d.put("freecam", "Flies the camera while your body stays put; scroll trims speed.");
 		d.put("tunnel", "Auto-mines a straight 1x2 tunnel.");
-		d.put("freecam", "Flies the camera while you stay put.");
 		d.put("novahome", "Custom NovaClient main menu. Off = classic Minecraft menu.");
 		d.put("breakon", "Auto-swaps tool and mines what you see.");
 		d.put("autoclicker", "Clicks autonomously at a naturally varied CPS; no mouse hold required.");
@@ -383,10 +405,12 @@ public final class NovaModules {
 		d.put("nickname", "Changes your name everywhere on your client.");
 		d.put("nickother", "Rewrites other players' names on your client.");
 		d.put("remember", "Captures multiple builds as see-through ghosts; Delete removes the one you see.");
-		d.put("schematicbuild", "Builds Remember or loaded Litematica schematics layer by layer, "
-				+ "deepest interior cell first so a thick or wide layer never seals itself in. "
-				+ "Auto Move walks and flies the build itself and sweeps every layer again until "
-				+ "a whole sweep places nothing; off, it places whatever is under your crosshair.");
+		d.put("schematicbuild", "Pick a .litematic from your schematics folder and press Load here "
+				+ "to anchor it where you stand — no Litematica placement needed. Builds layer by "
+				+ "layer, deepest interior cell first so a thick or wide layer never seals itself "
+				+ "in. Auto Move walks the build itself, standing where each block's rotation "
+				+ "requires, crouching to place against repeaters and chests, and saving water for "
+				+ "a final pass. Remember captures still work and take priority.");
 		d.put(MODE_SWORD, "Full sword kit at one strength — aim, strafe, sprint and trigger together.");
 		d.put(MODE_AXE, "Full axe kit at one strength — shield stun, sword handoff and projectile aim.");
 		d.put(MODE_MACE, "Full mace kit at one strength — smash aim, Breach swaps and stun slams.");
@@ -539,8 +563,8 @@ public final class NovaModules {
 		m.put("anchor", new Module("anchor", "Anchor Macro", Items.RESPAWN_ANCHOR,
 				() -> cfg.anchorMacro, v -> cfg.anchorMacro = v,
 				new ChoiceSetting("Mode", new String[] {"On bind", "On place"}, () -> cfg.anchorMode, v -> cfg.anchorMode = v),
+				new IntSetting("Total Speed", "/10", 1, 10, 1, () -> cfg.anchorSpeed, v -> cfg.anchorSpeed = v),
 				new BoolSetting("Detonate", () -> cfg.anchorDetonate, v -> cfg.anchorDetonate = v),
-				new BoolSetting("Safe anchor", () -> cfg.anchorSafe, v -> cfg.anchorSafe = v),
 				new BoolSetting("Use item whitelist", () -> cfg.anchorExplosionItemWhitelist,
 						v -> cfg.anchorExplosionItemWhitelist = v),
 				new StringSetting("Use / finish item", "minecraft:totem_of_undying",
@@ -550,17 +574,7 @@ public final class NovaModules {
 								String clean = id.trim().toLowerCase(java.util.Locale.ROOT);
 								if (!clean.isEmpty() && !cfg.anchorExplosionItems.contains(clean)) cfg.anchorExplosionItems.add(clean);
 							}
-						}).when(() -> cfg.anchorExplosionItemWhitelist),
-				new BoolSetting("Aim assist", () -> cfg.anchorAimAssist, v -> cfg.anchorAimAssist = v),
-				new BoolSetting("Silent aim", () -> cfg.anchorSilentAim, v -> cfg.anchorSilentAim = v)
-						.when(() -> cfg.anchorAimAssist),
-				new IntSetting("Aim speed", "", 10, 150, 1, 10,
-						() -> cfg.anchorAimSpeedTenths, v -> cfg.anchorAimSpeedTenths = v)
-						.when(() -> cfg.anchorAimAssist),
-				new IntSetting("Delay min", " ms", 0, 500, 5, () -> cfg.anchorDelayMinMs, v -> cfg.anchorDelayMinMs = v),
-				new IntSetting("Delay max", " ms", 0, 500, 5, () -> cfg.anchorDelayMaxMs, v -> cfg.anchorDelayMaxMs = v),
-				new BoolSetting("Stop When No Totem", () -> cfg.anchorStopWhenNoTotem,
-						v -> cfg.anchorStopWhenNoTotem = v).when(() -> cfg.anchorDetonate)));
+						}).when(() -> cfg.anchorExplosionItemWhitelist)));
 		m.put("totem", new Module("totem", "Auto Totem", Items.TOTEM_OF_UNDYING,
 				() -> cfg.totemTweaks, v -> cfg.totemTweaks = v));
 		m.put("autocrystal", new Module("autocrystal", "Auto Crystal", Items.END_CRYSTAL,
@@ -596,11 +610,11 @@ public final class NovaModules {
 				new BoolSetting("Spear → Mace", () -> cfg.lungeSpearMace, v -> cfg.lungeSpearMace = v)).momentary());
 		m.put("autospear", new Module("autospear", "Auto Spear", Items.DIAMOND_SPEAR,
 				() -> cfg.autoSpearEnabled, v -> cfg.autoSpearEnabled = v,
-				new IntSetting("Range", "m", 8, 96, 2, () -> cfg.autoSpearRange, v -> cfg.autoSpearRange = v),
+				new IntSetting("Range", "m", 4, 64, 2, () -> cfg.autoSpearRange, v -> cfg.autoSpearRange = v),
 				new IntSetting("FOV", "°", 20, 140, 5, () -> cfg.autoSpearFov, v -> cfg.autoSpearFov = v),
 				new IntSetting("Turn Speed", "%", 20, 90, 1, () -> cfg.autoSpearTurnSpeed, v -> cfg.autoSpearTurnSpeed = v),
-				new BoolSetting("Auto Switch", () -> cfg.autoSpearAutoSwitch, v -> cfg.autoSpearAutoSwitch = v),
-				new BoolSetting("Silent Aim", () -> cfg.autoSpearSilentAim, v -> cfg.autoSpearSilentAim = v)));
+				new BoolSetting("Silent Aim", () -> cfg.autoSpearSilentAim, v -> cfg.autoSpearSilentAim = v),
+				new BoolSetting("Auto Switch", () -> cfg.autoSpearAutoSwitch, v -> cfg.autoSpearAutoSwitch = v)));
 
 		// ── SubTiers ───────────────────────────────────────────────────────────────
 		m.put("subtiers_autobed", new Module("subtiers_autobed", "Auto Bed", Items.RED_BED,
@@ -612,7 +626,7 @@ public final class NovaModules {
 				new IntSetting("Bow Fire Speed", "", 1, 10, 1,
 						() -> cfg.subTiersMinecartBowSpeed, v -> cfg.subTiersMinecartBowSpeed = v)));
 
-		// ── DonutSMP (finding + ESP + freecam) ───────────────────────────────────────
+		// ── DonutSMP (finding + ESP) ─────────────────────────────────────────────────
 		m.put("mobesp", new Module("mobesp", "Mob ESP", Items.ZOMBIE_HEAD,
 				() -> cfg.donutBasicEsp, v -> cfg.donutBasicEsp = v,
 				new IntSetting("Range", "m", 32, 1024, 32, () -> cfg.donutBasicEspRange, v -> cfg.donutBasicEspRange = v),
@@ -629,49 +643,30 @@ public final class NovaModules {
 				new BoolSetting("Pockets", () -> cfg.donutAdvancedShowPockets, v -> cfg.donutAdvancedShowPockets = v),
 				new ButtonSetting("Reload", "Rescan area", () -> cfg.donutAdvancedEspReloadRequested = true)));
 		m.put("storageesp", new Module("storageesp", "Storage ESP", Items.CHEST,
-				() -> cfg.donutStorageEsp, v -> {
-					cfg.donutStorageEsp = v;
-					if (!v) cfg.donutStashPinger = false;
-				},
+				() -> cfg.donutStorageEsp, v -> cfg.donutStorageEsp = v,
 				new IntSetting("Range", "m", 32, 512, 16, () -> cfg.donutStorageEspRange, v -> cfg.donutStorageEspRange = v),
 				new IntSetting("Fill", "%", 5, 60, 1, () -> cfg.donutStorageEspOpacity, v -> cfg.donutStorageEspOpacity = v),
 				new BoolSetting("Chests", () -> cfg.donutStorageShowChests, v -> cfg.donutStorageShowChests = v),
 				new BoolSetting("Shulkers & Barrels", () -> cfg.donutStorageShowShulkers, v -> cfg.donutStorageShowShulkers = v),
 				new BoolSetting("Redstone", () -> cfg.donutStorageShowRedstone, v -> cfg.donutStorageShowRedstone = v),
 				new BoolSetting("Furnaces", () -> cfg.donutStorageShowFurnaces, v -> cfg.donutStorageShowFurnaces = v)));
-		m.put("suschunks", new Module("suschunks", "Suspicious Chunks", Items.SCULK_SENSOR,
-				() -> cfg.donutSuspiciousChunks, v -> cfg.donutSuspiciousChunks = v,
-				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutSuspiciousChunksRange, v -> cfg.donutSuspiciousChunksRange = v),
-				new IntSetting("Ceiling", "y", -64, 64, 4, () -> cfg.donutSuspiciousChunksCeiling, v -> cfg.donutSuspiciousChunksCeiling = v),
-				new BoolSetting("Labels", () -> cfg.donutSuspiciousChunksLabels, v -> cfg.donutSuspiciousChunksLabels = v)));
-		m.put("heatmap", new Module("heatmap", "Player Heatmap", Items.PLAYER_HEAD,
-				() -> cfg.donutPlayerSightings, v -> cfg.donutPlayerSightings = v));
-		m.put("baseheat", new Module("baseheat", "Base Heat", Items.CAMPFIRE,
-				() -> cfg.donutChunkActivity, v -> cfg.donutChunkActivity = v,
-				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutChunkActivityRange, v -> cfg.donutChunkActivityRange = v)));
-		m.put("chunkfinder", new Module("chunkfinder", "Activity Chunks", Items.FILLED_MAP,
-				() -> cfg.donutChunkFinder, v -> cfg.donutChunkFinder = v,
-				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutChunkFinderRange, v -> cfg.donutChunkFinderRange = v),
-				new BoolSetting("Tracers", () -> cfg.donutChunkFinderTracers, v -> cfg.donutChunkFinderTracers = v),
-				new BoolSetting("Labels", () -> cfg.donutChunkFinderLabels, v -> cfg.donutChunkFinderLabels = v),
-				new BoolSetting("Experimental", () -> cfg.donutChunkExperimental, v -> cfg.donutChunkExperimental = v)));
+		m.put("primechunk", new Module("primechunk", "Prime Chunk Finder", Items.RED_STAINED_GLASS,
+				() -> cfg.donutPrimeChunk, v -> cfg.donutPrimeChunk = v,
+				new IntSetting("Weight", "/100", 0, 100, 5, () -> cfg.donutPrimeChunkWeight, v -> cfg.donutPrimeChunkWeight = v),
+				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutPrimeChunkRange, v -> cfg.donutPrimeChunkRange = v),
+				new BoolSetting("Tracers", () -> cfg.donutPrimeChunkTracers, v -> cfg.donutPrimeChunkTracers = v)));
 		m.put("stash", new Module("stash", "Stash Pinger", Items.ENDER_CHEST,
-				() -> cfg.donutStashPinger && cfg.donutStorageEsp,
-				v -> {
-					cfg.donutStashPinger = v;
-					if (v) cfg.donutStorageEsp = true;
-				},
-				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutStashPingerRange, v -> cfg.donutStashPingerRange = v),
-				new BoolSetting("Bases", () -> cfg.donutStashShowBases, v -> cfg.donutStashShowBases = v),
-				new BoolSetting("Spawners", () -> cfg.donutStashShowSpawners, v -> cfg.donutStashShowSpawners = v)));
+				() -> cfg.donutStashPinger, v -> cfg.donutStashPinger = v,
+				new IntSetting("Temperature", "/100", 0, 100, 5, () -> cfg.donutStashTemperature, v -> cfg.donutStashTemperature = v),
+				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutStashRange, v -> cfg.donutStashRange = v),
+				new BoolSetting("Tracers", () -> cfg.donutStashTracers, v -> cfg.donutStashTracers = v)));
 		m.put("amethyst", new Module("amethyst", "Amethyst Finder", Items.AMETHYST_SHARD,
 				() -> cfg.donutAmethystDetector, v -> cfg.donutAmethystDetector = v,
 				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutAmethystDetectorRange, v -> cfg.donutAmethystDetectorRange = v)));
-		m.put("portals", new Module("portals", "Nether Mapper", Items.CRYING_OBSIDIAN,
-				() -> cfg.donutNetherPortalMapper, v -> cfg.donutNetherPortalMapper = v));
 		m.put("freecam", new Module("freecam", "Freecam", Items.ENDER_PEARL,
 				() -> cfg.donutFreecam, v -> cfg.donutFreecam = v,
-				new IntSetting("Speed", "/10", 1, 10, 1, () -> cfg.donutFreecamSpeed, v -> cfg.donutFreecamSpeed = v)));
+				new IntSetting("Speed", "/10", 1, 100, 1, () -> cfg.donutFreecamSpeed, v -> cfg.donutFreecamSpeed = v),
+				new BoolSetting("Turbo ×2.5", () -> cfg.donutFreecamTurbo, v -> cfg.donutFreecamTurbo = v)));
 		m.put("tunnel", new Module("tunnel", "Tunnel", Items.IRON_PICKAXE,
 				() -> cfg.donutTunnel, v -> cfg.donutTunnel = v,
 				new IntSetting("Eat At", " hp", 4, 20, 1, () -> cfg.donutTunnelHpThreshold, v -> cfg.donutTunnelHpThreshold = v)));
@@ -811,6 +806,17 @@ public final class NovaModules {
 				() -> cfg.rememberEnabled, v -> cfg.rememberEnabled = v));
 		m.put("schematicbuild", new Module("schematicbuild", "Schematic Build", Items.FILLED_MAP,
 				() -> cfg.schematicBuildEnabled, v -> cfg.schematicBuildEnabled = v,
+				new ChoiceSetting("Schematic", SchematicLibrary::names,
+						() -> cfg.schematicLibrarySelection,
+						v -> cfg.schematicLibrarySelection = v),
+				// Anchors the schematic where you stand and switches the builder
+				// on, so one press is the whole setup.
+				new ButtonSetting("Place", "Load here", () -> SchematicLibrary.load(
+						MinecraftClient.getInstance(), cfg, cfg.schematicLibrarySelection)),
+				new ButtonSetting("Folder", "Rescan", SchematicLibrary::rescan),
+				new ButtonSetting("Loaded", "Unload", () -> SchematicLibrary.clear(cfg)),
+				new BoolSetting("Hologram", () -> cfg.schematicShowGhost,
+						v -> cfg.schematicShowGhost = v),
 				new BoolSetting("Auto Move", () -> cfg.schematicAutoMove,
 						v -> cfg.schematicAutoMove = v),
 				new BoolSetting("Temporary Blocks", () -> cfg.schematicTemporaryBlocks,
@@ -916,7 +922,7 @@ public final class NovaModules {
 		categories.add(new Category("SubTiers", Items.DIAMOND, pick(m,
 				"subtiers_autobed", "subtiers_autocreeper", "subtiers_autominecart")));
 		categories.add(new Category("DonutSMP", Items.ENDER_EYE, pick(m,
-				"mobesp", "advesp", "storageesp", "heatmap", "baseheat", "chunkfinder", "suschunks", "stash", "amethyst", "portals", "freecam", "tunnel")));
+				"mobesp", "advesp", "storageesp", "primechunk", "stash", "amethyst", "freecam", "tunnel")));
 		categories.add(new Category("Hypixel", Items.GOLD_INGOT, pick(m,
 				"autoclicker", "antifireball", "heightclutch", "clutch", "scaffold", "bedbreaker", "remember", "schematicbuild")));
 		categories.add(new Category("Instants", Items.CLOCK, pick(m,

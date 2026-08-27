@@ -16,7 +16,7 @@ import java.util.Set;
 
 /**
  * Shared classifier for "a player built this" blocks, used by the base-finding
- * scanners (Advanced ESP, Stash Pinger, Chunk Activity).
+ * scan in Hole/Tunnel/Stairs ESP.
  *
  * <p>The original detectors only knew about functional blocks (chests,
  * furnaces, redstone). A raided/destroyed base keeps none of those — what

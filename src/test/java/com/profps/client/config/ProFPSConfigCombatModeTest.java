@@ -24,7 +24,7 @@ class ProFPSConfigCombatModeTest {
 		assertTrue(sanitize(config));
 
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 				() -> assertEquals(0, config.combatMode),
 				() -> assertEquals(3, config.swordModeTier),
 				() -> assertEquals(2, config.axeModeTier),
@@ -70,7 +70,7 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(sanitize(config));
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 				() -> assertEquals(2, config.combatMode),
 				() -> assertTrue(config.swordModeAutoSprint));
 	}
@@ -84,25 +84,13 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(sanitize(config));
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 				() -> assertTrue(config.guiAutoScale),
 				() -> assertEquals(100, config.guiScalePct));
 
 		config.guiScalePct = 999;
 		assertTrue(sanitize(config));
 		assertEquals(140, config.guiScalePct);
-	}
-
-	@Test
-	void currentMigrationLeavesSchematicAutoMoveActive() throws Exception {
-		ProFPSConfig config = new ProFPSConfig();
-		config.configVersion = 71;
-		config.schematicAutoMove = false;
-
-		assertTrue(sanitize(config));
-		assertAll(
-					() -> assertEquals(104, config.configVersion),
-				() -> assertTrue(config.schematicAutoMove));
 	}
 
 	@Test
@@ -114,7 +102,7 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(sanitize(config));
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 				() -> assertFalse(config.fullBrightEnabled),
 				() -> assertEquals(7, config.fullBrightLevel));
 	}
@@ -127,7 +115,7 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(sanitize(config));
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 				() -> assertTrue(config.schematicTemporaryBlocks));
 	}
 
@@ -140,7 +128,7 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(sanitize(config));
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 				() -> assertTrue(config.maceModeAutoSwitch),
 				() -> assertTrue(config.autoMaceAutoSwitch));
 	}
@@ -152,7 +140,7 @@ class ProFPSConfigCombatModeTest {
 		migratedDefault.autoMaceSettleMs = 70;
 		assertTrue(sanitize(migratedDefault));
 		assertAll(
-					() -> assertEquals(104, migratedDefault.configVersion),
+				() -> assertEquals(112, migratedDefault.configVersion),
 				() -> assertEquals(35, migratedDefault.autoMaceSettleMs));
 
 		ProFPSConfig custom = new ProFPSConfig();
@@ -160,27 +148,6 @@ class ProFPSConfigCombatModeTest {
 		custom.autoMaceSettleMs = 55;
 		assertTrue(sanitize(custom));
 		assertEquals(55, custom.autoMaceSettleMs);
-	}
-
-	@Test
-	void v77StandsAutoMoveDownAndV78BringsItBack() throws Exception {
-		ProFPSConfig heldDown = new ProFPSConfig();
-		heldDown.configVersion = 76;
-		heldDown.schematicAutoMove = true;
-		assertTrue(sanitize(heldDown));
-		assertAll(
-					() -> assertEquals(104, heldDown.configVersion),
-				() -> assertTrue(heldDown.schematicAutoMove));
-
-		// A profile that already sat at v77 with the toggle gone also gets it
-		// back: hover-to-place alone cannot finish a thick or wide schematic.
-		ProFPSConfig dormant = new ProFPSConfig();
-		dormant.configVersion = 77;
-		dormant.schematicAutoMove = false;
-		assertTrue(sanitize(dormant));
-		assertAll(
-					() -> assertEquals(104, dormant.configVersion),
-				() -> assertTrue(dormant.schematicAutoMove));
 	}
 
 	@Test
@@ -192,7 +159,7 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(sanitize(config));
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 				() -> assertEquals(20, config.instantClickCps),
 				() -> assertFalse(config.instantClickTargetOnly));
 	}
@@ -207,7 +174,7 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(sanitize(config));
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 				() -> assertTrue(config.lungeAim),
 				() -> assertTrue(config.lungeSpearMace),
 				() -> assertTrue(config.lungeShieldBreak),
@@ -225,7 +192,7 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(sanitize(config));
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 				() -> assertFalse(config.axeStunRestorePrevious));
 	}
 
@@ -237,7 +204,7 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(sanitize(config));
 		assertAll(
-					() -> assertEquals(104, config.configVersion),
+					() -> assertEquals(112, config.configVersion),
 					() -> assertFalse(config.instantClickTargetOnly));
 	}
 
@@ -248,7 +215,7 @@ class ProFPSConfigCombatModeTest {
 
 		assertTrue(config.anchorMacro);
 		assertTrue(sanitize(config));
-		assertEquals(104, config.configVersion);
+		assertEquals(112, config.configVersion);
 	}
 
 	@Test
@@ -259,7 +226,7 @@ class ProFPSConfigCombatModeTest {
 				"{\"configVersion\":83,\"guiExperimental\":false}", ProFPSConfig.class);
 
 		assertTrue(sanitize(config));
-		assertEquals(104, config.configVersion);
+		assertEquals(112, config.configVersion);
 	}
 
 	private static boolean sanitize(ProFPSConfig config) throws Exception {

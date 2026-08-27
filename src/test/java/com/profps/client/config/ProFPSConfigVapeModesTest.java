@@ -15,10 +15,8 @@ class ProFPSConfigVapeModesTest {
 		assertEquals(0, config.crystalTargetMode);
 		assertTrue(config.crystalAntiSuicide);
 		assertEquals(1, config.anchorMode);
-		assertTrue(config.anchorAimAssist);
 		assertTrue(config.anchorDetonate);
-		assertEquals(0, config.anchorDelayMinMs);
-		assertEquals(25, config.anchorDelayMaxMs);
+		assertEquals(6, config.anchorSpeed);
 		assertEquals(0, config.velocityTicks);
 		assertEquals(120, config.velocityKiteHorizontal);
 		assertEquals(50, config.instantAutoToolSwapToDelayMs);
@@ -30,7 +28,7 @@ class ProFPSConfigVapeModesTest {
 		assertTrue(config.inventoryAutoArmorOpen);
 		assertEquals(150, config.inventoryChestStealDelayMinMs);
 		assertFalse(config.hypixelBedBreaker);
-		assertEquals(104, config.configVersion);
+		assertEquals(112, config.configVersion);
 	}
 
 	@Test
@@ -41,6 +39,7 @@ class ProFPSConfigVapeModesTest {
 		config.crystalTargetMode = 12;
 		config.crystalOptimization = 9;
 		config.anchorMode = -4;
+		config.anchorSpeed = 99;
 		config.velocityTicks = 40;
 		config.velocityKiteHorizontal = 900;
 		config.velocityKiteVertical = -20;
@@ -60,6 +59,7 @@ class ProFPSConfigVapeModesTest {
 		assertEquals(3, config.crystalTargetMode);
 		assertEquals(2, config.crystalOptimization);
 		assertEquals(0, config.anchorMode);
+		assertEquals(10, config.anchorSpeed);
 		assertEquals(10, config.velocityTicks);
 		assertEquals(300, config.velocityKiteHorizontal);
 		assertEquals(100, config.velocityKiteVertical);
@@ -84,7 +84,7 @@ class ProFPSConfigVapeModesTest {
 		sanitize.setAccessible(true);
 		assertTrue((Boolean) sanitize.invoke(config));
 		assertAll(
-				() -> assertEquals(104, config.configVersion),
+				() -> assertEquals(112, config.configVersion),
 				() -> assertFalse(config.velocityKiteMode),
 				() -> assertFalse(config.instantAutoToolSwapBack),
 				() -> assertFalse(config.instantFastPlace),
@@ -102,26 +102,51 @@ class ProFPSConfigVapeModesTest {
 		sanitize.setAccessible(true);
 		assertTrue((Boolean) sanitize.invoke(config));
 		assertAll(
-				() -> assertEquals(104, config.configVersion),
+				() -> assertEquals(112, config.configVersion),
 				() -> assertFalse(config.inventoryAutoArmor),
 				() -> assertFalse(config.inventoryChestSteal),
 				() -> assertFalse(config.hypixelBedBreaker));
 	}
 
 	@Test
-	void v89SpeedsAnchorActionsWithoutChangingDetonationChoice() throws Exception {
+	void currentAnchorDefaultsMigrateDetonationOn() throws Exception {
 		ProFPSConfig config = new ProFPSConfig();
 		config.configVersion = 88;
-		config.anchorDelayMinMs = 50;
-		config.anchorDelayMaxMs = 100;
 		config.anchorDetonate = false;
 		var sanitize = ProFPSConfig.class.getDeclaredMethod("sanitize");
 		sanitize.setAccessible(true);
 		assertTrue((Boolean) sanitize.invoke(config));
 		assertAll(
-				() -> assertEquals(104, config.configVersion),
-				() -> assertEquals(0, config.anchorDelayMinMs),
-				() -> assertEquals(25, config.anchorDelayMaxMs),
-				() -> assertFalse(config.anchorDetonate));
+				() -> assertEquals(112, config.configVersion),
+				() -> assertTrue(config.anchorDetonate));
 	}
+
+	@Test
+	void v105MovesExistingProfilesFromImmediateToDefaultSpeed() throws Exception {
+		ProFPSConfig config = new ProFPSConfig();
+		config.configVersion = 104;
+		config.anchorSpeed = 10;
+		var sanitize = ProFPSConfig.class.getDeclaredMethod("sanitize");
+		sanitize.setAccessible(true);
+
+		assertTrue((Boolean) sanitize.invoke(config));
+		assertAll(
+				() -> assertEquals(112, config.configVersion),
+				() -> assertEquals(6, config.anchorSpeed));
+	}
+
+	@Test
+	void v108MakesCoveredDetonationTheExistingProfileDefault() throws Exception {
+		ProFPSConfig config = new ProFPSConfig();
+		config.configVersion = 107;
+		config.anchorDetonate = false;
+		var sanitize = ProFPSConfig.class.getDeclaredMethod("sanitize");
+		sanitize.setAccessible(true);
+
+		assertTrue((Boolean) sanitize.invoke(config));
+		assertAll(
+				() -> assertEquals(112, config.configVersion),
+				() -> assertTrue(config.anchorDetonate));
+	}
+
 }

@@ -65,7 +65,6 @@ public final class StorageEspRenderer {
 
 	private final ProFPSConfig config;
 	private final List<Marker> markers = new ArrayList<>();
-	private volatile List<AreaSnapshot> areas = List.of();
 	private int nextScanTick;
 	private boolean failedClosed;
 
@@ -73,19 +72,7 @@ public final class StorageEspRenderer {
 	private int scanCentreChunkX = Integer.MIN_VALUE;
 	private int scanCentreChunkZ = Integer.MIN_VALUE;
 	private List<Marker> pending;
-	private java.util.Map<Long, Cluster> pendingClusters;
 	private double scanRangeSq;
-
-	/** Clustered storage worth investigating; consumed by Stash Pinger. */
-	public record AreaSnapshot(Box box, String label, Vec3d center, double score) {}
-
-	/**
-	 * Grouped storage rather than individual blocks. Stash Pinger asks "is there
-	 * a stash here", which is a question about a place, not about one chest.
-	 */
-	public List<AreaSnapshot> areaSnapshots() {
-		return areas;
-	}
 
 	public StorageEspRenderer(ProFPSConfig config) {
 		this.config = config;
@@ -183,7 +170,6 @@ public final class StorageEspRenderer {
 		int radius = MathHelper.clamp(MathHelper.ceil(range / 16.0F), 2, Math.min(16, viewDistance + 1));
 		scanRangeSq = range * (double) range;
 		pending = new ArrayList<>();
-		pendingClusters = new java.util.HashMap<>();
 		scanCentreChunkX = centerChunkX;
 		scanCentreChunkZ = centerChunkZ;
 
@@ -231,14 +217,6 @@ public final class StorageEspRenderer {
 		next.sort(Comparator.comparingDouble(marker -> client.player.squaredDistanceTo(marker.center())));
 		markers.clear();
 		for (int i = 0; i < next.size() && i < MAX_MARKERS; i++) markers.add(next.get(i));
-
-		List<AreaSnapshot> snapshots = new ArrayList<>();
-		for (Cluster cluster : pendingClusters.values()) {
-			AreaSnapshot snapshot = cluster.snapshot();
-			if (snapshot != null) snapshots.add(snapshot);
-		}
-		pendingClusters = null;
-		areas = List.copyOf(snapshots);
 	}
 
 	/** Containers come from the block-entity map — cheaper and harder to hide. */
@@ -331,17 +309,6 @@ public final class StorageEspRenderer {
 			// outlines rather than one doubled line.
 			pending.add(new Marker(new Box(pos).expand(0.012D), color));
 		}
-		if (pendingClusters == null) return;
-		long key = clusterKey(pos);
-		pendingClusters.computeIfAbsent(key, ignored -> new Cluster()).add(pos, color);
-	}
-
-	/** Storage within the same 12-block cell counts as one place. */
-	private static long clusterKey(BlockPos pos) {
-		long x = Math.floorDiv(pos.getX(), 12) & 0x1FFFFFL;
-		long y = Math.floorDiv(pos.getY(), 12) & 0x3FFL;
-		long z = Math.floorDiv(pos.getZ(), 12) & 0x1FFFFFL;
-		return (x << 32) | (y << 21) | z;
 	}
 
 	private record Marker(Box box, int color) {
@@ -351,30 +318,4 @@ public final class StorageEspRenderer {
 		}
 	}
 
-	private static final class Cluster {
-		private int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
-		private int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
-		private int containers;
-		private int special;
-
-		void add(BlockPos pos, int color) {
-			minX = Math.min(minX, pos.getX());
-			minY = Math.min(minY, pos.getY());
-			minZ = Math.min(minZ, pos.getZ());
-			maxX = Math.max(maxX, pos.getX());
-			maxY = Math.max(maxY, pos.getY());
-			maxZ = Math.max(maxZ, pos.getZ());
-			if (color == SHULKER_COLOR || color == ENDER_COLOR) special++;
-			if (color != REDSTONE_COLOR) containers++;
-		}
-
-		/** Null unless this is enough storage in one place to be worth a ping. */
-		AreaSnapshot snapshot() {
-			if (containers < 3 && special == 0) return null;
-			Box box = new Box(minX, minY, minZ, maxX + 1.0D, maxY + 1.0D, maxZ + 1.0D);
-			Vec3d center = new Vec3d((box.minX + box.maxX) * 0.5D, (box.minY + box.maxY) * 0.5D,
-					(box.minZ + box.maxZ) * 0.5D);
-			return new AreaSnapshot(box, "Storage", center, containers * 8.0D + special * 20.0D);
-		}
-	}
 }

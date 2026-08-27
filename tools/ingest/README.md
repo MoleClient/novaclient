@@ -134,7 +134,7 @@ python3 read_ticks.py ~/nova-data --activity combat
 ### Module filtering
 
 This is what makes the corpus real gameplay rather than a recording of the client's own modules.
-A model trained on Triggerbot's swings learns Triggerbot's timing; one trained on Freecam learns
+A model trained on Triggerbot's swings learns Triggerbot's timing; one trained on Flight learns
 to fly.
 
 The gate walks the live module catalogue every tick, and **any module it does not explicitly

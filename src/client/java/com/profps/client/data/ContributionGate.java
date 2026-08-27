@@ -13,7 +13,7 @@ import java.util.Set;
  * Decides whether a tick is real human play or something a module produced.
  *
  * <p>The corpus is worthless if module output leaks into it — a model trained on Triggerbot's
- * swings learns Triggerbot's timing, and a model trained on Freecam learns to fly. So the gate is
+ * swings learns Triggerbot's timing, and a model trained on Flight learns to fly. So the gate is
  * fail-safe by construction: it walks the live module catalogue, and any module it does not
  * explicitly recognise as harmless suppresses recording. A module added next year is excluded
  * until somebody deliberately classifies it, which is the correct direction for that mistake.

@@ -24,6 +24,8 @@ import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexFormats;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.client.world.ClientWorld;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
@@ -208,8 +210,16 @@ public final class AdvancedEspRenderer {
 			// Not saved on purpose; a transient failure must not persist as an
 			// off switch the player never chose.
 			failedClosed = true;
-			ChunkActivityRenderer.announceDisabled(client, "Advanced ESP");
+			announceDisabled(client, "Advanced ESP");
 		}
+	}
+
+	/** Tell the player a scan failed hard, so the silent off-switch isn't a mystery. */
+	private static void announceDisabled(MinecraftClient client, String module) {
+		if (client == null || client.inGameHud == null) return;
+		client.inGameHud.getChatHud().addMessage(Text.literal("[ProFPS] ").formatted(Formatting.DARK_GRAY)
+				.append(Text.literal(module + " hit an error and was disabled — toggle it back on to retry.")
+						.formatted(Formatting.RED)));
 	}
 
 	public void renderWorld(WorldRenderContext ctx) {
@@ -311,8 +321,6 @@ public final class AdvancedEspRenderer {
 						&& (baseRegion.containsKey(baseChunkKey(finding)) || isInsideArea(finding.center(), pocketBoxes))) {
 					continue;
 				}
-				// Camera-relative so findings keep rendering while freecam scouts
-				// far from the player's anchored body.
 				if (camera.squaredDistanceTo(finding.center()) > range * range) continue;
 				float fade = finding.fade(renderTick, stale);
 				if (fade <= 0.01F) continue;
@@ -358,7 +366,7 @@ public final class AdvancedEspRenderer {
 			config.donutAdvancedEsp = false;
 			config.save();
 			failedClosed = true;
-			ChunkActivityRenderer.announceDisabled(mc, "Advanced ESP");
+			announceDisabled(mc, "Advanced ESP");
 		}
 	}
 
@@ -495,25 +503,10 @@ public final class AdvancedEspRenderer {
 		line(lines, pos, entry, cam, hx1, y0, hz1, hx1, y1, hz1, color, alpha); // post B
 	}
 
-	public List<AreaSnapshot> areaSnapshots() {
-		List<AreaSnapshot> snapshots = new ArrayList<>();
-		for (Finding finding : findings) {
-			if (finding.type() == FindingType.PLACED) continue;
-			if (finding.type() == FindingType.SPAWNER && !config.donutStashShowSpawners) continue;
-			if (finding.type() != FindingType.SPAWNER && !config.donutStashShowBases) continue;
-			snapshots.add(new AreaSnapshot(finding.box(), finding.label(), finding.center(), finding.score()));
-		}
-		return snapshots;
-	}
-
 	/** Open a scan cycle: enqueue every in-range chunk, nearest first. */
 	private void beginScan(MinecraftClient client) {
 		ClientWorld world = client.world;
-		// In freecam, scan around the flying camera so newly scouted ground
-		// resolves instead of only the player's anchor point.
-		Vec3d center = FreecamController.isActive()
-				? FreecamController.cameraPosition()
-				: client.player.getEntityPos();
+		Vec3d center = client.player.getEntityPos();
 		int centerChunkX = MathHelper.floor(center.x) >> 4;
 		int centerChunkZ = MathHelper.floor(center.z) >> 4;
 		int centerY = MathHelper.floor(center.y);
@@ -713,8 +706,8 @@ public final class AdvancedEspRenderer {
 
 	/**
 	 * Mask-resistant container/spawner scan. A lone chest is shown only as a
-	 * placed marker; a yellow Base region still requires a conservative stash
-	 * pattern, matching the Stash Pinger's false-positive gates.
+	 * placed marker; a yellow Base region still requires a conservative
+	 * multi-container pattern, so a single stray chest never paints a base.
 	 */
 	private void scanBlockEntitiesOfInterest(WorldChunk chunk, int minY, int maxY, List<Finding> out,
 			boolean wantSpawners, boolean wantPlaced) {
@@ -1743,9 +1736,6 @@ public final class AdvancedEspRenderer {
 	}
 
 	private record AreaColor(float r, float g, float b, int argb) {
-	}
-
-	public record AreaSnapshot(Box box, String label, Vec3d center, double score) {
 	}
 
 	private record CellKey(int x, int y, int z) {

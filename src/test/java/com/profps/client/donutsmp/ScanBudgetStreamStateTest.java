@@ -55,11 +55,9 @@ final class ScanBudgetStreamStateTest {
 		config.enabled = true;
 		config.donutAdvancedEsp = true;
 		config.donutStorageEsp = true;
-		config.donutSuspiciousChunks = true;
-		config.donutStashPinger = true;
-		config.donutChunkFinder = true;
 		config.donutAmethystDetector = true;
-		config.donutNetherPortalMapper = true;
+		config.donutPrimeChunk = true;
+		config.donutStashPinger = true;
 
 		// A lane that can be handed zero nanoseconds never pops a chunk, so its
 		// cycle would never finish and its results would age out on screen.

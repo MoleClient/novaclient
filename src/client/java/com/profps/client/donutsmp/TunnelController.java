@@ -41,8 +41,7 @@ public final class TunnelController {
 	private final ProFPSConfig config;
 
 	// Movement is PUBLISHED as a PlayerInput rather than pressed into the
-	// keybindings, so the body can keep tunnelling while Freecam reads the raw
-	// keybindings to fly the camera — no WASD tug-of-war between the two.
+	// keybindings, so the bot never fights the player's own key state.
 	private boolean mForward, mBack, mLeft, mRight, mJump, mSneak, mSprint;
 
 	private int avoidTicks;
@@ -76,7 +75,7 @@ public final class TunnelController {
 		instance = this;
 	}
 
-	/** True while the bot is actively driving the body (used by the input mixin + freecam). */
+	/** True while the bot is actively driving the body (used by the input mixin). */
 	public static boolean isControlling() {
 		return instance != null && instance.controlling;
 	}

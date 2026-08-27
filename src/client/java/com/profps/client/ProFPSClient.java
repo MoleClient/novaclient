@@ -23,15 +23,10 @@ import com.profps.client.crystalpvp.TotemTweaksController;
 import com.profps.client.donutsmp.AdvancedEspRenderer;
 import com.profps.client.donutsmp.AmethystDetectorRenderer;
 import com.profps.client.donutsmp.BasicEspRenderer;
-import com.profps.client.donutsmp.ChunkActivityRenderer;
-import com.profps.client.donutsmp.ChunkFinderRenderer;
 import com.profps.client.donutsmp.FreecamController;
-import com.profps.client.donutsmp.NetherPortalMapper;
-import com.profps.client.donutsmp.NovaGotoController;
-import com.profps.client.donutsmp.PlayerSightingLog;
+import com.profps.client.donutsmp.PrimeChunkFinder;
 import com.profps.client.donutsmp.StashPinger;
 import com.profps.client.donutsmp.StorageEspRenderer;
-import com.profps.client.donutsmp.SuspiciousChunksRenderer;
 import com.profps.client.donutsmp.TunnelController;
 import com.profps.client.classics.BoatFlyController;
 import com.profps.client.classics.FlightController;
@@ -116,7 +111,6 @@ public final class ProFPSClient implements ClientModInitializer {
 	private static AntiFireballController antiFireball;
 	private static KnockbackDisplacementController kbDisplace;
 	private static KeyBinding openKey;
-	private static KeyBinding freecamKey;
 
 	@Override
 	public void onInitializeClient() {
@@ -130,7 +124,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		JumpResetController jumpReset = new JumpResetController(config);
 		VelocityController velocity = new VelocityController(config);
 		anchorMacro = new AnchorMacroController(config);
-		fastUse = new FastUseController(config);
+		fastUse = new FastUseController(config, anchorMacro);
 		totemTweaks = new TotemTweaksController(config);
 		pingEqualizer = new PingEqualizerController(config);
 		pingSpoof = new PingSpoofController(config, pingEqualizer);
@@ -142,16 +136,11 @@ public final class ProFPSClient implements ClientModInitializer {
 		BasicEspRenderer basicEsp = new BasicEspRenderer(config);
 		AdvancedEspRenderer advancedEsp = new AdvancedEspRenderer(config);
 		StorageEspRenderer storageEsp = new StorageEspRenderer(config);
-		SuspiciousChunksRenderer suspiciousChunks = new SuspiciousChunksRenderer(config);
-		StashPinger stashPinger = new StashPinger(config, storageEsp);
 		FreecamController freecam = new FreecamController(config);
 		TunnelController tunnel = new TunnelController(config);
-		NovaGotoController novaGoto = new NovaGotoController(config, stashPinger);
-		ChunkActivityRenderer chunkActivity = new ChunkActivityRenderer(config);
-		ChunkFinderRenderer chunkFinder = new ChunkFinderRenderer(config, chunkActivity);
+		PrimeChunkFinder primeChunk = new PrimeChunkFinder(config);
+		StashPinger stashPinger = new StashPinger(config);
 		AmethystDetectorRenderer amethystDetector = new AmethystDetectorRenderer(config);
-		NetherPortalMapper netherMapper = new NetherPortalMapper(config);
-		PlayerSightingLog playerSightings = new PlayerSightingLog(config);
 		autoClicker = new AutoClickerController(config);
 		autoMace = new AutoMaceController(config);
 		axeCrit = new AxeCritController(config);
@@ -183,6 +172,9 @@ public final class ProFPSClient implements ClientModInitializer {
 		AutoBedController autoBed = new AutoBedController(config);
 		autoCreeper = new AutoCreeperController(config);
 		AutoMinecartController autoMinecart = new AutoMinecartController(config);
+		// Re-open whatever schematic was loaded last session, at its saved anchor,
+		// so a restart does not silently leave the builder with nothing to build.
+		com.profps.client.extras.SchematicLibrary.restore(config);
 		novaCategories = NovaModules.build(config);
 		ModuleKeybinds moduleKeybinds = new ModuleKeybinds(config, novaCategories);
 		KeyBinding.Category controlsCategory = KeyBinding.Category.create(Identifier.of(ProFPS.MOD_ID, "controls"));
@@ -191,12 +183,6 @@ public final class ProFPSClient implements ClientModInitializer {
 				"key.profps.open",
 				InputUtil.Type.KEYSYM,
 				GLFW.GLFW_KEY_RIGHT_SHIFT,
-				controlsCategory
-		));
-		freecamKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-				"key.profps.freecam",
-				InputUtil.Type.KEYSYM,
-				GLFW.GLFW_KEY_F6,
 				controlsCategory
 		));
 		ClientTickEvents.START_CLIENT_TICK.register(autoMinecart::preTick);
@@ -211,9 +197,6 @@ public final class ProFPSClient implements ClientModInitializer {
 			}
 			moduleKeybinds.tick(client);
 			com.profps.client.classics.NicknameManager.update(config);
-			while (freecamKey.wasPressed()) {
-				freecam.toggle();
-			}
 			aimImprovements.tick(client);
 			strafeImprovements.tick(client);
 			// hitImprovements (triggerbot) is driven from TriggerbotPreMovementMixin instead,
@@ -223,21 +206,19 @@ public final class ProFPSClient implements ClientModInitializer {
 			velocity.tick(client);
 			autoPot.tick(client);
 			autoXp.tick(client);
-			anchorMacro.tick(client);
 			fastUse.tick(client);
 			totemTweaks.tick(client);
+			// Freecam ticks before Tunnel on purpose: both write body rotation,
+			// and the bot's steering has to land last so it keeps mining while
+			// the camera is away.
 			freecam.tick(client);
 			tunnel.tick(client);
-			novaGoto.tick(client);
 			advancedEsp.tick(client);
 			storageEsp.tick(client);
-			suspiciousChunks.tick(client);
-			// Stash Pinger reads Storage ESP's areas, so it ticks after it.
+			primeChunk.tick(client);
+			// Stash Pinger reads Prime's flag set for corroboration, so it ticks after it.
 			stashPinger.tick(client);
-			chunkActivity.tick(client);
 			amethystDetector.tick(client);
-			netherMapper.tick(client);
-			playerSightings.tick(client);
 			toolMine.tick(client);
 			fastPlace.tick(client);
 			inventoryAutomation.tick(client);
@@ -269,10 +250,6 @@ public final class ProFPSClient implements ClientModInitializer {
 		// Top-left FPS box removed. (ProFPSHud kept in the codebase, just not registered.)
 		HudRenderCallback.EVENT.register(new NovaModuleListHud(config, novaCategories));
 		HudRenderCallback.EVENT.register(scaffold::renderHud);
-		HudRenderCallback.EVENT.register(stashPinger);
-		HudRenderCallback.EVENT.register(chunkActivity);
-		HudRenderCallback.EVENT.register(netherMapper);
-		HudRenderCallback.EVENT.register(playerSightings);
 		WorldRenderEvents.END_MAIN.register(context -> {
 				MinecraftClient mc = MinecraftClient.getInstance();
 				// Runs unconditionally and before any aiming module: silent aim is
@@ -288,8 +265,10 @@ public final class ProFPSClient implements ClientModInitializer {
 				boolean creeperOwnsRotation = autoCreeper.ownsRotation();
 				boolean spearOwnsRotation = false;
 				if (!pearlOwnsRotation && !expandedOwnsRotation && !creeperOwnsRotation) {
-					// Auto Spear steers the approach; the lunge swap never takes the camera.
-					spearOwnsRotation = autoSpear.frame(mc) || autoLunge.frame(mc);
+					// Auto Lunge Swap first: it is a momentary, deliberately fired burst, so it
+					// outranks Auto Spear's standing aim for the few ticks it runs.
+					spearOwnsRotation = autoLunge.frame(mc);
+					if (!spearOwnsRotation) spearOwnsRotation = autoSpear.frame(mc);
 				}
 				if (!pearlOwnsRotation && !expandedOwnsRotation && !creeperOwnsRotation
 						&& !spearOwnsRotation) {
@@ -332,12 +311,14 @@ public final class ProFPSClient implements ClientModInitializer {
 		WorldRenderEvents.END_MAIN.register(hitboxes::render);
 		WorldRenderEvents.END_MAIN.register(advancedEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(storageEsp::renderWorld);
-		WorldRenderEvents.END_MAIN.register(suspiciousChunks::renderWorld);
 		WorldRenderEvents.END_MAIN.register(remember::render);
-		WorldRenderEvents.END_MAIN.register(chunkFinder::renderWorld);
+		// The loaded-schematic hologram draws alongside the Remember ghosts, not
+		// instead of them: one shows a captured build, the other a file.
+		WorldRenderEvents.END_MAIN.register(
+				new com.profps.client.extras.SchematicGhostRenderer(config)::render);
+		WorldRenderEvents.END_MAIN.register(primeChunk::renderWorld);
+		WorldRenderEvents.END_MAIN.register(stashPinger::renderWorld);
 		WorldRenderEvents.END_MAIN.register(amethystDetector::renderWorld);
-		WorldRenderEvents.END_MAIN.register(netherMapper::renderWorld);
-		WorldRenderEvents.END_MAIN.register(playerSightings::renderWorld);
 
 		AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
 			MinecraftClient client = MinecraftClient.getInstance();
@@ -359,13 +340,6 @@ public final class ProFPSClient implements ClientModInitializer {
 		UseBlockCallback.EVENT.register(autoMinecart::onUseBlock);
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> dispatcher.register(
 				ClientCommandManager.literal("nova")
-						.then(ClientCommandManager.literal("goto")
-								.then(ClientCommandManager.literal("near")
-										.executes(context -> novaGoto.startNear(MinecraftClient.getInstance())))
-								.then(ClientCommandManager.literal("stop")
-										.executes(context -> novaGoto.stop(MinecraftClient.getInstance()))))
-						.then(ClientCommandManager.literal("bases")
-								.executes(context -> listBases(MinecraftClient.getInstance(), chunkActivity)))
 						.then(ClientCommandManager.literal("data")
 								.executes(context -> reportDataContribution(MinecraftClient.getInstance())))
 		));
@@ -383,39 +357,6 @@ public final class ProFPSClient implements ClientModInitializer {
 		});
 
 		ProFPS.LOGGER.info("ProFPS client loaded.");
-	}
-
-	/**
-	 * Chat listing of every archived (confirmed) base on this server, strongest
-	 * first, with distance from the player; each entry click-copies its coords.
-	 */
-	private static int listBases(MinecraftClient client, ChunkActivityRenderer engine) {
-		if (client.player == null) return 0;
-		java.util.List<ChunkActivityRenderer.BaseSummary> bases = engine.baseSummaries();
-		if (bases.isEmpty()) {
-			client.player.sendMessage(net.minecraft.text.Text.literal("[ProFPS] ")
-					.formatted(net.minecraft.util.Formatting.DARK_GRAY)
-					.append(net.minecraft.text.Text.literal("No confirmed bases archived yet — Base Heat saves red-tier chunks automatically.")
-							.formatted(net.minecraft.util.Formatting.GRAY)), false);
-			return 1;
-		}
-		client.player.sendMessage(net.minecraft.text.Text.literal("[ProFPS] ")
-				.formatted(net.minecraft.util.Formatting.DARK_GRAY)
-				.append(net.minecraft.text.Text.literal("Confirmed bases (click to copy coords):")
-						.formatted(net.minecraft.util.Formatting.GOLD)), false);
-		int shown = 0;
-		for (ChunkActivityRenderer.BaseSummary base : bases) {
-			if (shown++ >= 10) break;
-			int dist = (int) Math.sqrt(client.player.squaredDistanceTo(base.blockX(), client.player.getY(), base.blockZ()));
-			String coords = base.blockX() + " " + base.blockZ();
-			client.player.sendMessage(net.minecraft.text.Text.literal("  " + coords)
-					.styled(style -> style
-							.withColor(net.minecraft.util.Formatting.YELLOW)
-							.withClickEvent(new net.minecraft.text.ClickEvent.CopyToClipboard(coords)))
-					.append(net.minecraft.text.Text.literal("  " + dist + "m · " + base.why())
-							.formatted(net.minecraft.util.Formatting.GRAY)), false);
-		}
-		return 1;
 	}
 
 	/** {@code /nova data} — whether the recorder is actually collecting and shipping anything. */
@@ -500,6 +441,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		if (autoLunge != null) autoLunge.tickPreMovement(client);
 		if (autoSpear != null) autoSpear.tick(client);
 		if (kbDisplace != null) kbDisplace.tick(client);
+		if (anchorMacro != null) anchorMacro.tick(client);
 		if (autoCrystal != null) autoCrystal.tick(client);
 		if (autoClicker != null) autoClicker.tickPreMovement(client);
 		// Last, and a pure reader: the recorder samples the state every module above just

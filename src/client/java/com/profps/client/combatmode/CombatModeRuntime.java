@@ -31,6 +31,7 @@ public final class CombatModeRuntime {
 		AUTO_CRYSTAL,
 		AUTO_ANCHOR,
 		AUTO_LUNGE,
+		AUTO_SPEAR,
 		ANTI_FIREBALL,
 		KB_DISPLACE,
 		AUTO_TOTEM
