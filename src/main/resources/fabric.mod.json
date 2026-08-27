@@ -2,13 +2,13 @@
 	"schemaVersion": 1,
 	"id": "profps",
 	"version": "${version}",
-	"name": "ProFPS",
-	"description": "A client-side combat and performance suite with coordinated Sword, Axe, and Mace modes plus the NovaClient control panel.",
+	"name": "NovaClient",
+	"description": "Fabric utility client with combat assists, movement modules, world scanning and rendering tools behind one in-game panel.",
 	"authors": [
-		"ProFPS"
+		"MoleClient"
 	],
 	"contact": {
-		"homepage": "https://fabricmc.net/"
+		"homepage": "https://github.com/MoleClient/novaclient"
 	},
 	"license": "CC0-1.0",
 	"icon": "assets/profps/icon.png",
