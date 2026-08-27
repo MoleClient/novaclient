@@ -10,6 +10,7 @@ public enum CombatFeature {
 	SWORD_AI_AIM,
 	SWORD_AI_JUMP,
 	AXE_STUN,
+	AXE_CRIT,
 	PROJECTILE_AIM,
 	BOW_AIM,
 	CROSSBOW_AIM,

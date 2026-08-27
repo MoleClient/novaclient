@@ -19,25 +19,15 @@ import java.security.SecureRandom;
 import java.util.UUID;
 
 public final class AimImprovementsController {
-	// Keep assist within ~4 blocks — same range the player fights in.
-	// Correcting rotation toward players at 5-6 blocks while no attack follows
-	// is a recognisable AimAssist pattern for server-side ACs.
+	// Assist range capped at 4 blocks, matching melee range.
 	private static final double MAX_DISTANCE_SQUARED = 16.0D;
-	// Acquire the player you're AIMING at: must be within this cone of your look ray so it
-	// only engages when you're genuinely pointing at someone (not a blatant snap-to-target).
 	private static final long HITCH_BASE_NANOS = 40_000_000L;
 	private static final long HITCH_RANDOM_NANOS = 70_000_000L;
 
 	private final ProFPSConfig config;
 	private final SecureRandom random = new SecureRandom();
 
-	/**
-	 * Simulated mouse-sensitivity GCD. Real mouse input always produces rotation
-	 * deltas that are whole multiples of a sensitivity-derived base unit; a raw
-	 * float spring output fails that check on Grim/Intave instantly. Every delta
-	 * we emit is snapped to this unit, with the sub-unit remainder carried to the
-	 * next frame exactly like fractional mouse counts accumulate in a real sensor.
-	 */
+	// Sub-unit remainder carried between frames when snapping deltas to the mouse GCD.
 	private float yawCarry;
 	private float pitchCarry;
 
@@ -55,8 +45,7 @@ public final class AimImprovementsController {
 	private float yawVelocity;
 	private float pitchVelocity;
 
-	// Flick overshoot/settle — a real wrist flick blows slightly past a fast target
-	// and corrects back. Decaying angular impulse (deg/sec) layered on the spring.
+	// Decaying angular impulse in deg/sec layered on the spring.
 	private double overshootYaw;
 	private double overshootPitch;
 	private long overshootReadyNanos;
@@ -104,8 +93,6 @@ public final class AimImprovementsController {
 			return;
 		}
 
-		// Engage the player you're AIMING at — this is what makes it an aim ASSIST and not
-		// a do-nothing-until-you-hit. markAttack still locks/extends after a landed hit.
 		acquireByLook(client, now);
 
 		PlayerEntity target = target(client);
@@ -159,10 +146,7 @@ public final class AimImprovementsController {
 				(now - reactionReadyNanos) / (double) (tuning.engagementRampMs() * 1_000_000L), 0.0D, 1.0D);
 		engagement = engagement * engagement * (3.0D - 2.0D * engagement);
 
-		// Soft-stop behind cover: you can't precisely track someone through a
-		// wall, so when the aim point is occluded the assist nearly lets go (it
-		// keeps a faint pull so it re-acquires cleanly when they reappear). A
-		// laser tracking a target through terrain is an obvious assist tell.
+		// Nearly release while the aim point is occluded, keeping a faint pull for reacquisition.
 		if (occluded(client, client.player, leaded)) {
 			engagement *= 0.22D;
 		}
@@ -196,9 +180,7 @@ public final class AimImprovementsController {
 		nextRetargetNanos = now + Math.min(45L, tuning.retargetIntervalMs()) * 1_000_000L;
 
 		if (sameFight) {
-			// Mid-fight follow-up: keep guiding seamlessly. Resetting the
-			// reaction delay here made aim go soft right after every hit —
-			// exactly when a strafing target slips off the crosshair.
+			// Mid-fight follow-up keeps the existing reaction delay.
 			return;
 		}
 
@@ -228,7 +210,7 @@ public final class AimImprovementsController {
 		return "Guiding";
 	}
 
-	/** Reaction delay (nanos) before the assist starts pulling onto a fresh target — from the Reaction slider. */
+	/** Reaction delay in nanos before the assist pulls onto a fresh target. */
 	private long reactionNanos() {
 		double ms = Math.max(0, tuning().reactionMs()) * (0.6D + random.nextDouble() * 0.9D);
 		return (long) (ms * 1_000_000.0D);
@@ -238,7 +220,6 @@ public final class AimImprovementsController {
 		if (!CombatModePolicy.enabled(config, CombatFeature.MELEE_AIM)) return false;
 		if (client == null || client.player == null || client.world == null) return false;
 		if (client.interactionManager == null) return false;
-		// Don't adjust aim in spectator — it sends rotation packets for no reason
 		if (client.player.isSpectator()) return false;
 		CombatMode mode = CombatModePolicy.mode(config);
 		if (mode == CombatMode.SWORD && !client.player.getMainHandStack().isIn(ItemTags.SWORDS)) return false;
@@ -248,11 +229,7 @@ public final class AimImprovementsController {
 		return true;
 	}
 
-	/**
-	 * Pick the player closest to your look ray, inside the effective tier FOV and melee
-	 * range, and engage them. Fresh acquisition stamps a human reaction delay; while you
-	 * keep aiming at the same player the engagement is renewed so it tracks continuously.
-	 */
+	/** Engages the player closest to the look ray within the tier FOV and melee range. */
 	private void acquireByLook(MinecraftClient client, long now) {
 		ClientPlayerEntity self = client.player;
 		if (self == null || client.world == null) return;
@@ -277,7 +254,6 @@ public final class AimImprovementsController {
 		if (best == null) return;
 
 		if (!best.getUuid().equals(targetUuid)) {
-			// New target picked up by aim — react like a person noticing them.
 			targetUuid = best.getUuid();
 			aimPoint = randomizedPoint(best.getBoundingBox());
 			seedDrift();
@@ -290,7 +266,6 @@ public final class AimImprovementsController {
 			yawVelocity = 0.0F;
 			pitchVelocity = 0.0F;
 		}
-		// Keep the engagement alive while you keep aiming at them (markAttack may extend it further).
 		long lookHoldNanos = tuning.lookHoldMs() * 1_000_000L;
 		if (activeUntilNanos < now + lookHoldNanos) {
 			activeUntilNanos = now + lookHoldNanos;
@@ -314,10 +289,7 @@ public final class AimImprovementsController {
 		double depth  = Math.max(0.05D, box.maxZ - box.minZ);
 		double height = Math.max(0.05D, box.maxY - box.minY);
 
-		// Prefer centre-body / upper-chest (y 40-75% from bottom) — keeps the
-		// aim inside the hitbox where both the ray-confirm and the server
-		// reach-check are most stable, rather than targeting the head or feet
-		// which can clip out of the box during natural movement.
+		// Bias toward upper chest (40-75% of box height) to stay clear of the hitbox edges.
 		double x = box.minX + width * biasedUnit(0.35D);
 		double y = box.minY + height * (0.40D + random.nextDouble() * 0.35D);
 		double z = box.minZ + depth * biasedUnit(0.35D);
@@ -351,8 +323,7 @@ public final class AimImprovementsController {
 	}
 
 	private void updateDrift(double dt, Box box) {
-		// Tighter drift: stays closer to the aim point so the hit-confirm
-		// raycast stays well inside the hitbox between aim-point updates.
+		// Drift stays tight so the hit-confirm raycast remains inside the hitbox.
 		double scale = 0.09D * Math.max(box.maxY - box.minY, 0.5D);
 		double restore = 6.0D;
 		double impulse = 0.9D;
@@ -422,11 +393,6 @@ public final class AimImprovementsController {
 		double strength = effectiveStrength();
 
 		float deltaMag = (float) Math.sqrt(yawDelta * yawDelta + pitchDelta * pitchDelta);
-		// Pull onto the body harder than before. Floor raised (0.30 → 0.46) and the
-		// base spring frequency bumped so the crosshair actually closes the last few
-		// degrees onto a strafing target — "move to the player more" — instead of
-		// politely hovering beside them. The tremor/breath/overshoot below keep it
-		// from ever sitting dead-centre, which is what the soft floor used to buy.
 		double closeness = MathHelper.clamp(deltaMag / 14.0F, 0.46D, 1.0D);
 
 		double omegaYaw = (5.4D + strength * 12.0D) * closeness * (1.0D + 0.10D * tremorYaw()) * engagement;
@@ -446,27 +412,22 @@ public final class AimImprovementsController {
 		yawStep += (float) (breathYaw * dt);
 		pitchStep += (float) (breathPitch * dt);
 
-		// Subtle curved approach: while turning across the target, couple a little
-		// yaw drag into pitch so the path bows instead of drawing a straight line.
+		// Couple yaw drag into pitch so the approach path bows rather than running straight.
 		if (deltaMag > 3.0F && Math.abs(yawDelta) > 1.2F) {
 			pitchStep += (float) (arcBias * Math.abs(yawStep) * engagement);
 		}
 
-		// Flick overshoot on big, fast turns: blow slightly past, then the spring
-		// drags it back — the small "weird" wobble a real hand makes on a snap.
 		updateOvershoot(dt, deltaMag);
 		yawStep += (float) (overshootYaw * dt);
 		pitchStep += (float) (overshootPitch * dt);
 
-		// Cap to a human-plausible rotation speed that varies per frame via tremor,
-		// so it doesn't produce a fixed-magnitude fingerprint
+		// Per-frame speed cap, varied by tremor to avoid a fixed magnitude.
 		double speedScale = 0.55D + strength * 0.50D + tremorYaw() * 0.04D;
 		float maxStep = (float) (220.0D * dt * speedScale);
 		yawStep = MathHelper.clamp(yawStep, -maxStep, maxStep);
 		pitchStep = MathHelper.clamp(pitchStep, -maxStep * 0.76F, maxStep * 0.76F);
 
-		// Snap the emitted delta to the simulated mouse GCD (carry the remainder),
-		// so the rotation packet looks like genuine integer mouse counts.
+		// Emitted deltas must land on the mouse GCD; the remainder carries to the next frame.
 		float yawWanted = yawStep + yawCarry;
 		float pitchWanted = pitchStep + pitchCarry;
 		float yawApplied = quantize(yawWanted);
@@ -480,11 +441,7 @@ public final class AimImprovementsController {
 		player.bodyYaw = smoothBodyYaw(player.bodyYaw, player.getYaw(), dt);
 	}
 
-	/**
-	 * Decaying flick overshoot. Only fires on large, fast turns and only sometimes,
-	 * so most tracking is clean; when it does, the head briefly carries past the
-	 * target and the spring reels it back — organic motion a pure ease never makes.
-	 */
+	/** Applies a decaying overshoot impulse on large, fast turns. */
 	private void updateOvershoot(double dt, float errorMag) {
 		double decay = Math.exp(-dt * 8.0D);
 		overshootYaw *= decay;
@@ -511,9 +468,8 @@ public final class AimImprovementsController {
 		return CombatModePolicy.meleeAim(config);
 	}
 
-	/** Snap a raw degree delta to the nearest whole multiple of the mouse GCD. */
 	private float quantize(float delta) {
-		return MouseGcd.quantize(delta); // snap to the player's real live mouse grid
+		return MouseGcd.quantize(delta);
 	}
 
 	private float smoothBodyYaw(float current, float target, double dt) {

@@ -9,11 +9,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/**
- * Serves the spoofed skin for a player. Both the in-world model and the tab-list
- * head read their textures from {@link PlayerListEntry#getSkinTextures()}, so
- * overriding the return value here changes the skin everywhere the player is drawn.
- */
+/** Serves the spoofed skin from {@link PlayerListEntry#getSkinTextures()}. */
 @Mixin(PlayerListEntry.class)
 public abstract class PlayerListEntryNickMixin {
 

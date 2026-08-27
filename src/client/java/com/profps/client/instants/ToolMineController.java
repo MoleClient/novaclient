@@ -17,23 +17,8 @@ import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 
 /**
- * Three closely-related mining helpers, off independently:
- *
- * <ul>
- *   <li><b>BreakOn</b> — whenever you look at a block, switch to the most
- *       optimal TOOL in your hotbar (a shovel for dirt, an axe for wood, a
- *       pickaxe for stone/deepslate — never a block, never your hand unless Hand
- *       Use is on) and mine the block you're looking at. No head turning: it
- *       just breaks whatever the crosshair is already on, up or down.</li>
- *   <li><b>AutoTool</b> — only swaps to the best tool while you are mining, so
- *       your own manual mining always uses the right tool.</li>
- * </ul>
- *
- * <p>BreakOn can be narrowed with <b>Certain Blocks</b>: when that's on it only
- * targets blocks whose id you've ticked in the picker (matched by block identity).</p>
- *
- * Everything goes through the vanilla paths a player uses — a hotbar slot change
- * and the attack key — so nothing here looks abnormal to a server.
+ * BreakOn and AutoTool. BreakOn swaps to the best hotbar tool and holds attack on the
+ * crosshair block; AutoTool only swaps while the player is mining manually.
  */
 public final class ToolMineController {
 	private final ProFPSConfig config;
@@ -70,12 +55,9 @@ public final class ToolMineController {
 		}
 
 		int bestTool = state == null ? -1 : bestToolSlot(player, state);
-		// Certain Blocks filter: when on, BreakOn only acts on a selected block.
 		boolean allowed = state != null && (!config.instantBreakOnCertain || isSelectedBlock(state));
 
-		// BreakOn remains immediate because it owns the mining action. AutoTool gets
-		// Vape's independent delayed swap/restoration state for manual block and
-		// entity targets.
+		// BreakOn swaps immediately since it owns the mining action; AutoTool uses delayed state.
 		if (breakOn && allowed && bestTool >= 0
 				&& bestTool != player.getInventory().getSelectedSlot()) {
 			player.getInventory().setSelectedSlot(bestTool);
@@ -83,7 +65,6 @@ public final class ToolMineController {
 		if (autoTool) tickAutoTool(client, player);
 		else clearAutoToolState(client, true);
 
-		// Auto-mining (BreakOn): a tool must be found, unless Hand Use is on.
 		boolean wantMine = breakOn && allowed;
 		if (wantMine && (bestTool >= 0 || config.instantBreakOnHandUse)) {
 			client.options.attackKey.setPressed(true);
@@ -205,14 +186,10 @@ public final class ToolMineController {
 		clearAutoToolState(client, restore);
 	}
 
-	/**
-	 * Hotbar slot whose item mines this block fastest, and only if it's a genuine
-	 * TOOL — a tool's mining-speed multiplier is &gt; 1 for the block it's made
-	 * for, while bare hands and blocks sit at 1.0, so they're never chosen.
-	 */
+	/** Hotbar slot that mines this block fastest, or -1 when nothing beats bare hands. */
 	private int bestToolSlot(ClientPlayerEntity player, BlockState state) {
 		int best = -1;
-		float bestSpeed = 1.01F; // strictly faster than hand / a held block
+		float bestSpeed = 1.01F; // hands and blocks sit at 1.0
 		for (int slot = 0; slot < PlayerInventory.getHotbarSize(); slot++) {
 			ItemStack stack = player.getInventory().getStack(slot);
 			if (stack.isEmpty()) continue;

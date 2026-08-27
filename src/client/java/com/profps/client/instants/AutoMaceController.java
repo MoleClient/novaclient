@@ -6,12 +6,17 @@ import com.profps.client.combatmode.CombatFeature;
 import com.profps.client.combatmode.CombatModePolicy;
 import com.profps.client.combatmode.CombatModeProfile;
 import com.profps.client.combatmode.CombatModeRuntime;
+import com.profps.ProFPS;
 import com.profps.client.config.ProFPSConfig;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.AttributeModifiersComponent;
 import net.minecraft.enchantment.EnchantmentHelper;
 import net.minecraft.enchantment.Enchantments;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
@@ -20,6 +25,7 @@ import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -28,73 +34,76 @@ import java.security.SecureRandom;
 import java.util.UUID;
 
 /**
- * AutoMace — a mace-only auto-attack that actually turns your head onto the target so
- * the hit is legitimate (no rotation-spoofing, which anti-cheats flag). It locks the
- * nearest player in range (you often turn away mid-swoop) and, frame by frame, whips
- * your view onto a RANDOMIZED point inside their hitbox — fast and near-instant, but
- * smoothly capped per frame so it's a flick, not a teleport. A little tremor, the
- * occasional small overshoot, and a slow wandering bias keep it off dead-centre and
- * make it read like a real hand. Once the attack-time vanilla ray genuinely names the
- * target it attacks. Ground follow-ups retain their configured cooldown; first contact
- * overlaps reaction with charge and takes a legal low-charge click rather than tracking
- * through an entire mace recharge. A genuine descending smash takes its contact window.
+ * Mace-only auto-attack. Locks the nearest player in range, turns the real view onto a
+ * randomized point in their hitbox frame by frame, and attacks once the attack-time vanilla ray
+ * names the target.
  *
- * When an axe is in the hotbar it can run a stun-slam combo against a confirmed shielding
- * target: a quick axe tap, then a controlled swap back to the mace for the smash.
+ * <p>With an axe in the hotbar it can run a stun-slam combo: an axe tap, then a swap back to the
+ * mace for the smash. Inside the invulnerability window vanilla discards a follow-up unless it
+ * strictly exceeds the previous hit, so the axe tap's damage is the bar the slam must clear.
+ * The tap is therefore kept weak and the combo only starts from a real descent, where
+ * {@code MaceItem.getBonusAttackDamage} can carry a low-charge mace past it. Sprint is kept
+ * below 0.9 charge, since that is where vanilla pays the knockback bonus. See
+ * {@link StunSlamPolicy}. Flat-ground shielders belong to Axe Stun.
  */
 public final class AutoMaceController {
 	private static final long DISENGAGE_NANOS = 120_000_000L; // brief post-hit gap
-	/** Vanilla pays the smash bonus only past ~1.5 blocks of fall. */
+	/** Vanilla pays the smash bonus only past 1.5 blocks of fall. */
 	private static final float SMASH_FALL_BLOCKS = 1.5F;
-	/** Arm the handoff a hair earlier so the mace is in hand in time — but above a flat jump (~1.25). */
+	/** Handoff threshold, set above a flat jump's 1.25 so the mace is in hand in time. */
 	private static final float DIVE_FALL_BLOCKS = 1.3F;
-	/** Keep the mace this long after the dive ends, so a landing follow-up still has it. */
+	/** How long the mace is kept after the dive ends. */
 	private static final long DIVE_HOLD_NANOS = 250_000_000L;
-	/** Mid-air (a Wind Burst launch of your own) the mace is kept for the rest of the arc. */
+	/** Extra hold while still airborne. */
 	private static final long AIRBORNE_HOLD_NANOS = 1_250_000_000L;
+	/** How long an armed stun-slam follow-up stays valid. */
+	private static final long STUN_SMASH_WINDOW_NANOS = 1_200_000_000L;
+	/** Ticks a committed combo tolerates the ray not naming the target. */
+	private static final int STUN_RAY_GRACE_TICKS = 3;
 
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
-	private final MouseGcd mouse = new MouseGcd(); // shared rotation grid → valid deltas
+	private final MouseGcd mouse = new MouseGcd();
 
 	private UUID targetUuid;
-	private double fx, fy, fz; // relative hitbox offsets (0..1), never centre
+	private double fx, fy, fz; // relative hitbox offsets, 0 to 1
 	private long disengageUntilNanos;
 	private long nextRetargetNanos;
 	private long lastFrameNanos;
-	private long onTargetSinceNanos; // when the crosshair first settled on the target this approach
-	private long settleNeededNanos;  // dwell required before the swing — decouples hit from the snap
+	private long onTargetSinceNanos; // when the crosshair first settled on the target
+	private long settleNeededNanos;  // dwell required before the swing
 	private long chargeHoldBudgetNanos; // maximum first-contact wait for a stronger cooldown
 	private long lastAttackNanos;
 	private int attacksThisEngagement;
 	private boolean autoEquippedThisEngagement;
 
-	// Slow wandering aim bias + reroll timer — the "imperfect hand" mistake factor.
+	// Slow wandering aim bias and its reroll timer.
 	private double biasYaw, biasPitch, biasYawTarget, biasPitchTarget;
 	private long nextBiasNanos;
 
-	// Stun-slam combo: tap the target with an axe (disables a raised shield + lands a hit),
-	// then ~1 tick later swap straight back to the mace and smash before their hurt-invuln
-	// resets. The axe slot is the same `shieldPhase` state machine; `maceSlot` is what we
-	// swap back to. Fired when they're guarding a shield OR we're falling (a smash dive).
+	// Stun-slam combo state: axe tap, then a swap back to the mace before the hurt-invulnerability
+	// window resets.
 	private int shieldPhase;          // 0 idle, 1 axe selected, 2 waiting after the axe hit
 	private int shieldActionAge;
 	private long shieldWaitUntilNanos;
-	private long shieldComboUntilNanos; // brief rest after a slam before re-initiating (stops a re-axe loop)
-	private int maceSlot = -1;        // the hotbar slot we swap back to for the mace hit
-	private int maceReadyAge;         // never select a mace and attack in the same client tick
-	private boolean stunSmashFollowup; // bypass is permitted only inside the same genuine falling smash
+	private long shieldComboUntilNanos; // rest after a slam, preventing a re-axe loop
+	private int maceSlot = -1;        // hotbar slot to swap back to for the mace hit
+	private int maceReadyAge;         // a mace select and attack must not share a client tick
+	private boolean stunSmashFollowup; // bypass permitted only inside the same falling smash
+	private long stunSmashUntilNanos;
+	private volatile boolean sprintDropRequest; // published W-tap, only above 0.9 charge
 
-	// The mace is a dive weapon, so the auto handoff is a loan: remember what was in hand before it
-	// and give that back once the fall is over. Without this the Wind Burst mace stayed out while you
-	// hopped around on the ground — and, worse, kept the sword out of your hand so Auto Breachswap
-	// (which resolves with SWORD attributes) could never set up its next jump-crit swap.
+	// The auto handoff is a loan: the pre-handoff item is restored once the fall is over.
 	private int autoSwitchSlot = -1;       // the mace slot this controller selected, or -1
 	private int autoSwitchReturnSlot = -1; // what was held before that handoff, or -1
-	private long diveHoldUntilNanos;       // keep the loan until this passes
+	private long diveHoldUntilNanos;
+	private int lastSlamRefusalAge;        // so a declined slam logs its reason once
+
+	private static AutoMaceController instance;
 
 	public AutoMaceController(ProFPSConfig config) {
 		this.config = config;
+		instance = this;
 	}
 
 	public void tick(MinecraftClient client) {
@@ -109,13 +118,11 @@ public final class AutoMaceController {
 				clearEngagement();
 				return;
 			}
-			// If interrupted mid shield-break (e.g. toggled off while holding the axe), restore the mace.
+			// Restore the mace if interrupted while holding the axe.
 			if (shieldPhase != 0 && client.player != null) {
 				if (!restoreMace(client, client.player)) return;
-				shieldPhase = 0;
-				stunSmashFollowup = false;
+				endCombo();
 			}
-			// Hand the pre-handoff item back even when the module goes quiet mid-dive.
 			releaseAutoSwitch(client.player);
 			clearEngagement();
 			return;
@@ -124,10 +131,7 @@ public final class AutoMaceController {
 		CombatModeProfile.Mace tuning = CombatModePolicy.mace(config);
 		long now = System.nanoTime();
 
-		// A dive is the only thing that justifies holding the mace. Refresh the loan while it lasts,
-		// and once it has expired put the previous weapon back — a mace left in hand between fights
-		// is exactly what made this module feel stubborn and what starved Auto Breachswap of the sword.
-		// A Wind Burst launch keeps it for the rest of the arc rather than swapping twice mid-air.
+		// Refresh the mace loan while the dive lasts, then return the previous weapon.
 		boolean diving = isDiving(player);
 		if (diving) diveHoldUntilNanos = now + DIVE_HOLD_NANOS;
 		boolean grounded = player.isOnGround() || player.isTouchingWater();
@@ -145,21 +149,22 @@ public final class AutoMaceController {
 					|| CombatModeRuntime.breachSwapHoldsHotbar()
 					|| findMace(player) < 0)
 				&& !spearShieldDive) {
-			// Do not rotate toward players when this tick could not legally end in a mace hit:
-			// no mace in hand and either nothing to equip, the handoff switched off, an armed
-			// Breach Swap owning the hotbar, or simply no fall to smash with. This was also the
-			// second "aims but never hits" path — tracking could run indefinitely even though the
-			// attack stage had no item it could legally equip.
+			// Do not rotate on a tick that could not legally end in a mace hit.
 			clearEngagement();
 			return;
 		}
-		PlayerEntity target = acquireTarget(client, player, tuning);
+		// A committed combo follows the same opponent by identity: the axe tap knocks them back,
+		// which can push them outside the acquisition scan. Reach is still enforced by the
+		// vanilla ray at the moment of the hit.
+		PlayerEntity target = shieldPhase != 0 && targetUuid != null
+				? byUuid(client, targetUuid)
+				: acquireTarget(client, player, tuning);
+		if (target != null && (!target.isAlive() || target.isSpectator())) target = null;
 		if (target == null) {
-			// Never get stranded on the axe if the target vanishes mid shield-break: go back to the mace.
+			// Go back to the mace if the target vanishes mid shield-break.
 			if (shieldPhase != 0) {
 				if (!restoreMace(client, player)) return;
-				shieldPhase = 0;
-				stunSmashFollowup = false;
+				endCombo();
 			}
 			clearEngagement();
 			return;
@@ -168,8 +173,7 @@ public final class AutoMaceController {
 		if (!target.getUuid().equals(targetUuid)) {
 			if (shieldPhase != 0) {
 				if (!restoreMace(client, player)) return;
-				shieldPhase = 0;
-				stunSmashFollowup = false;
+				endCombo();
 				clearEngagement();
 				return;
 			}
@@ -187,10 +191,8 @@ public final class AutoMaceController {
 
 		if (now < disengageUntilNanos) return;
 
-		// Spear→Mace shield route: do not waste a tick selecting the mace only to
-		// select the axe immediately afterward. While the Lunge target is genuinely
-		// falling in front of us with a shield raised, pre-arm the axe directly.
-		// Each later stage still gets its own complete server tick.
+		// Spear-to-mace shield route: pre-arm the axe directly rather than selecting the mace
+		// first and swapping again a tick later.
 		if (shieldPhase == 0
 				&& !player.getMainHandStack().isOf(Items.MACE)
 				&& spearShieldDive
@@ -204,7 +206,7 @@ public final class AutoMaceController {
 			autoSwitchSlot = plannedMace;
 			if (autoSwitchReturnSlot < 0) autoSwitchReturnSlot = previous;
 			autoEquippedThisEngagement = true;
-			stunSmashFollowup = true;
+			armStunSmash(player, now);
 			selectSlot(client, player, axe);
 			shieldPhase = 1;
 			shieldActionAge = player.age + 1;
@@ -212,51 +214,49 @@ public final class AutoMaceController {
 			return;
 		}
 
-		// ── Stun-slam state machine (BEFORE ordinary mace range/cooldown gates) ──
-		// This is the fix for the inconsistency: the swap-back used to sit AFTER the distance and
-		// crosshair gates, so a single tick of the aim drifting off (which happens constantly on a
-		// fast dive) left us stranded holding the axe and the fall — the smash window — was wasted.
-		// Once the axe tap has had its configured gap to register the shield-disable, we swap straight
-		// back to the mace no matter what the aim/range is doing. Only a continuation of that same real
-		// descending smash can use the narrow responsive follow-up; a ground acquisition never can.
+		// ── Stun-slam state machine ──
+		// Runs before the ordinary range and cooldown gates, so a tick of aim drift cannot strand
+		// the sequence holding the axe.
 		if (shieldPhase == 1) {
 			if (player.age < shieldActionAge) return;
-			if (!isHoldingShield(target) || !confirmedVanillaTarget(client, player, target)
-					|| !isAxe(player.getMainHandStack().getItem())) {
+			if (!isAxe(player.getMainHandStack().getItem()) || !isHoldingShield(target)) {
 				if (!restoreMace(client, player)) return;
-				shieldPhase = 0;
-				stunSmashFollowup = false;
+				endCombo();
 				return;
 			}
+			// Tolerate a bounded number of ticks where the ray does not name the target; on a
+			// fast dive the crosshair crosses the hitbox edge constantly.
+			if (!confirmedVanillaTarget(client, player, target)) {
+				if (player.age < shieldActionAge + STUN_RAY_GRACE_TICKS) return;
+				if (!restoreMace(client, player)) return;
+				endCombo();
+				return;
+			}
+			// Sprint only matters above 0.9 charge, where vanilla pays the knockback bonus that
+			// would push the target out of the slam's reach. Below it, staying sprinted denies
+			// the 1.5x crit that would raise the bar the slam has to beat.
+			boolean wouldLaunch = player.getAttackCooldownProgress(0.0F) > 0.9F;
+			sprintDropRequest = wouldLaunch;
+			if (wouldLaunch && player.isSprinting() && player.age < shieldActionAge + 2) return;
+
 			if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_MACE)) return;
 			attackShieldWithEquippedAxe(client, player, target);
-			shieldPhase = 2;
-			shieldActionAge = player.age + 1;
-			// The tick gate below already carries a full 50 ms movement tick, so the
-			// configured gap is the TOTAL wait, not an extra one stacked on top of it.
-			// Counting it from zero made a 60 ms setting cost two ticks instead of the
-			// one the gate intends — a whole tick out of a combo that has to finish
-			// before the fall ends.
+			// Swap back on the same tick. The attack packet is already sent, so the slot change
+			// is ordered after it and the hit still resolves as an axe hit.
+			restoreMace(client, player);
+			sprintDropRequest = false;
+			shieldPhase = 0;
+			shieldComboUntilNanos = now + 500_000_000L;
+			maceReadyAge = player.age + 1;
+			// Any configured gap beyond the movement tick already carried above.
 			shieldWaitUntilNanos = now
 					+ Math.max(0, Math.max(50, tuning.stunGapMs()) - 50) * 1_000_000L;
 			onTargetSinceNanos = 0L;
 			return;
 		}
-		if (shieldPhase == 2) {
-			if (player.age < shieldActionAge) return;
-			if (now < shieldWaitUntilNanos) return; // let the axe hit + shield-disable register (~1 tick)
-			if (!restoreMace(client, player)) return;
-			shieldPhase = 0;
-			shieldComboUntilNanos = now + 500_000_000L;
-			maceReadyAge = player.age + 1;
-			return;
-		}
 
-		// Mace mode used to look enabled while doing nothing unless the player had
-		// already selected a mace. Make the handoff visible and ordinary: select a
-		// real hotbar slot locally, let vanilla synchronize it, then wait a full
-		// client tick before any attack can be emitted. It only ever happens on a
-		// genuine descent, and never while Breach Swap is set up on the sword.
+		// Mace handoff: select the slot locally, let vanilla sync it, then wait a full client
+		// tick before any attack. Only on a descent, and never while Breach Swap holds the hotbar.
 		if (!player.getMainHandStack().isOf(Items.MACE)) {
 			if (!autoSwitchEnabled() || !diving
 					|| CombatModeRuntime.breachSwapHoldsHotbar()) {
@@ -276,26 +276,49 @@ public final class AutoMaceController {
 			autoEquippedThisEngagement = true;
 			return;
 		}
-		if (player.age < maceReadyAge) return;
+		if (player.age < maceReadyAge || now < shieldWaitUntilNanos) return;
 
-		// The attack-time vanilla ray is the authority. Requiring the cached render
-		// ray as well sampled two different frames; during a close pass they often
-		// disagreed forever even while the live ray was legally on the player.
+		// The attack-time vanilla ray is the authority; the cached render ray is a different frame.
 		boolean confirmed = confirmedVanillaTarget(client, player, target);
 		boolean smash = isSmashing(player);
 		if (!confirmed) {
+			// Drop a stale smash bypass so the next hit resolves under ordinary ground rules.
+			if (stunSmashFollowup && player.age >= maceReadyAge + STUN_RAY_GRACE_TICKS) {
+				stunSmashFollowup = false;
+			}
 			return;
 		}
-		// The axe may connect a fraction before fallDistance reaches the vanilla
-		// smash threshold. Preserve the armed follow-up through that part of the
-		// descent instead of treating it as ground combat and spending the mace hit
-		// too early. If the player lands first, it safely falls back to ground rules.
-		if (MaceShieldComboPolicy.waitForSmash(
-				stunSmashFollowup, isFalling(player), smash)) return;
+		// ── Stun-slam initiation (axe tap on a shielder) ─────────────────────────
+		// Requires a real descent: the axe tap zeroes the shared attack clock, so without a fall
+		// bonus the mace follow-up cannot beat the tap inside the invulnerability window. Ground
+		// shielders belong to Axe Stun. The swap back to the mace runs at the top of the tick.
+		if (stunSlamEnabled()
+				&& shieldPhase == 0 && now >= shieldComboUntilNanos
+				&& isDiving(player)) {
+			int axe = findAxe(player);
+			// Commit only when the slam will still beat the axe tap at the tick it swings.
+			if (axe >= 0 && isHoldingShield(target) && slamWillLand(player, axe)) {
+				if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_MACE)) return;
+				maceSlot = player.getInventory().getSelectedSlot();
+				// Select the axe now, let one movement packet carry that state, and attack on
+				// the next input tick. A same-tick slot change plus attack is a BadPackets flag.
+				armStunSmash(player, now);
+				selectSlot(client, player, axe);
+				shieldPhase = 1;
+				shieldActionAge = player.age + 1;
+				onTargetSinceNanos = 0L;
+				return;
+			}
+		}
 
-		// Ground combat retains an acquisition dwell, including a shield-breaking
-		// axe tap. It starts when the player is acquired so aiming, equipping and
-		// reaction overlap instead of stacking three independent delays.
+
+		// The axe may connect just before fallDistance reaches the smash threshold, so the armed
+		// follow-up is preserved through that part of the descent.
+		boolean followupLive = stunSmashFollowup && now < stunSmashUntilNanos;
+		if (MaceShieldComboPolicy.waitForSmash(followupLive, !player.isOnGround(), smash)) return;
+
+		// Ground combat keeps an acquisition dwell, started at acquisition so aiming, equipping
+		// and reaction overlap.
 		if (!smash) {
 			stunSmashFollowup = false;
 			if (onTargetSinceNanos == 0L) {
@@ -306,7 +329,7 @@ public final class AutoMaceController {
 
 		float threshold = MathHelper.clamp(
 				smash ? tuning.smashChargePct() : tuning.groundChargePct(), 0, 100) / 100.0F;
-		boolean responsiveStunSmash = stunSmashFollowup && smash;
+		boolean responsiveStunSmash = followupLive && smash;
 		float cooldown = player.getAttackCooldownProgress(0.0F);
 		double remainingChargeMs = Math.max(0.0D, threshold - cooldown)
 				* player.getAttackCooldownProgressPerTick() * 50.0D;
@@ -319,41 +342,10 @@ public final class AutoMaceController {
 				holdBudgetMs);
 		if (!attackReady) return;
 
-		// ── Stun-slam initiation (axe tap on a shielder) ─────────────────────────
-		// Only when you're genuinely aimed at a shielder with an axe in the hotbar (crosshair-
-		// gated just above, so it's a legal hit). The axe tap disables their raised shield AND
-		// lands a stun; the swap-back to the mace + the smash is handled at the TOP of the tick
-		// (so a mid-dive drift can't strand us on the axe). Done on the way down, the axe lands as
-		// a crit and the mace as a falling smash — the two connecting together in one fall. The
-		// combo cooldown stops it re-firing before the mace has come out.
-		//
-		// Net damage is preserved even with no shield: the small axe hit sets the target's
-		// last-damage, and the far bigger mace smash overrides it within the invuln window
-		// (dealing smash − axe), so the total still equals the full smash — plus the stun.
-		if (stunSlamEnabled()
-				&& shieldPhase == 0 && now >= shieldComboUntilNanos) {
-			int axe = findAxe(player);
-			if (axe >= 0 && isHoldingShield(target)) {
-				if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_MACE)) return;
-				maceSlot = player.getInventory().getSelectedSlot(); // remember the mace slot
-				// A legal, ordered handoff: select the axe now, let one movement
-				// packet carry that state, and attack on the next input tick. The
-				// previous same-tick slot+attack was fast but a BadPackets signature.
-				stunSmashFollowup = isFalling(player);
-				selectSlot(client, player, axe);
-				shieldPhase = 1;
-				shieldActionAge = player.age + 1;
-				onTargetSinceNanos = 0L;
-				return;
-			}
-		}
-
 		if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_MACE)) return;
 		client.interactionManager.attackEntity(player, target);
 		player.swingHand(Hand.MAIN_HAND);
-		// interactionManager sends the ordinary attack packet but, unlike
-		// MinecraftClient#doAttack, does not reset the local cooldown clock.
-		// Mirror vanilla here so the next cycle cannot spam against a stale 100% bar.
+		// attackEntity does not reset the local cooldown clock the way doAttack does.
 		player.resetTicksSinceLastAttack();
 		attacksThisEngagement++;
 		lastAttackNanos = now;
@@ -363,11 +355,7 @@ public final class AutoMaceController {
 		CombatModeRuntime.consumeSpearMace(target.getUuid());
 	}
 
-	/**
-	 * Whip the real view onto the target every frame: a large fraction of the remaining
-	 * error each tick (near-instant) but capped per frame so it stays a smooth flick,
-	 * with tremor + occasional overshoot + a slow wandering bias for a human feel.
-	 */
+	/** Steps the view toward the target by a capped fraction of the remaining error each frame. */
 	public void frame(MinecraftClient client) {
 		long now = System.nanoTime();
 		float dt = lastFrameNanos == 0L ? 1.0F : (float) MathHelper.clamp((now - lastFrameNanos) / 1_000_000_000.0 * 20.0, 0.05, 4.0);
@@ -383,9 +371,7 @@ public final class AutoMaceController {
 			return;
 		}
 
-		// Ask for silent aim for as long as this controller is actually turning
-		// the body. It is held by continuous request, so simply not asking on a
-		// frame where the mace is not aiming is what hands the body back.
+		// Silent aim is held by continuous request; skipping a frame releases the body.
 		if (config.maceSilentAim) SilentAimController.instance().engage(player);
 
 		updateBias(now, dt, tuning);
@@ -401,27 +387,21 @@ public final class AutoMaceController {
 		float yawErr = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
 		float pitchErr = MathHelper.wrapDegrees(desiredPitch - player.getPitch());
 
-		// Fraction of the remaining error to close this tick. Kept WELL below the old
-		// near-instant 0.58-0.72: a turn that closes ~95% of a big angle in one tick is a
-		// rotation-speed/aim-snap fingerprint. This eases on over several ticks instead.
-		// During a SMASH the whole approach is a fast dive — whip on quickly so the hit lands
-		// while you're still falling (fallDistance > 0) and the smash bonus actually applies;
-		// on the ground, ease on slowly so it isn't an aim-snap fingerprint.
+		// Fraction of the remaining error closed this tick. A smash uses the faster rate so the
+		// hit still lands inside the fall window.
 		boolean smash = isSmashing(player);
 		float speed = (smash ? MathHelper.clamp(tuning.smashSpeedPct(), 30, 95)
 				: MathHelper.clamp(tuning.turnSpeedPct(), 20, 90)) / 100.0F;
 		float k = 1.0F - (float) Math.pow(1.0F - speed, dt);
-		float yawStep = yawErr * k + (float) (rng.nextGaussian() * 0.30D);   // micro-tremor
+		float yawStep = yawErr * k + (float) (rng.nextGaussian() * 0.30D);
 		float pitchStep = pitchErr * k + (float) (rng.nextGaussian() * 0.22D);
 
-		// Occasional small flick overshoot on big turns — a human snap blows slightly past.
+		// Occasional overshoot on a large turn.
 		if (Math.abs(yawErr) > 28.0F && rng.nextFloat() < 0.16F * dt) {
 			yawStep += Math.signum(yawErr) * (2.0F + rng.nextFloat() * 4.0F);
 		}
 
-		// Per-frame rotation cap: a fast flick during a smash (so the dive connects in its
-		// short fall window), a calmer human-plausible sweep on the ground. Snapped to the
-		// mouse grid below so the packet still looks like real mouse counts.
+		// Per-frame rotation cap, then snapped to the mouse GCD grid.
 		float cap = (smash ? MathHelper.clamp(tuning.smashSpeedPct(), 30, 95) * 0.6F
 				: MathHelper.clamp(tuning.turnSpeedPct(), 20, 90) * 0.5F) * dt;
 		float yawApplied = mouse.yaw(MathHelper.clamp(yawStep, -cap, cap));
@@ -431,7 +411,7 @@ public final class AutoMaceController {
 		player.setPitch(MathHelper.clamp(player.getPitch() + pitchApplied, -90.0F, 90.0F));
 	}
 
-	/** Re-roll the slow aim bias every so often — a drifting "not perfectly on" wander. */
+	/** Re-rolls and blends the slow aim bias. */
 	private void updateBias(long now, float dt, CombatModeProfile.Mace tuning) {
 		if (now >= nextBiasNanos) {
 			biasYawTarget = rng.nextGaussian() * tuning.yawBiasStdDev();
@@ -449,9 +429,8 @@ public final class AutoMaceController {
 				box.minX + (box.maxX - box.minX) * fx,
 				box.minY + (box.maxY - box.minY) * fy,
 				box.minZ + (box.maxZ - box.minZ) * fz);
-		// A fraction of one tick of visible lead prevents the camera spring from
-		// forever following the target's previous position in a close strafe. The
-		// final vanilla ray still has to intersect the current, real hitbox.
+		// A fraction of a tick of lead, so the camera does not trail a strafing target. The
+		// vanilla ray still has to intersect the real hitbox.
 		Vec3d velocity = target.getVelocity();
 		Vec3d lead = new Vec3d(velocity.x, velocity.y * 0.45D, velocity.z).multiply(0.55D);
 		double horizontal = Math.sqrt(lead.x * lead.x + lead.z * lead.z);
@@ -462,20 +441,14 @@ public final class AutoMaceController {
 		return point.add(lead);
 	}
 
-	/**
-	 * Falling onto the target with enough height behind it that this hit really is a smash.
-	 * The old check was any downward motion at all, so an ordinary hop on flat ground counted
-	 * as a smash: it skipped the ground settle, swung at smash charge, and pulled the mace out
-	 * while you were just bouncing around. Vanilla pays the bonus past ~1.5 blocks of fall.
-	 */
+	/** Falling with more than {@link #SMASH_FALL_BLOCKS} behind it, which is where vanilla pays the bonus. */
 	private boolean isSmashing(ClientPlayerEntity player) {
 		return isFalling(player) && player.fallDistance > SMASH_FALL_BLOCKS;
 	}
 
 	/**
-	 * A descent already past a flat jump's ~1.25-block ceiling — a real drop or swoop, and the
-	 * only state in which this controller may take the mace out. Slightly below the smash line
-	 * so the one-tick handoff finishes before the fall is deep enough to pay the bonus.
+	 * A descent past a flat jump's 1.25-block ceiling, and the only state in which the mace may be
+	 * taken out. Set below the smash line so the one-tick handoff finishes before the bonus applies.
 	 */
 	private boolean isDiving(ClientPlayerEntity player) {
 		return isFalling(player) && player.fallDistance > DIVE_FALL_BLOCKS;
@@ -486,9 +459,82 @@ public final class AutoMaceController {
 	}
 
 	/**
-	 * Give back whatever was in hand before the mace handoff, now that the dive is over. A manual
-	 * scroll in the meantime wins outright — we just forget the loan. The slot is set locally and
-	 * vanilla's own sync sends it, exactly like the handoff, so it stays one orderly slot change.
+	 * How far the player can still fall before landing, up to {@code max}, stepped in half blocks
+	 * from the feet. Landing early drops the combo off its smash bypass onto the ground rule.
+	 */
+	private static double groundClearance(ClientPlayerEntity player, double max) {
+		net.minecraft.world.World world = player.getEntityWorld();
+		if (world == null) return max;
+		Vec3d pos = player.getEntityPos();
+		for (double drop = 0.5D; drop <= max; drop += 0.5D) {
+			BlockPos probe = BlockPos.ofFloored(pos.x, pos.y - drop, pos.z);
+			if (!world.getBlockState(probe).getCollisionShape(world, probe).isEmpty()) return drop;
+		}
+		return max;
+	}
+
+	/** Base attack damage a weapon grants in the main hand, read off its attribute modifiers. */
+	private static double attackDamageOf(ItemStack stack) {
+		AttributeModifiersComponent modifiers = stack.getOrDefault(
+				DataComponentTypes.ATTRIBUTE_MODIFIERS, AttributeModifiersComponent.DEFAULT);
+		// The player's own 1.0 base is included, so this is total damage rather than the bonus.
+		return modifiers.applyOperations(EntityAttributes.ATTACK_DAMAGE, 1.0D, EquipmentSlot.MAINHAND);
+	}
+
+	/**
+	 * Whether committing now ends in a slam that deals net damage. Both weapons are measured from
+	 * their own attribute modifiers rather than assumed.
+	 */
+	private boolean slamWillLand(ClientPlayerEntity player, int axeSlot) {
+		if (!isFalling(player)) return false;
+		ItemStack axe = player.getInventory().getStack(axeSlot);
+		ItemStack mace = player.getMainHandStack();
+		if (axe.isEmpty() || mace.isEmpty()) return false;
+		// The tap only crits when sprint has to be dropped to avoid the knockback launch, which
+		// is above 0.9 charge. Predict the same rule the tap itself will use.
+		float charge = player.getAttackCooldownProgress(0.0F);
+		boolean willCrit = charge > 0.9F;
+		double axeDamage = attackDamageOf(axe);
+		double maceDamage = attackDamageOf(mace);
+		double maceCharge = player.getAttackCooldownProgressPerTick();
+
+		// There has to be air left to fall through, or the slam tick arrives on the ground.
+		double needed = StunSlamPolicy.dropBeforeSlam(player.getVelocity().y);
+		double clearance = groundClearance(player, needed + 1.0D);
+		boolean roomToFall = clearance > needed;
+
+		boolean worth = StunSlamPolicy.worthCommitting(
+				player.fallDistance, player.getVelocity().y,
+				axeDamage, charge, willCrit, maceDamage, maceCharge);
+		if (!worth || !roomToFall) {
+			if (player.age != lastSlamRefusalAge) {
+				lastSlamRefusalAge = player.age;
+				ProFPS.LOGGER.info(
+						"Stun slam declined: fall={} v={} clearance={} needs={} axe={} (charge {}, crit {}) -> {}",
+						String.format("%.2f", player.fallDistance),
+						String.format("%.2f", player.getVelocity().y),
+						String.format("%.2f", clearance), String.format("%.2f", needed),
+						String.format("%.1f", StunSlamPolicy.axeTapDamage(axeDamage, charge, willCrit)),
+						String.format("%.2f", charge), willCrit,
+						!roomToFall ? "would land before the slam" : "slam would be absorbed");
+			}
+			return false;
+		}
+		ProFPS.LOGGER.info("Stun slam committed: fall={} clearance={} projected={} net={}",
+				String.format("%.2f", player.fallDistance), String.format("%.2f", clearance),
+				String.format("%.2f", StunSlamPolicy.projectFall(player.fallDistance,
+						player.getVelocity().y, StunSlamPolicy.SLAM_DELAY_TICKS)),
+				String.format("%.1f", StunSlamPolicy.netSlamDamage(
+						StunSlamPolicy.slamDamage(maceDamage, maceCharge,
+								StunSlamPolicy.projectFall(player.fallDistance,
+										player.getVelocity().y, StunSlamPolicy.SLAM_DELAY_TICKS)),
+						StunSlamPolicy.axeTapDamage(axeDamage, charge, willCrit))));
+		return true;
+	}
+
+	/**
+	 * Restores the slot held before the mace handoff. A manual scroll in the meantime cancels the
+	 * loan instead. Set locally so vanilla's own sync sends the one slot change.
 	 */
 	private boolean releaseAutoSwitch(ClientPlayerEntity player) {
 		if (autoSwitchReturnSlot < 0 || player == null) return false;
@@ -557,9 +603,8 @@ public final class AutoMaceController {
 	}
 
 	/**
-	 * Exact tick-current vanilla entity target equality. This ray is produced in
-	 * the same pre-movement phase as the attack and retains vanilla block occlusion
-	 * and held-item range; a previous render-frame ray is not an additional gate.
+	 * Whether the tick-current vanilla ray names {@code expected}. The ray is produced in the same
+	 * pre-movement phase as the attack, so it carries vanilla occlusion and held-item range.
 	 */
 	private boolean confirmedVanillaTarget(MinecraftClient client, ClientPlayerEntity self,
 			PlayerEntity expected) {
@@ -569,7 +614,46 @@ public final class AutoMaceController {
 		return fresh == expected;
 	}
 
-	/** Reaction starts when the player enters the acquisition cone, not after aiming finishes. */
+	/**
+	 * Arms the stun-slam follow-up for this airtime. Gated on airborne rather than falling, since
+	 * vertical velocity passes through zero at the apex. The mace tick still requires a real smash.
+	 */
+	private void armStunSmash(ClientPlayerEntity player, long now) {
+		stunSmashFollowup = !player.isOnGround();
+		stunSmashUntilNanos = now + STUN_SMASH_WINDOW_NANOS;
+		// Published a tick early: this runs at the tail of handleInputEvents and
+		// KeyboardInput#tick is later in the same tick, so the sprint is gone before the tap.
+		sprintDropRequest = true;
+	}
+
+	/** Clears all combo state. */
+	private void endCombo() {
+		shieldPhase = 0;
+		stunSmashFollowup = false;
+		stunSmashUntilNanos = 0L;
+		sprintDropRequest = false;
+	}
+
+	/**
+	 * Releases forward input to drop the sprint before the axe tap, since a sprinting hit above
+	 * 0.9 charge pays a knockback bonus that would push the target out of the slam's reach.
+	 */
+	public static net.minecraft.util.PlayerInput stunSprintOverride(net.minecraft.util.PlayerInput current) {
+		AutoMaceController controller = instance;
+		// The shieldPhase test makes the request self-limiting, so no stale flag can tap W.
+		if (controller == null || current == null
+				|| !controller.sprintDropRequest || controller.shieldPhase == 0) {
+			return null;
+		}
+		MinecraftClient client = MinecraftClient.getInstance();
+		ClientPlayerEntity player = client == null ? null : client.player;
+		if (player == null || !player.isSprinting()) return null;
+		if (current.backward() || current.sneak() || !current.forward()) return null;
+		return new net.minecraft.util.PlayerInput(false, false, current.left(), current.right(),
+				current.jump(), false, false);
+	}
+
+	/** Starts the ground dwell at acquisition, so reaction overlaps aiming rather than following it. */
 	private void beginGroundSettle(long now, CombatModeProfile.Mace tuning) {
 		onTargetSinceNanos = now;
 		settleNeededNanos = Math.max(0, tuning.groundSettleMs()) * 1_000_000L
@@ -601,11 +685,9 @@ public final class AutoMaceController {
 	}
 
 	/**
-	 * True when the target is raising a shield (so a mace hit would be blocked). In 1.21.11
-	 * blocking is driven by the {@code BLOCKS_ATTACKS} data component, NOT the SHIELD item id,
-	 * and {@code isBlocking()} only flips true AFTER the item's block-delay warmup (~5 ticks).
-	 * We also catch that warmup window — any actively-used item that can block attacks — so the
-	 * axe-stun fires the instant they start raising, not a quarter-second late.
+	 * True when the target is raising a shield. Blocking is driven by the {@code BLOCKS_ATTACKS}
+	 * component, and {@code isBlocking()} only flips after the roughly 5-tick warmup, so an
+	 * actively-used blocking item counts too.
 	 */
 	private boolean isHoldingShield(PlayerEntity target) {
 		if (target.isBlocking()) return true;
@@ -622,9 +704,8 @@ public final class AutoMaceController {
 	}
 
 	/**
-	 * Prefer Wind Burst for AutoMace, then an unenchanted/non-Breach mace, and
-	 * use a Breach mace only as a last resort. This stops AutoMace and the
-	 * dedicated Breach Swap controller from silently choosing each other's mace.
+	 * Prefers Wind Burst, then a non-Breach mace, then any mace, so this and Breach Swap do not
+	 * pick each other's weapon.
 	 */
 	private int findMace(ClientPlayerEntity player) {
 		int nonBreach = -1;
@@ -653,11 +734,6 @@ public final class AutoMaceController {
 				|| item == Items.NETHERITE_AXE;
 	}
 
-	/**
-	 * Select {@code slot} and attack {@code target} in one shot, sending the slot-change packet
-	 * BEFORE the attack packet so the server sees the new held item when the hit resolves. The
-	 * local selected slot is kept in sync (so vanilla's own slot sync sends no conflicting packet).
-	 */
 	private void attackShieldWithEquippedAxe(MinecraftClient client, ClientPlayerEntity player,
 			PlayerEntity target) {
 		client.interactionManager.attackEntity(player, target);
@@ -680,9 +756,8 @@ public final class AutoMaceController {
 	}
 
 	/**
-	 * Set the held hotbar slot locally and tell the server immediately (so it's ordered before any
-	 * attack this same tick). Skips a no-op change and keeps vanilla's slot-sync in step so it never
-	 * fires a duplicate packet — both of which would otherwise flag as BadPacketsA.
+	 * Sets the held slot locally and sends the packet immediately, before any attack this tick.
+	 * No-op changes are skipped and vanilla's slot-sync is updated to avoid a duplicate packet.
 	 */
 	private void selectSlot(MinecraftClient client, ClientPlayerEntity player, int slot) {
 		if (slot < 0 || slot > 8 || player.getInventory().getSelectedSlot() == slot) return;
@@ -692,7 +767,7 @@ public final class AutoMaceController {
 				.profps$setLastSelectedSlot(slot);
 	}
 
-	/** Restore the combo mace without fighting another controller's action this tick. */
+	/** Restores the combo mace, or returns false if another controller owns the action this tick. */
 	private boolean restoreMace(MinecraftClient client, ClientPlayerEntity player) {
 		if (maceSlot < 0 || maceSlot > 8) return true;
 		if (player.getInventory().getSelectedSlot() == maceSlot) return true;
@@ -701,7 +776,6 @@ public final class AutoMaceController {
 		return true;
 	}
 
-	/** Read-only coordination state for diagnostics and future controller ordering. */
 	public boolean isBusy() {
 		return shieldPhase != 0;
 	}
@@ -710,9 +784,9 @@ public final class AutoMaceController {
 		return CombatModeRuntime.claimedBy() == CombatModeRuntime.ActionOwner.AUTO_MACE;
 	}
 
-	/** Upper-chest, off-centre hitbox fractions — never dead-centre. */
+	/** Samples off-centre hitbox fractions, biased high. */
 	private void pickPoint() {
-		fx = 0.30 + rng.nextDouble() * 0.40; // 0.30..0.70
+		fx = 0.30 + rng.nextDouble() * 0.40;
 		fy = 0.45 + rng.nextDouble() * 0.30; // upper chest
 		fz = 0.30 + rng.nextDouble() * 0.40;
 	}

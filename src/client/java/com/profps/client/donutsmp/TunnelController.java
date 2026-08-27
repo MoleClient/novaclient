@@ -22,16 +22,8 @@ import net.minecraft.util.math.Vec3d;
 import java.util.Random;
 
 /**
- * Straight-line tunnel bot. Tick logic decides WHAT to do (which block to
- * mine, which keys to hold); the per-frame {@link #frame} hook steers the view
- * through {@link HumanizedAim} with real frame timing, so first-person motion
- * is mouse-smooth instead of stepping at 20Hz.
- *
- * <p>When the tunnel face opens into a cave, the bot does what a player would:
- * it walks the cave floor along the same heading, jumps up one-block ledges,
- * hops small gaps, and when it meets the far wall it carves a staircase back
- * to the original tunnel Y so the line continues exactly where it left off.
- * Only lava (or a sheer drop with no landing) makes it detour.
+ * Straight-line tunnel bot. Tick logic picks the target block and movement keys; the
+ * per-frame {@link #frame} hook steers the view through {@link HumanizedAim}.
  */
 public final class TunnelController {
 	private static TunnelController instance;
@@ -40,9 +32,8 @@ public final class TunnelController {
 	private final HumanizedAim aim = new HumanizedAim();
 	private final ProFPSConfig config;
 
-	// Movement is PUBLISHED as a PlayerInput rather than pressed into the
-	// keybindings, so the body can keep tunnelling while Freecam reads the raw
-	// keybindings to fly the camera — no WASD tug-of-war between the two.
+	// Published as a PlayerInput rather than pressed into keybindings, so the bot
+	// never fights the player's own key state.
 	private boolean mForward, mBack, mLeft, mRight, mJump, mSneak, mSprint;
 
 	private int avoidTicks;
@@ -61,7 +52,7 @@ public final class TunnelController {
 	private Direction tunnelDirection;
 	/** Feet Y of the tunnel line; cave crossings stair-carve back to this level. */
 	private int tunnelFloorY;
-	/** Fixed perpendicular (lateral) coordinate of the tunnel line — the column never leaves it. */
+	/** Fixed lateral coordinate of the tunnel line. */
 	private int tunnelPerp;
 	private BlockPos firstTarget;
 	private Vec3d firstTargetPoint;
@@ -76,7 +67,7 @@ public final class TunnelController {
 		instance = this;
 	}
 
-	/** True while the bot is actively driving the body (used by the input mixin + freecam). */
+	/** True while the bot is actively driving the body (used by the input mixin). */
 	public static boolean isControlling() {
 		return instance != null && instance.controlling;
 	}
@@ -92,7 +83,7 @@ public final class TunnelController {
 		mForward = mBack = mLeft = mRight = mJump = mSneak = mSprint = false;
 	}
 
-	/** Called every render frame: smooth, real-time view steering. */
+	/** Per-frame view steering; consumes the look goal published by {@link #tick}. */
 	public void frame(MinecraftClient client) {
 		long now = System.nanoTime();
 		float dtTicks = lastFrameNanos == 0L ? 1.0F : (float) ((now - lastFrameNanos) / 1_000_000_000.0 * 20.0);
@@ -150,7 +141,7 @@ public final class TunnelController {
 			return;
 		}
 
-		// Boxed-in recovery takes priority over everything else.
+		// Boxed-in recovery takes priority.
 		if (escapeTicks > 0) {
 			escape(client, player);
 			return;
@@ -160,7 +151,7 @@ public final class TunnelController {
 		if (avoidTicks > 0) {
 			avoidTicks--;
 			driveAroundHazard(client, avoidDirection);
-			aimGoal = null; // hold the head steady while sidestepping
+			aimGoal = null; // hold the view steady while sidestepping
 			return;
 		}
 
@@ -171,17 +162,13 @@ public final class TunnelController {
 
 		int feetY = player.getBlockY();
 
-		// Re-anchor the line after an INTENTIONAL lateral move (a hazard detour
-		// or a cave crossing left us well off the old line). Small aim drift
-		// (< 1.5 blocks) is held and trimmed by re-centering instead, so the
-		// column stays dead straight without snapping back into a hazard we
-		// just walked around.
+		// Past 1.5 blocks the offset came from a detour or cave crossing, so re-anchor.
+		// Smaller drift is corrected by recenterOnLine instead.
 		if (feetY == tunnelFloorY && lateralDeviation(player) > 1.5) {
 			recaptureLine(player);
 		}
 
-		// Off the tunnel line (a cave dragged us up or down): carve a staircase
-		// back toward the original Y so the line continues where it left off.
+		// Off the tunnel Y: stair-carve back toward it.
 		if (feetY != tunnelFloorY) {
 			BlockPos stair = stairTarget(client, player, forward, feetY);
 			if (stair != null) {
@@ -199,7 +186,7 @@ public final class TunnelController {
 		traverse(client, player, forward);
 	}
 
-	/** Aim at the block, walk up to its face, and mine through the vanilla attack key. */
+	/** Aims at the block, walks to its face, and mines through the vanilla attack key. */
 	private void mineBlock(MinecraftClient client, ClientPlayerEntity player, Direction forward, BlockPos target) {
 		if (!target.equals(currentTarget)) noHitTicks = 0;
 		currentTarget = target;
@@ -208,22 +195,15 @@ public final class TunnelController {
 
 		releaseMovement(client);
 		mForward = !isTouchingMiningFace(player, target, forward);
-		recenterOnLine(player); // strafe back to the line so we never drift off it
+		recenterOnLine(player);
 
-		// Mine ONLY through the vanilla attack key, and ONLY once the crosshair is
-		// genuinely on a mineable block. The old code force-fed the interaction
-		// manager a block the player often wasn't even looking at yet (while ALSO
-		// holding attack) — the server saw double-speed mining on an off-ray block,
-		// which anti-cheats flag instantly. This way every packet the server sees
-		// is exactly what a real player looking at that block would produce.
+		// Mining goes through the attack key only, and only once the crosshair ray
+		// actually lands on the target, so no packet describes an off-ray break.
 		boolean onMineable = isCrosshairOnMineable(client, target);
 		if (onMineable) {
 			noHitTicks = 0;
 		} else if (++noHitTicks > 18) {
-			// The click won't land (point occluded by a rim/neighbour block).
-			// Re-settle on a fresh visible spot, and when stuck below the
-			// tunnel line, hop — exactly what a player does to clear the pit
-			// edge and reach the block above.
+			// The aim point is occluded: re-settle on a fresh spot, and hop if stuck below the line.
 			if (noHitTicks % 9 == 0) {
 				aimPoint = facePoint(target, player);
 			}
@@ -234,19 +214,13 @@ public final class TunnelController {
 		client.options.attackKey.setPressed(onMineable);
 	}
 
-	/**
-	 * No wall to mine: we're inside open space (a cave the tunnel broke into).
-	 * Walk it like a player would — same heading, jump one-block ledges, hop
-	 * small gaps — until the far wall gives the miner something to chew again.
-	 */
+	/** Walks open space along the tunnel heading, jumping ledges and small gaps, until a wall. */
 	private void traverse(MinecraftClient client, ClientPlayerEntity player, Direction forward) {
 		currentTarget = null;
 		BlockPos feet = player.getBlockPos();
 		BlockPos front = feet.offset(forward);
 
-		// Look down the heading; when the cave floor dropped us below the
-		// tunnel line, the gaze eases back up toward the line like a player
-		// picking their route.
+		// Look down the heading, biased back toward the tunnel line's eye height.
 		Vec3d ahead = player.getEyePos().add(Vec3d.of(forward.getVector()).multiply(4.5));
 		double lineEye = tunnelFloorY + 1.4;
 		aimGoal = new Vec3d(ahead.x, MathHelper.lerp(0.45, ahead.y, lineEye), ahead.z);
@@ -256,15 +230,14 @@ public final class TunnelController {
 		client.options.attackKey.setPressed(false);
 		client.options.useKey.setPressed(false);
 
-		// Lava on the walking path: detour.
+		// Lava on the walking path.
 		if (isLava(client, front) || isLava(client, front.up())
 				|| isLava(client, feet.offset(forward, 2)) || isLava(client, feet.offset(forward, 2).down())) {
 			startAvoid(client, player, forward);
 			return;
 		}
 
-		// One-block ledge ahead: jump up it (this is also how the bot climbs
-		// back toward the tunnel line after crossing a low cave floor).
+		// One-block ledge ahead: jump it.
 		if (isSolid(client, front) && isPassable(client, front.up()) && isPassable(client, front.up(2))
 				&& isPassable(client, feet.up(2))) {
 			mForward = true;
@@ -274,15 +247,14 @@ public final class TunnelController {
 		}
 
 		if (!isPassable(client, front) || !isPassable(client, front.up())) {
-			// A wall with nothing mineable (bedrock, fluid...) — route around it.
+			// A wall with nothing mineable, such as bedrock or fluid.
 			startAvoid(client, player, forward);
 			return;
 		}
 
 		int drop = dropDepth(client, front);
 		if (drop < 0) {
-			// Sheer pit or lava under the next step: try to clear it with a
-			// sprint-jump onto a landing 2-3 blocks out, otherwise detour.
+			// Sheer pit or lava under the next step: sprint-jump to a landing 2-3 blocks out.
 			if (gapJumpLanding(client, feet, forward) > 0
 					&& isPassable(client, feet.up(2)) && isPassable(client, front.up(2))) {
 				mForward = true;
@@ -298,42 +270,37 @@ public final class TunnelController {
 		mSprint = true;
 	}
 
-	/**
-	 * Staircase carving back to the tunnel line. Below the line, clear the
-	 * headroom + step blocks and let traversal jump each step; above it, dig
-	 * the floor out ahead and walk down.
-	 */
+	/** Next block to mine when carving a staircase back to the tunnel line, or null when clear. */
 	private BlockPos stairTarget(MinecraftClient client, ClientPlayerEntity player, Direction forward, int feetY) {
 		BlockPos feet = player.getBlockPos();
 		BlockPos front = feet.offset(forward);
 		if (feetY < tunnelFloorY) {
-			// Bottom-up order matters: from down in the hole the eye can SEE
-			// the overhead and the lower front block; the upper front block
-			// only becomes visible once the one below it is gone.
+			// Bottom-up order: the upper front block is only line-of-sight visible
+			// once the one below it is gone.
 			if (isMineable(client, feet.up(2))) return feet.up(2);   // headroom to jump
 			if (isMineable(client, front.up())) return front.up();   // feet slot after the step
 			if (isMineable(client, front.up(2))) return front.up(2); // head slot after the step
-			return null; // step is clear — traversal jumps onto it
+			return null; // step is clear; traversal jumps onto it
 		}
 		if (isMineable(client, front.up())) return front.up();
 		if (isMineable(client, front)) return front;
 		if (isMineable(client, front.down())) return front.down();   // dig the step down
-		return null; // cleared — traversal walks forward and drops one
+		return null; // cleared; traversal walks forward and drops one
 	}
 
-	/** Air gaps below the next step: 0-3 = walkable drop, -1 = lava or sheer pit. */
+	/** Air gaps below the next step: 0-3 is a walkable drop, -1 is lava or a sheer pit. */
 	private int dropDepth(MinecraftClient client, BlockPos front) {
 		for (int depth = 0; depth <= 3; depth++) {
 			BlockPos pos = front.down(1 + depth);
 			BlockState state = client.world.getBlockState(pos);
 			if (state.getFluidState().isIn(FluidTags.LAVA)) return -1;
-			if (state.getFluidState().isIn(FluidTags.WATER)) return depth; // water catches the fall
+			if (state.getFluidState().isIn(FluidTags.WATER)) return depth; // water breaks the fall
 			if (!isPassable(client, pos)) return depth;
 		}
 		return -1;
 	}
 
-	/** A solid, clear landing 2-3 blocks out that a sprint-jump can reach. */
+	/** Distance to a solid, clear landing 2-3 blocks out, or 0 when there is none. */
 	private int gapJumpLanding(MinecraftClient client, BlockPos feet, Direction forward) {
 		for (int distance = 2; distance <= 3; distance++) {
 			BlockPos land = feet.offset(forward, distance);
@@ -352,21 +319,14 @@ public final class TunnelController {
 		recentAvoids++;
 		avoidDecayTicks = 200;
 		if (recentAvoids >= 4) {
-			// Boxed in (lava lake, ravine, sealed pocket). Instead of giving up,
-			// switch to escape mode and climb out through the ceiling — there is
-			// always a way up, so the bot never strands itself.
+			// Four detours in one window means boxed in; climb out through the ceiling.
 			avoidTicks = 0;
 			recentAvoids = 0;
 			escapeTicks = 80;
 		}
 	}
 
-	/**
-	 * Never-give-up recovery: carve straight up and pillar-jump out of any
-	 * pocket the sidestep logic couldn't solve, then adopt the higher, open
-	 * level as the new tunnel line and resume. Climbing the ceiling always frees
-	 * the bot, so the module never disables itself mid-run.
-	 */
+	/** Carves upward out of a sealed pocket, then adopts the higher level as the new tunnel line. */
 	private void escape(MinecraftClient client, ClientPlayerEntity player) {
 		escapeTicks--;
 		currentTarget = null;
@@ -375,7 +335,6 @@ public final class TunnelController {
 		BlockPos ceiling = feet.up(2);
 
 		if (isMineable(client, ceiling)) {
-			// Open the headroom directly overhead first.
 			aimGoal = aimPointFor(ceiling, player);
 			aimSpeed = 1.2F;
 			clearMove();
@@ -383,8 +342,7 @@ public final class TunnelController {
 			return;
 		}
 
-		// Headroom is clear: jump up, and edge forward if the next-level opening
-		// is passable so we land on solid ground instead of dropping back in.
+		// Headroom clear: jump, edging forward only if the next-level opening is passable.
 		client.options.attackKey.setPressed(false);
 		clearMove();
 		mJump = true;
@@ -392,7 +350,7 @@ public final class TunnelController {
 			mForward = true;
 		}
 
-		// Reached a higher, open level: make it the new line and resume normal mining.
+		// Reached a higher, open level; adopt it as the new line.
 		if (player.getBlockY() > tunnelFloorY && player.isOnGround()) {
 			tunnelFloorY = player.getBlockY();
 			escapeTicks = 0;
@@ -407,10 +365,8 @@ public final class TunnelController {
 		BlockPos looked = hit.getBlockPos();
 		if (!isMineable(client, looked)) return false;
 		if (looked.equals(target)) return true;
-		// Only mine blocks on the captured tunnel LINE — never a side wall. A
-		// 1-wide column shares the line's perpendicular coordinate; anything off
-		// it is a wall the aim sway drifted onto, and breaking it is the mishit
-		// that wandered the tunnel sideways.
+		// Restrict to blocks sharing the line's perpendicular coordinate, so aim drift
+		// cannot break a side wall.
 		Direction forward = tunnelDirection != null ? tunnelDirection : Direction.NORTH;
 		Direction perp = forward.rotateYClockwise();
 		int lookedPerp = perp.getAxis() == Direction.Axis.X ? looked.getX() : looked.getZ();
@@ -435,11 +391,10 @@ public final class TunnelController {
 			if (slot < 0) return false;
 			returnSlot = player.getInventory().getSelectedSlot();
 			player.getInventory().setSelectedSlot(slot);
-			// Eating duration jitters a few ticks like a real use-key hold.
 			eatTicks = 42 + random.nextInt(8);
 		}
 
-		// Keep a relaxed gaze down the tunnel while chewing.
+		// Keep looking down the tunnel while eating.
 		if (tunnelDirection != null) {
 			aimGoal = player.getEyePos().add(Vec3d.of(tunnelDirection.getVector()).multiply(5.0));
 			aimSpeed = 0.5F;
@@ -481,14 +436,7 @@ public final class TunnelController {
 		return -1;
 	}
 
-	/**
-	 * Strictly the straight 1×2 tunnel column: head then feet, one and two
-	 * blocks ahead. No lateral targets and no floor digging — aiming at a side
-	 * block angled the head, and since walking follows the look direction the
-	 * bot kept drifting out of its own tunnel line. The only sanctioned
-	 * deviation from the line is {@link #stairTarget}: after dropping a block,
-	 * mine the headroom above to climb back up.
-	 */
+	/** Next block in the straight 1x2 tunnel column: head then feet, one and two blocks ahead. */
 	private BlockPos targetBlock(ClientPlayerEntity player, Direction forward) {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (firstTarget != null) {
@@ -497,10 +445,8 @@ public final class TunnelController {
 			firstTargetPoint = null;
 		}
 
-		// Locked to the captured line: forward steps advance, but the lateral
-		// (perp) and vertical coordinates are PINNED to the tunnel line. Reading
-		// them off the player's live block position let lateral drift march the
-		// column sideways — which is why it kept mining the block beside centre.
+		// Only the forward coordinate advances; lateral and vertical are pinned to the
+		// captured line rather than read off the player's live position.
 		boolean alongX = forward.getAxis() == Direction.Axis.X;
 		int fwdBase = alongX ? player.getBlockX() : player.getBlockZ();
 		int step = alongX ? forward.getOffsetX() : forward.getOffsetZ();
@@ -532,7 +478,7 @@ public final class TunnelController {
 		return !state.isAir() && !state.getFluidState().isIn(FluidTags.LAVA) && state.getHardness(client.world, pos) >= 0.0F;
 	}
 
-	/** Walkable space: no collision and no lava (water is wadeable). */
+	/** Walkable space: no collision shape and no lava; water counts as passable. */
 	private boolean isPassable(MinecraftClient client, BlockPos pos) {
 		BlockState state = client.world.getBlockState(pos);
 		if (state.getFluidState().isIn(FluidTags.LAVA)) return false;
@@ -548,15 +494,13 @@ public final class TunnelController {
 		if (target.equals(firstTarget) && firstTargetPoint != null) {
 			return firstTargetPoint;
 		}
-		// Pick ONE point per block and keep it. Re-rolling a new random spot
-		// inside the same block every second is what made the head wander/spam.
+		// One aim point per block, held until the target changes.
 		if (!target.equals(aimTarget)) {
 			aimTarget = target;
 			sameTargetTicks = 0;
 			aimPoint = facePoint(target, player);
 		}
-		// ...but on a stubborn block (obsidian, deepslate with a worn pick) a
-		// real hand re-settles now and then instead of pinning one pixel.
+		// Occasionally re-settle on long-lived targets.
 		if (++sameTargetTicks > 50 && random.nextInt(40) == 0) {
 			aimPoint = facePoint(target, player);
 			sameTargetTicks = 0;
@@ -564,19 +508,14 @@ public final class TunnelController {
 		return aimPoint;
 	}
 
-	/**
-	 * A point close to the block's CENTRE, nudged just onto the face most exposed
-	 * to the eye (so a neighbouring block can't occlude it). Kept tight — the old
-	 * 0.48 offset + wide jitter made the head sweep way out around the block;
-	 * aiming near the middle keeps mining concise and dead-on.
-	 */
+	/** A point near the block centre, offset toward the face most exposed to the eye. */
 	private Vec3d facePoint(BlockPos target, ClientPlayerEntity player) {
 		Vec3d eye = player.getEyePos();
 		Vec3d center = Vec3d.ofCenter(target);
 		Vec3d toEye = eye.subtract(center);
 		double ax = Math.abs(toEye.x), ay = Math.abs(toEye.y), az = Math.abs(toEye.z);
-		double face = 0.30;  // toward the near face but well inside the block — concise
-		double jitter = 0.05; // a whisper of imprecision, not the old wide sweep
+		double face = 0.30;   // offset toward the near face, still inside the block
+		double jitter = 0.05; // spread on the two non-face axes
 		double jitterA = (random.nextDouble() - 0.5) * jitter;
 		double jitterB = (random.nextDouble() - 0.5) * jitter;
 		if (ay >= ax && ay >= az) {
@@ -588,7 +527,7 @@ public final class TunnelController {
 		return new Vec3d(center.x + jitterA, center.y + jitterB, center.z + Math.signum(toEye.z) * face);
 	}
 
-	/** How far (blocks) the body is from the tunnel centre line, laterally. */
+	/** Lateral distance in blocks from the body to the tunnel centre line. */
 	private double lateralDeviation(ClientPlayerEntity player) {
 		if (tunnelDirection == null) return 0.0;
 		Direction perp = tunnelDirection.rotateYClockwise();
@@ -596,14 +535,14 @@ public final class TunnelController {
 		return Math.abs(pos - (tunnelPerp + 0.5));
 	}
 
-	/** Adopt the body's current lateral position as the new tunnel line. */
+	/** Adopts the body's current lateral position as the new tunnel line. */
 	private void recaptureLine(ClientPlayerEntity player) {
 		if (tunnelDirection == null) return;
 		Direction perp = tunnelDirection.rotateYClockwise();
 		tunnelPerp = perp.getAxis() == Direction.Axis.X ? player.getBlockX() : player.getBlockZ();
 	}
 
-	/** Strafe gently back onto the tunnel centre line so forward drift can't accumulate. */
+	/** Strafes back onto the tunnel centre line so lateral drift cannot accumulate. */
 	private void recenterOnLine(ClientPlayerEntity player) {
 		if (tunnelDirection == null) return;
 		Direction right = tunnelDirection.rotateYClockwise();
@@ -611,7 +550,7 @@ public final class TunnelController {
 		double posOnAxis = axisX ? player.getX() : player.getZ();
 		double center = tunnelPerp + 0.5;
 		int rightSign = axisX ? right.getOffsetX() : right.getOffsetZ();
-		double towardRight = (posOnAxis - center) * rightSign; // >0 = displaced to the right
+		double towardRight = (posOnAxis - center) * rightSign; // positive means displaced right
 		if (towardRight > 0.22) {
 			mLeft = true;
 			mRight = false;
@@ -645,7 +584,7 @@ public final class TunnelController {
 		};
 	}
 
-	/** Lava in the mining volume ahead — the one hazard that still forces a detour. */
+	/** True when lava sits anywhere in the mining volume ahead. */
 	private boolean lavaAhead(MinecraftClient client, ClientPlayerEntity player, Direction forward) {
 		BlockPos base = player.getBlockPos().offset(forward, 2);
 		for (int depth = 0; depth <= 2; depth++) {
@@ -709,7 +648,7 @@ public final class TunnelController {
 		client.options.useKey.setPressed(false);
 	}
 
-	/** Stop all movement. Attack/use stay on the keybindings; movement is published. */
+	/** Clears the published movement input; attack and use remain on the keybindings. */
 	private void releaseMovement(MinecraftClient client) {
 		clearMove();
 	}

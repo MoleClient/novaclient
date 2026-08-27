@@ -12,15 +12,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/**
- * In-game per-module toggle keys, assigned from the Nova GUI keybind rows.
- * Polls GLFW key state each tick (only while no screen is open) and flips the
- * bound module through the same {@link NovaModules} model the GUI uses, so
- * dependency rules stay consistent.
- */
+/** Polls per-module toggle keys each tick while no screen is open and flips the bound {@link NovaModules} module. */
 public final class ModuleKeybinds {
-	// Mode binds live under the same ids the Modes panel used, but the modes are ordinary catalogue
-	// entries now, so the generic module loop below drives them and old keybinds keep working.
 	public static final String MODE_SWORD_BIND = NovaModules.MODE_SWORD;
 	public static final String MODE_AXE_BIND = NovaModules.MODE_AXE;
 	public static final String MODE_MACE_BIND = NovaModules.MODE_MACE;
@@ -37,9 +30,7 @@ public final class ModuleKeybinds {
 	public void tick(MinecraftClient client) {
 		if (client.player == null || config.moduleKeybinds.isEmpty()) return;
 		if (client.currentScreen != null) {
-			// Preserve a warning-triggering key until it is physically released;
-			// otherwise closing the confirmation while still holding the key would
-			// immediately toggle the newly enabled module back off.
+			// Keep a key held until physically released so closing a confirmation does not re-toggle.
 			heldKeys.removeIf(key -> !InputUtil.isKeyPressed(client.getWindow(), key));
 			return;
 		}
@@ -49,9 +40,7 @@ public final class ModuleKeybinds {
 				if (key == null || key <= 0) continue;
 				boolean pressed = InputUtil.isKeyPressed(client.getWindow(), key);
 				if (pressed && heldKeys.add(key)) {
-					// A module the active combat mode owns is not yours to flip from here either.
-					// Without this the key silently rewrites the standalone field while the GUI, the
-					// HUD and the policy all keep reading the mode's answer.
+					// Modules owned by an active combat mode cannot be toggled directly.
 					String owner = NovaModules.managedBy(config, module.id);
 					if (owner != null) {
 						notifyLocked(client, module, owner);

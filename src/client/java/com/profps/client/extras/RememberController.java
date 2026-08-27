@@ -34,14 +34,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Remembers multiple connected builds as real-block translucent ghosts.
- *
- * <p>With Remember enabled, left-click any uncaptured connected build to add it.
- * Captures remain available in the current world even if the overlay is toggled
- * off, allowing Schematic Build to consume them independently. Look at any real
- * or ghost block belonging to a capture and press Delete to remove only that
- * capture. A world change clears coordinates so captures can never leak into a
- * different server or dimension instance.
+ * Captures connected builds by left-click and renders them as translucent ghosts.
+ * Delete removes the capture under the crosshair; a world change clears all captures.
  */
 public final class RememberController {
 	private static final int MAX_BLOCKS_PER_BUILD = 8192;
@@ -86,8 +80,7 @@ public final class RememberController {
 			return;
 		}
 
-		// macOS labels Backspace as "delete"; full keyboards may send the distinct
-		// forward-Delete code. Accept both so the control matches the physical key.
+		// macOS labels Backspace as "delete"; accept both key codes.
 		boolean delete = InputUtil.isKeyPressed(client.getWindow(), GLFW.GLFW_KEY_DELETE)
 				|| InputUtil.isKeyPressed(client.getWindow(), GLFW.GLFW_KEY_BACKSPACE);
 		boolean deletePressed = delete && !prevDelete;
@@ -129,9 +122,6 @@ public final class RememberController {
 		RememberedBuild build = new RememberedBuild(nextBuildId++, captured);
 		builds.add(build);
 		revision++;
-		// The span is the honest tell for a flood-fill leak: a small build that
-		// reports a plot-sized box means the capture crawled into the terrain,
-		// and everything downstream (layers, targets, routes) inherits that.
 		int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, minZ = Integer.MAX_VALUE;
 		int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE, maxZ = Integer.MIN_VALUE;
 		for (BlockPos pos : captured.keySet()) {
@@ -162,7 +152,7 @@ public final class RememberController {
 		return !builds.isEmpty();
 	}
 
-	/** Immutable-coordinate snapshot consumed by the layer-by-layer auto builder. */
+	/** Snapshot of all remembered states, consumed by the auto builder. */
 	public Map<BlockPos, BlockState> desiredStatesSnapshot() {
 		Map<BlockPos, BlockState> snapshot = new HashMap<>();
 		for (RememberedBuild build : builds) snapshot.putAll(build.blocks());
@@ -212,8 +202,7 @@ public final class RememberController {
 			if (direct != null) return direct;
 		}
 
-		// Ghost blocks are not part of the real world's raycast. Ray-test their unit
-		// boxes only on the Delete edge so a fully removed build can still be unsaved.
+		// Ghost blocks are not in the world raycast, so ray-test their unit boxes directly.
 		Vec3d start = player.getEyePos();
 		Vec3d end = start.add(player.getRotationVec(1.0F).multiply(DELETE_RAY_LENGTH));
 		RememberedBuild nearest = null;
@@ -296,7 +285,7 @@ public final class RememberController {
 				}
 			}
 		} catch (RuntimeException ignored) {
-			// A ghost render failure must never take down the client.
+			// Never let a ghost render failure take down the client.
 		}
 	}
 

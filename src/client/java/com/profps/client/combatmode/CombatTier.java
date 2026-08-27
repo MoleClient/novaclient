@@ -1,10 +1,6 @@
 package com.profps.client.combatmode;
 
-/**
- * Ordered combat assistance tiers. The ordinal is also the persisted slider index,
- * from the most restrained profile ({@link #LT5}) to the strongest humanized one
- * ({@link #HT1}).
- */
+/** Ordered combat assistance tiers; the ordinal is the persisted slider index. */
 public enum CombatTier {
 	LT5("LT5"),
 	HT5("HT5"),

@@ -22,19 +22,11 @@ import java.security.SecureRandom;
 import java.util.UUID;
 
 /**
- * Auto Aim — a projectile aim assist for the bow, crossbow and (server) fireball.
+ * Projectile aim assist for the bow, crossbow and fireball.
  *
- * <p>While you hold one of those and the module is on, it picks the player you're
- * most likely aiming at (nearest to your look ray, inside a cone), shows
- * "Selected: name" on the action bar so you know who it locked when people are
- * bunched up, and <b>gently</b> follows them — a low-strength, humanized pull you
- * can break out of just by turning away (turn past the cone and it lets go).
- *
- * <p>A direct bow aim is usually mis-led and mis-dropped. This computes a candidate
- * using the real projectile origin, gravity, drag and shooter inheritance, then
- * accepts it only when a swept simulation intersects the predicted moving hitbox
- * before terrain. A render-frame acceleration-limited camera spring follows that
- * tick-stable solution; firing never causes a last-instant snap or extra look packet.
+ * <p>Solves the ballistic arc from the real projectile origin, gravity, drag and shooter
+ * inheritance, and accepts it only when a swept simulation hits the predicted target box before
+ * terrain. Firing emits no extra look packet.</p>
  */
 public final class AutoAimController {
 	private static AutoAimController instance;
@@ -45,7 +37,7 @@ public final class AutoAimController {
 
 	private UUID targetUuid;
 	private String targetName = "";
-	private double hx, hy, hz;          // randomized hitbox fractions (off-centre)
+	private double hx, hy, hz;          // randomized hitbox fractions
 	private long nextPointNanos;
 	private float solvedYaw, solvedPitch; // ballistic aim for the current target
 	private boolean haveSolution;
@@ -59,15 +51,13 @@ public final class AutoAimController {
 	private Vec3d filteredTargetVelocity = Vec3d.ZERO;
 	private int lastTargetAge = -1;
 
-	// Time-based camera spring. Independent per-frame noise was FPS-dependent:
-	// 240 FPS received four times as many random kicks as 60 FPS and looked both
-	// shaky and artificial when the server sampled the final tick rotation.
+	// Time-based camera spring; per-frame noise would be FPS-dependent.
 	private UUID rotationTargetUuid;
 	private float yawVelocity;
 	private float pitchVelocity;
 
-	// Post-shot view recovery so the camera doesn't stay frozen at the ballistic up-tilt.
-	private float preDrawPitch;          // pitch when you started drawing — where we return to
+	// Post-shot view recovery from the ballistic up-tilt.
+	private float preDrawPitch;          // pitch at draw start, the recovery destination
 	private boolean wasUsing;
 	private long recoverStartNanos, recoverUntilNanos;
 	private float recoverFromPitch, recoverToPitch;
@@ -80,8 +70,6 @@ public final class AutoAimController {
 	public static AutoAimController get() {
 		return instance;
 	}
-
-	// ── Tick: select target, predict, advertise ────────────────────────────────
 
 	public void tick(MinecraftClient client) {
 		if (!active(client)) {
@@ -102,8 +90,7 @@ public final class AutoAimController {
 		long now = System.nanoTime();
 		lastVisibleTargetNanos = now;
 		if (targetUuid != null && !target.getUuid().equals(targetUuid)) {
-			// A brief candidate dwell prevents two nearby players from making the assist flick
-			// between targets as their centre-angle scores trade places.
+			// Candidate dwell stops the assist flicking between two nearby players.
 			if (!target.getUuid().equals(pendingTargetUuid)) {
 				pendingTargetUuid = target.getUuid();
 				pendingTargetSinceNanos = now;
@@ -134,13 +121,10 @@ public final class AutoAimController {
 			haveSolution = true;
 		} else haveSolution = false;
 
-		// "Selected:" on the action bar, refreshed so it stays up while aiming.
 		client.inGameHud.setOverlayMessage(Text.empty()
 				.append(Text.literal("Selected: ").withColor(0x55E07A))
 				.append(Text.literal(targetName).withColor(0xFFFFFF)), false);
 	}
-
-	// ── Frame: gentle, breakable follow ────────────────────────────────────────
 
 	public void frame(MinecraftClient client) {
 		long now = System.nanoTime();
@@ -159,8 +143,7 @@ public final class AutoAimController {
 		ClientPlayerEntity player = client.player;
 		boolean using = wantsAim(player, client);
 
-		// Capture where you were looking the instant you start drawing, so after the shot we
-		// can ease the view back there instead of leaving it tilted up at the launch angle.
+		// Snapshot the pre-draw pitch as the post-shot recovery target.
 		if (using && !wasUsing) {
 			preDrawPitch = player.getPitch();
 			recoverUntilNanos = 0L;
@@ -182,14 +165,11 @@ public final class AutoAimController {
 			float yawErr = MathHelper.wrapDegrees(solvedYaw - player.getYaw());
 			float pitchErr = MathHelper.wrapDegrees(solvedPitch - player.getPitch());
 
-			// A velocity/acceleration-limited spring is frame-rate independent and has
-			// continuous momentum. It cannot jump directly to a new ballistic solution,
-			// but still converges during the normal draw/loaded-crossbow aiming window.
 			CombatModeProfile.ProjectileAim tuning = tuning();
 			float strength = MathHelper.clamp(tuning.strengthPct(), 10, 90);
 			float maxYawSpeed = 105.0F + strength * 1.75F;       // degrees / second
 			float maxPitchSpeed = maxYawSpeed * 0.78F;
-			float acceleration = 620.0F + strength * 7.0F;       // degrees / second²
+			float acceleration = 620.0F + strength * 7.0F;       // degrees / second^2
 			float gain = 6.0F + strength * 0.035F;
 			float wantedYawVelocity = MathHelper.clamp(yawErr * gain, -maxYawSpeed, maxYawSpeed);
 			float wantedPitchVelocity = MathHelper.clamp(
@@ -208,7 +188,6 @@ public final class AutoAimController {
 		}
 		resetRotationSpring();
 
-		// After the shot: ease the pitch from the ballistic up-tilt back to your pre-draw aim.
 		if (recoverUntilNanos != 0L && now < recoverUntilNanos) {
 			float span = (float) (recoverUntilNanos - recoverStartNanos);
 			float prog = span <= 0F ? 1.0F : MathHelper.clamp((now - recoverStartNanos) / span, 0.0F, 1.0F);
@@ -223,9 +202,7 @@ public final class AutoAimController {
 		}
 	}
 
-	// ── Fire interception (called from the interaction mixin) ───────────────────
-
-	/** Bow release fires the shot — perfect it (only for a bow). */
+	/** Called from the interaction mixin on bow release. */
 	public void onStopUsing() {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client != null && client.player != null && client.player.getMainHandStack().isOf(Items.BOW)) {
@@ -233,7 +210,7 @@ public final class AutoAimController {
 		}
 	}
 
-	/** A right-click fires a fireball or a loaded crossbow — perfect those. */
+	/** Called from the interaction mixin on right-click, for fireballs and loaded crossbows. */
 	public void onInteractItem() {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client == null || client.player == null) return;
@@ -246,12 +223,7 @@ public final class AutoAimController {
 		}
 	}
 
-	/**
-	 * Called the instant a shot fires. The aim is already on target from the smooth draw-time
-	 * follow (your real rotation, sent by the normal per-tick flying packet) — so there is NO
-	 * last-instant snap and NO extra packet here, which is what was getting brutally flagged.
-	 * All this does is start easing the view back down from the ballistic up-tilt.
-	 */
+	/** Starts the post-shot pitch recovery. Emits no rotation packet of its own. */
 	public void perfectShot() {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client == null || client.player == null) return;
@@ -267,12 +239,9 @@ public final class AutoAimController {
 				* 1_000_000L;
 	}
 
-	// ── Ballistic solve ────────────────────────────────────────────────────────
-
 	/** Returns {yaw, pitch} to hit the target's predicted position, or null. */
 	private float[] solve(ClientPlayerEntity player, PlayerEntity target) {
-		// Persistent projectiles spawn 0.1 blocks below eye height in 1.21.11.
-		// Solving from getEyePos() was a small but systematic high/low error.
+		// Persistent projectiles spawn 0.1 blocks below eye height.
 		Vec3d origin = new Vec3d(player.getX(), player.getEyeY() - 0.1D, player.getZ());
 		ItemStack weapon = player.getMainHandStack();
 		boolean fireball = weapon.isOf(Items.FIRE_CHARGE);
@@ -320,11 +289,7 @@ public final class AutoAimController {
 				direct, inheritsShooterVelocity, t);
 	}
 
-	/**
-	 * Validate against the actual swept projectile path and moving target box.
-	 * The previous check only proved that terrain was clear; a path could miss the
-	 * player by a full block and still be advertised as a valid solution.
-	 */
+	/** Validates a candidate against the swept projectile path and the moving target box. */
 	private float[] validatedSolution(ClientPlayerEntity player, PlayerEntity target,
 			Vec3d targetVelocity, Vec3d origin, float yaw, float pitch, double speed,
 			boolean direct, boolean inheritsShooterVelocity, double flightTicks) {
@@ -401,12 +366,12 @@ public final class AutoAimController {
 	private double arrowSpeed(ClientPlayerEntity player) {
 		ItemStack stack = player.getMainHandStack();
 		if (stack.isOf(Items.CROSSBOW)) return 3.15D;
-		// Bow draw power → arrow speed (max 3.0 at full draw).
+		// Vanilla bow draw power curve; arrow speed peaks at 3.0 on full draw.
 		int useTicks = player.getItemUseTime();
 		float p = useTicks / 20.0F;
 		p = (p * p + p * 2.0F) / 3.0F;
 		if (p > 1.0F) p = 1.0F;
-		if (p < 0.1F) p = 0.1F; // never zero so the solve stays sane before full draw
+		if (p < 0.1F) p = 0.1F; // keep non-zero so the solve stays finite before full draw
 		return p * 3.0D;
 	}
 
@@ -416,8 +381,6 @@ public final class AutoAimController {
 		return charged != null && charged.contains(Items.FIREWORK_ROCKET);
 	}
 
-	// ── Target selection ───────────────────────────────────────────────────────
-
 	private PlayerEntity acquire(MinecraftClient client, ClientPlayerEntity player) {
 		double fov = MathHelper.clamp(tuning().fovDeg(), 20, 120);
 		double halfAngle = fov * 0.5D;
@@ -425,8 +388,7 @@ public final class AutoAimController {
 		Vec3d eye = player.getEyePos();
 		Vec3d look = player.getRotationVec(1.0F);
 
-		// Keep a valid visible lock inside a slightly relaxed cone. This hysteresis matters more
-		// than a tiny score advantage when two targets cross, and reads like one human decision.
+		// Hysteresis: hold an existing visible lock inside a slightly relaxed cone.
 		PlayerEntity current = byUuid(client, targetUuid);
 		if (current != null && eligible(client, player, current, eye, look,
 				Math.cos(Math.toRadians(Math.min(70.0D, halfAngle + 6.0D))))) return current;
@@ -478,16 +440,12 @@ public final class AutoAimController {
 	}
 
 	private void pickPoint() {
-		hx = 0.32 + rng.nextDouble() * 0.36; // off-centre
+		hx = 0.32 + rng.nextDouble() * 0.36;
 		hy = 0.55 + rng.nextDouble() * 0.30; // upper body
 		hz = 0.32 + rng.nextDouble() * 0.36;
 	}
 
-	/**
-	 * Blend packet/interpolation movement with observed position deltas once per
-	 * entity tick. Raw remote velocity is noisy around sprint starts and knockback;
-	 * feeding it directly into a render-frame solve made the destination jump.
-	 */
+	/** Blends reported velocity with observed position deltas, once per entity tick. */
 	private void updateTargetMotion(PlayerEntity target) {
 		UUID uuid = target.getUuid();
 		Vec3d position = target.getEntityPos();
@@ -558,8 +516,6 @@ public final class AutoAimController {
 		}
 		return null;
 	}
-
-	// ── Gate ───────────────────────────────────────────────────────────────────
 
 	private boolean active(MinecraftClient client) {
 		ClientPlayerEntity player = client == null ? null : client.player;

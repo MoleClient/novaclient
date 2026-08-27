@@ -26,42 +26,22 @@ import java.security.SecureRandom;
 import java.util.UUID;
 
 /**
- * Trigger-bot hit assist.
- *
- * Architecture:
- *   tick() — manages lock, cooldown watching, arm/skip scheduling
- *   getAimedPlayer() — custom raycast using CURRENT rotation vector
- *                       (more accurate than client.crosshairTarget which lags
- *                       one frame behind aim-assist adjustments)
- *
- * Key design rules:
- *   - the reaction clock starts ONCE, when the lock is acquired, and nothing after it
- *     (arming, cooldown refill, a failed crosshair confirm) ever restarts it. The old
- *     flow chained lock-delay THEN reaction THEN re-arm penalties sequentially, which
- *     is why the trigger lost the first-hit race in even duels.
- *   - fresh target acquisition samples one bounded, distance-aware reaction delay;
- *     reacquisition during the same exchange uses faster click-stream alignment
- *   - armed is NOT reset on temporary aim loss; it survives the retention window
- *     so the shot fires the moment aim returns without a re-arm penalty
- *   - skip is sampled once per cycle and produces one bounded hesitation
- *   - the SWING is emitted only with a confirmed entity attack on a real tick:
- *     vanilla crosshairTarget must be the locked player and the internal attack
- *     cooldown must be clear
+ * Trigger-bot hit assist: locks a target under the crosshair and swings once the attack
+ * cooldown, reaction delay and settle dwell are all satisfied. Swings are only sent on a
+ * real client tick with vanilla's crosshair target confirming the locked player.
  */
 public final class HitImprovementsController {
 
-	// Remember the UUID for three seconds, but retain a charged shot for only the short
-	// aim-flick grace. A literal three-second armed lock would pre-charge attacks off target.
-	private static final long   TARGET_MEMORY_NS = 3_000_000_000L;
-	private static final long   ARM_RETENTION_NS = 700_000_000L;
-	private static final double BASE_REACH    = 3.0D;         // vanilla attack reach (fire is vanilla-gated anyway); Reach module raises it
-	private static final double TRACKING_MARGIN = 0.45D;      // soft pre-contact lock only; the vanilla fire gate still enforces real reach
-	private static final double HIT_EXPAND    = 0.20D;        // arm-only drift tolerance — the swing itself is still vanilla-confirmed
-	private static final long   SETTLE_GRACE_NS = 35_000_000L; // brief aim flicker that doesn't reset the settle
-	private static final long   PREP_RETENTION_NS = 160_000_000L; // keep pre-hit input through a short S-tap/ray flicker
-	private static final float  NORMAL_HIT_PREP_LEAD = 0.18F; // begin sprint prep about two sword-cooldown ticks before ready
-	private static final int    MAX_NORMAL_HIT_PREP_ATTEMPTS = 2; // one soft attempt + one hard-contact retry
-	private static final double NORMAL_HIT_STEP = 0.32D;      // short, collision-checked forward tap used to establish a real sprint hit
+	private static final long   TARGET_MEMORY_NS = 3_000_000_000L; // how long a target UUID is remembered
+	private static final long   ARM_RETENTION_NS = 700_000_000L;   // how long an armed shot survives aim loss
+	private static final double BASE_REACH    = 3.0D;         // vanilla attack reach; the Reach module raises it
+	private static final double TRACKING_MARGIN = 0.45D;      // arm-only pre-contact margin
+	private static final double HIT_EXPAND    = 0.20D;        // arm-only drift tolerance
+	private static final long   SETTLE_GRACE_NS = 35_000_000L; // aim flicker that does not reset the settle
+	private static final long   PREP_RETENTION_NS = 160_000_000L; // keep pre-hit input through a short flicker
+	private static final float  NORMAL_HIT_PREP_LEAD = 0.18F; // sprint prep lead, in cooldown progress
+	private static final int    MAX_NORMAL_HIT_PREP_ATTEMPTS = 2; // one soft attempt plus one hard retry
+	private static final double NORMAL_HIT_STEP = 0.32D;      // collision-checked forward tap distance
 
 	private enum WeaponClass { SWORD, AXE, OTHER }
 
@@ -75,12 +55,12 @@ public final class HitImprovementsController {
 	private long   lastAttackNanos;
 	private float  lastObservedCooldown = -1.0F;
 
-	// Two-phase timing: arm fires when cooldown ready, fire after per-cycle delay
+	// Two-phase timing: arm when the cooldown is ready, fire after the per-cycle delay.
 	private boolean armed;
 	private long    fireAfterNanos;
-	private long    skipUntilNanos;   // skip sits out this whole window
-	private long    commitAtNanos;    // the swing lands a human beat AFTER the charge fills, not the exact instant
-	private boolean commitScheduled;  // one commit-beat per cooldown cycle (re-armed each cycle)
+	private long    skipUntilNanos;   // a skip sits out this whole window
+	private long    commitAtNanos;    // the swing lands this beat after the charge fills
+	private boolean commitScheduled;  // one commit beat per cooldown cycle
 	private float   cooldownThresholdThisCycle;
 	private double  cooldownSampleThisCycle;
 	private WeaponClass plannedWeapon = WeaponClass.OTHER;
@@ -91,24 +71,21 @@ public final class HitImprovementsController {
 	private boolean normalHitConversionRequiredThisCycle;
 	private int normalHitScheduledAttempts;
 
-	// A full-charge, grounded, slow sword swing is unavoidably a sweep in vanilla.
-	// For normal-hit cycles we publish a short forward+sprint input BEFORE the attack
-	// tick, then wait until sprinting is genuinely established. No velocity or packet
-	// state is forged, and the vanilla attack remains in its existing packet phase.
+	// A full-charge grounded slow sword swing is a sweep in vanilla, so normal-hit cycles
+	// publish a forward+sprint input before the attack tick and wait for sprint to establish.
 	private long normalHitInputStartNanos;
 	private long normalHitInputUntilNanos;
 	private long normalHitAttackAfterNanos;
 	private long normalHitFallbackNanos;
 
-	// Settle dwell: the aim must rest ON the target before a hit fires, so the
-	// attack never lands on the exact frame the assist snaps the crosshair on
-	// (that rotation↔attack correlation is what aim-pattern checks catch).
+	// Settle dwell: the aim must rest on the target before a hit fires, decoupling the
+	// attack from the frame an aim correction lands.
 	private long    settledSinceNanos;
 	private long    fireDwellNanos = 25_000_000L;
 
 	private int     hitStreak;
 
-	// Focus drifts slowly to produce natural variance in timing across a fight
+	// Slowly drifting scalar that varies timing across a fight.
 	private double  focus    = 0.82D;
 	private long    lastNanos;
 
@@ -120,9 +97,9 @@ public final class HitImprovementsController {
 	}
 
 	/**
-	 * Layers the triggerbot's short pre-hit W+sprint tap onto whichever legitimate
-	 * movement path currently owns input (raw keys, Sword AI, or Strafe Assist).
-	 * Returns {@code null} when no pre-hit tap is active so input passes untouched.
+	 * Layers the pre-hit forward and sprint tap onto whichever module currently owns input.
+	 *
+	 * @return null when no pre-hit tap is active, so input passes through untouched
 	 */
 	public static PlayerInput normalHitOverride(PlayerInput current) {
 		HitImprovementsController controller = instance;
@@ -131,8 +108,7 @@ public final class HitImprovementsController {
 		if (now < controller.normalHitInputStartNanos || now >= controller.normalHitInputUntilNanos) return null;
 
 		MinecraftClient client = MinecraftClient.getInstance();
-		// Manual retreat, sneak, or jump always wins. Jumping already creates a
-		// legitimate non-sweep state, so forcing sprint on top would only spoil a crit.
+		// Manual retreat, sneak or jump wins; a jump is already a non-sweep state.
 		if (current.backward() || current.sneak() || current.jump() || client.options.backKey.isPressed()) return null;
 		PlayerInput prepared = new PlayerInput(true, false, current.left(), current.right(), false, false, true);
 		if (!controller.canSafelyPrepareNormalHit(client, prepared)) return null;
@@ -140,19 +116,9 @@ public final class HitImprovementsController {
 	}
 
 	/**
-	 * Frees an airborne swing to land as a crit by tapping off the forward key.
-	 *
-	 * <p>Vanilla refuses a crit outright while the attacker is sprinting, and a
-	 * sprint only ends when the published input stops carrying forward movement —
-	 * dropping the sprint key alone leaves an established sprint running
-	 * (verified against {@code ClientPlayerEntity.shouldStopSprinting}). So the
-	 * only thing that actually converts a sprinting jump into a crit is the same
-	 * W-tap a player does by hand, which is exactly what this publishes. Air
-	 * control means momentum carries through the tap, so the jump still travels.
-	 *
-	 * <p>It only fires while airborne with a real target in front: on the ground
-	 * there is no crit to protect, and away from a fight this would be an
-	 * unexplained stutter in ordinary movement.
+	 * Drops forward input while airborne so a sprinting jump can land as a crit.
+	 * Vanilla ends a sprint only when the published input stops carrying forward movement,
+	 * per {@code ClientPlayerEntity.shouldStopSprinting}; clearing the sprint key alone does not.
 	 */
 	public static PlayerInput critSprintOverride(PlayerInput current) {
 		HitImprovementsController controller = instance;
@@ -162,8 +128,7 @@ public final class HitImprovementsController {
 		MinecraftClient client = MinecraftClient.getInstance();
 		ClientPlayerEntity player = client == null ? null : client.player;
 		if (player == null || !player.isSprinting() || player.isOnGround()) return null;
-		// Manual retreat or sneak is the player's own intent and already ends the
-		// sprint; never layer a tap on top of it.
+		// Manual retreat or sneak already ends the sprint.
 		if (current.backward() || current.sneak() || !current.forward()) return null;
 		if (player.isClimbing() || player.isTouchingWater() || player.isInLava()
 				|| player.hasVehicle() || player.isGliding() || player.getAbilities().flying) return null;
@@ -173,20 +138,13 @@ public final class HitImprovementsController {
 				current.jump(), false, false);
 	}
 
-	// ── Main update ──────────────────────────────────────────────────────────
-
 	public void tick(MinecraftClient client) {
-		update(client, true);   // a real client tick may SEND the swing (vanilla packet order)
+		update(client, true);   // only a real client tick may send the swing
 	}
 
-	/**
-	 * Also driven once per render frame: at 20Hz tick cadence alone, just the
-	 * sampling quantization added up to 50ms before the trigger even SAW the
-	 * crosshair cross the hitbox — in a strafing duel that window is the
-	 * whole opportunity.
-	 */
+	/** Tracks and arms between ticks; never sends a packet off-tick. */
 	public void frame(MinecraftClient client) {
-		update(client, false);  // frames only track + arm; never send a packet off-tick (Grim "Post")
+		update(client, false);
 	}
 
 	private void update(MinecraftClient client, boolean canFire) {
@@ -201,11 +159,8 @@ public final class HitImprovementsController {
 			aimed = null;
 		}
 
-		// ── Retention / release ───────────────────────────────────────────
+		// Retention and release: the UUID is held longer than the armed shot.
 		if (aimed == null) {
-			// Don't immediately disarm — aim naturally drifts off for a tick due to
-			// spring momentum or rendering interpolation. The target UUID remains a
-			// soft three-second memory, but an attack cannot stay pre-charged that long.
 			if (lockedTarget != null) {
 				long unseenNanos = now - targetLastSeenNanos;
 				if (unseenNanos > TARGET_MEMORY_NS) {
@@ -217,7 +172,7 @@ public final class HitImprovementsController {
 				} else {
 					if (unseenNanos > PREP_RETENTION_NS) clearNormalHitPrep();
 					if (unseenNanos > SETTLE_GRACE_NS) {
-						settledSinceNanos = 0L; // off the target long enough — must re-settle before firing
+						settledSinceNanos = 0L; // off target long enough to require a re-settle
 					}
 				}
 			}
@@ -227,7 +182,7 @@ public final class HitImprovementsController {
 		long unseenNanos = lockedTarget == null ? Long.MAX_VALUE : now - targetLastSeenNanos;
 		targetLastSeenNanos = now;
 
-		// ── Acquire or switch lock ────────────────────────────────────────
+		// Acquire or switch lock.
 		if (!aimed.getUuid().equals(lockedTarget)) {
 			lockedTarget    = aimed.getUuid();
 			hitStreak       = 0;
@@ -237,10 +192,7 @@ public final class HitImprovementsController {
 			fireDwellNanos  = ns(tuning.settleMinMs()
 					+ rng.nextDouble() * Math.max(0, tuning.settleMaxMs() - tuning.settleMinMs()));
 
-			// The reaction clock starts HERE, once. Everything downstream (cooldown
-			// refill, arming, a failed crosshair confirm) waits on or extends this
-			// clock — nothing restarts it. The old flow added a lock delay AND a full
-			// arm-time reaction back to back, which alone cost 110-190 ms per exchange.
+			// The reaction clock starts here once; nothing downstream restarts it.
 			fireAfterNanos = now + ns(firstHitDelay(now, client.player, aimed));
 			commitScheduled = false;
 			WeaponClass weapon = weaponClass(client.player);
@@ -250,9 +202,7 @@ public final class HitImprovementsController {
 			return;
 		}
 
-		// Reacquiring the remembered UUID after a meaningful aim loss is a fresh
-		// visual acquisition. Keep the target identity, but never inherit an elapsed
-		// reaction timer or a charged axe delay from when it was off-screen.
+		// Reacquiring after a long aim loss keeps the identity but resets the cycle timers.
 		if (unseenNanos > ARM_RETENTION_NS) {
 			hitStreak = 0;
 			clearCyclePlan();
@@ -271,37 +221,31 @@ public final class HitImprovementsController {
 		// Same target: begin/continue the settle-on-target timer.
 		if (settledSinceNanos == 0L) settledSinceNanos = now;
 
-		// Track the cooldown and prepare real sprint input while reaction is still running.
+		// Track the cooldown and prepare sprint input while the reaction delay runs.
 		float cd = client.player.getAttackCooldownProgress(0.0F);
 		if (lastObservedCooldown >= 0.0F && cd + 0.10F < lastObservedCooldown) {
-			// A manual or another module's attack consumed the previous cycle.
-			// Never carry its sampled threshold, skip, or axe timer into the next one.
+			// Another attack consumed the previous cycle, so discard its plan.
 			clearCyclePlan();
 			skipUntilNanos = 0L;
 		}
 		lastObservedCooldown = cd;
 
-		// ── Skip window ───────────────────────────────────────────────────
-		// When a skip fires we sit out a visible beat before resuming the same cycle.
-		// Without this, armed=false + cooldown still ready = immediate re-arm.
+		// A fired skip sits out this window before the same cycle resumes.
 		if (now < skipUntilNanos) {
 			return;
 		}
 
-		// Respect vanilla's short miss/decline click cooldown, but do not let it
-		// repeatedly reroll a planned threshold while it counts down.
+		// Respect vanilla's miss/decline click cooldown without rerolling the plan.
 		MinecraftClientInvoker mc = (MinecraftClientInvoker)(Object)client;
 		if (mc.profps$getAttackCooldown() > 0) {
 			clearCyclePlan();
 			return;
 		}
 
-		// ── Cooldown gate ─────────────────────────────────────────────────
 		WeaponClass weapon = weaponClass(client.player);
 		boolean sprinting = client.player.isSprinting();
 		if (cyclePlanReady && plannedWeapon != weapon) {
-			// A weapon swap needs a new threshold/post-delay, but a planned skipped
-			// click remains the same once-per-cycle decision.
+			// A weapon swap needs a new threshold, but the sampled skip decision stands.
 			boolean preserveSkip = skipThisCycle;
 			clearCyclePlan();
 			planAttackCycle(client.player, weapon, sprinting);
@@ -311,9 +255,7 @@ public final class HitImprovementsController {
 				&& (weapon == WeaponClass.SWORD || weapon == WeaponClass.AXE)
 				&& !normalHitPreparedThisCycle
 				&& plannedSprinting != sprinting) {
-			// Recalculate only the context-dependent threshold from the same per-cycle
-			// percentile. If an axe was already
-			// ready, its running post-delay is preserved across a normal W-tap.
+			// Recompute only the context-dependent threshold from the same per-cycle percentile.
 			plannedSprinting = sprinting;
 			cooldownThresholdThisCycle = thresholdFromSample(client.player, weapon, cooldownSampleThisCycle);
 		}
@@ -321,88 +263,57 @@ public final class HitImprovementsController {
 		maybePrepareNormalHit(client, aimed, now, cd,
 				hitStreak == 0 || isClosingWindow(client.player, aimed));
 
-		// Planning and genuine sprint input above advance during the look-delay so
-		// reaction, cooldown, and anti-sweep preparation overlap instead of stack.
 		if (!armed && now < fireAfterNanos) return;
 
 		float threshold = cooldownThresholdThisCycle;
-		// A crit only triggers above ~0.9 charge. When crit-timing is on and you're airborne
-		// (lining up a jump-crit), never let the randomized threshold dip below that — a swing
-		// during the fall on a weak charge lands as a non-crit and wastes the jump.
+		// Vanilla only crits above ~0.9 charge, so an air-crit cycle floors the threshold there.
 		if (tuning.critTiming() && canAttemptAirCrit(client.player)) threshold = Math.max(threshold, 0.92F);
 
 		if (cd < threshold) {
-			// Cooldown not ready — disarm so we re-arm fresh when it is
+			// Cooldown not ready; disarm so it re-arms fresh when it fills.
 			armed = false;
 			commitScheduled = false;
 			return;
 		}
 
-		// Cooldown just filled this cycle → commit to a short human beat before the swing.
-		// A real player's click does not land the exact frame the charge bar tops off; it
-		// lands a variable moment later. That beat (added to the cooldown time) IS the
-		// inter-hit interval, so hits spread into a human distribution instead of firing on a
-		// fixed period locked to the cooldown — the metronome tell that read as blatant.
+		// Once the cooldown fills, schedule a short beat before the swing so the
+		// inter-hit interval is not locked to the cooldown period.
 		if (!armed) {
 			armed = true;
-			// The first sword hit already waited firstHitDelay, but an axe always gets
-			// its own post-ready beat. Follow-up motor jitter and axe delay overlap
-			// rather than stack, avoiding a needlessly sluggish double-delay.
+			// The first hit already waited firstHitDelay; an axe always gets its own beat.
 			double commitMs = hitStreak > 0 ? commitDelayMs(isClosingWindow(client.player, aimed)) : 0D;
 			if (plannedWeapon == WeaponClass.AXE) commitMs = Math.max(commitMs, axePostDelayMs());
 			commitScheduled = commitMs > 0D;
 			if (commitScheduled) commitAtNanos = now + ns(commitMs);
 		}
 
-		// ── Settle dwell ──────────────────────────────────────────────────
-		// The crosshair must have RESTED on the target, not just snapped on
-		// this instant. Decouples the attack from the rotation correction.
+		// The crosshair must have rested on the target, decoupling the attack from aim corrections.
 		if (now - settledSinceNanos < fireDwellNanos) return;
 
-		// Only ever SEND a swing on a real client tick, so the attack packet stays in the
-		// vanilla flying→action order. Firing from a render frame drops an action packet
-		// between ticks with no flying packet bracketing it — that's Grim's "Post". All the
-		// arm/reaction/settle timing above still advances on frames, so nothing slows down.
+		// Swings are sent only on a real tick so the attack packet keeps vanilla's
+		// flying-then-action ordering.
 		if (!canFire) return;
 
-		// ── Human commit beat ──────────────────────────────────────────────
-		// The swing lands this beat after the charge filled (scheduled once per cycle above).
 		if (commitScheduled && now < commitAtNanos) return;
 
-		// ── Crit timing ───────────────────────────────────────────────────
-		// Hold the swing until the hit will ACTUALLY land as a crit. Vanilla only crits while you're
-		// FALLING with real fall distance — not on the ground, and NOT at the jump's apex where
-		// fallDistance is still 0. The old gate released the instant you stopped rising (≈ the apex),
-		// so the held swing burned on a normal hit and the cooldown wasn't ready again by the time you
-		// were truly falling — which is why repeated jump-crits almost never crit. Now we stay armed
-		// through the rise AND the apex and fire the moment you're genuinely in the crit window, so
-		// crit-spam connects. On the ground we never hold (no crit possible) and fire as usual.
+		// Vanilla crits only while falling with real fall distance, not on the ground or at
+		// the apex, so hold the swing until then.
 		if (tuning.critTiming() && canAttemptAirCrit(client.player) && !inCritWindow(client.player)) return;
 
-		// ── Confirm aim at fire moment ────────────────────────────────────
-		// ONLY fire when the real vanilla crosshair is on the locked player. The old
-		// fallback called attackEntity() on the target whenever our OWN ray hit it even though
-		// crosshairTarget didn't; but
-		// the server validates the hit with the SAME raycast as crosshairTarget, so any time
-		// they disagreed we were attacking a player the server doesn't see under our cursor —
-		// a hard hitbox/aimbot flag (the "2 hits and banned" on strict ACs like Minemen).
-		// If the crosshair isn't genuinely on them, we simply don't swing this cycle.
+		// The server validates the hit with the same raycast as crosshairTarget, so require both.
 		PlayerEntity crosshairNow = getCrosshairPlayer(client);
 		PlayerEntity freshCrosshairNow = getFreshCrosshairPlayer(client);
 		if (crosshairNow == null || freshCrosshairNow == null
 				|| !crosshairNow.getUuid().equals(lockedTarget)
 				|| !freshCrosshairNow.getUuid().equals(lockedTarget)) {
-			// Committed, but the vanilla ray isn't genuinely on them this instant — hold and
-			// fire the moment it is (a legal, crosshair-confirmed hit) rather than forcing a wait.
+			// Stay committed and fire on the first tick the vanilla ray agrees.
 			return;
 		}
 
-		// ── Skip decision ─────────────────────────────────────────────────
-		// Commit the one sampled decision only after a legal target is actually
-		// under the vanilla reticle. Expanded-box acquisition can never consume it.
+		// Consume the sampled skip only once a legal target is under the vanilla reticle.
 		if (skipThisCycle) {
 			skipThisCycle = false;
-			armed = true; // remain loaded; the skipped click itself is the whole delay
+			armed = true; // stay loaded; the skipped click is the whole delay
 			commitScheduled = false;
 			double skipMs = isClosingWindow(client.player, aimed)
 					? 55D + rng.nextDouble() * 45D
@@ -412,22 +323,14 @@ public final class HitImprovementsController {
 			return;
 		}
 
-		// A slow, grounded, >90%-charged sword hit is a vanilla sweep. Most cycles
-		// take a delayed real-input W+sprint path so the server classifies the same
-		// vanilla attack as a full-strength single-target sprint hit. A small choice,
-		// sampled once with the rest of the cycle plan, leaves naturally eligible
-		// sweeps alone so the fight does not become mechanically perfect. If sprint
-		// preparation is unsafe or impossible, treat it as a missed human opportunity
-		// and retry later rather than moving over an edge or falling through to a sweep.
+		// Most cycles wait for the sprint prep so the hit is not classified as a sweep.
 		if (holdForNormalHit(client, now)) return;
 		if (!CombatModeRuntime.triggerEnabledFor(config, lockedTarget)) return;
 		if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.TRIGGER)) return;
 
-		// Let vanilla perform the already-confirmed entity attack. This retains its
-		// riding, enabled-item, minimum-charge, per-item range and piercing-weapon
-		// gates while still producing exactly the normal attack + swing sequence.
+		// Let vanilla perform the attack so its range, charge and item gates all apply.
 		float attackProgressBefore = client.player.getAttackCooldownProgress(0.0F);
-		mc.invokeDoAttack(); // its boolean is not a success result in 1.21.11
+		mc.invokeDoAttack(); // the returned boolean is not a success result in 1.21.11
 		float attackProgressAfter = client.player.getAttackCooldownProgress(0.0F);
 		lastObservedCooldown = attackProgressAfter;
 		if (attackProgressAfter >= attackProgressBefore - 1.0E-4F) {
@@ -442,30 +345,22 @@ public final class HitImprovementsController {
 		clearCyclePlan();
 	}
 
-	// ── Timing helpers ───────────────────────────────────────────────────────
-
 	/**
-	 * Delay from crosshair-cross to the first swing of a lock. Modeled as CLICK-STREAM
-	 * ALIGNMENT, not a fresh visual reaction: a PvPer in a fight is already clicking at
-	 * 8-14 CPS while tracking, so the hit lands wherever the next click in the stream
-	 * falls after the cross. Reaction Min/Max define the sampled acquisition window;
-	 * distance, fight continuity, and slowly drifting focus scale it without stacking a
-	 * second reaction after the cooldown fills.
+	 * Delay from crosshair-cross to the first swing of a lock, sampled from the configured
+	 * reaction window and scaled by distance, fight continuity and focus.
 	 */
 	private double firstHitDelay(long now, ClientPlayerEntity self, PlayerEntity target) {
 		CombatModeProfile.Trigger tuning = tuning();
 		double min = MathHelper.clamp(Math.min(tuning.reactionMinMs(), tuning.reactionMaxMs()), 0, 300);
 		double max = MathHelper.clamp(Math.max(tuning.reactionMinMs(), tuning.reactionMaxMs()), 5, 300);
 
-		// Average two samples for a soft centre instead of a flat/robotic uniform
-		// distribution, then scale smoothly from 0.66x at point blank to 1.0x at reach.
+		// Two averaged samples give a soft centre; distance then scales 0.66x to 1.0x.
 		double sample = min + (max - min) * ((rng.nextDouble() + rng.nextDouble()) * 0.5D);
 		double distance = Math.sqrt(self.squaredDistanceTo(target));
 		double distanceT = MathHelper.clamp(distance / attackReach(), 0.0D, 1.0D);
 		double distanceMultiplier = 0.66D + 0.34D * distanceT;
 
-		// Re-crossing in the same exchange is click-stream alignment, not a second
-		// full visual reaction. Keep it faster without ever becoming a zero-delay hit.
+		// Re-crossing during the same exchange uses a shorter delay.
 		boolean midFight = now - lastAttackNanos < 3_500_000_000L;
 		double fightMultiplier = midFight ? 0.72D : 1.0D;
 		double focusMultiplier = 1.08D - focus * 0.16D;
@@ -474,13 +369,8 @@ public final class HitImprovementsController {
 	}
 
 	/**
-	 * The beat between the charge topping off and the swing actually landing, for a follow-up
-	 * hit in a combo. A real player isn't frame-perfect on the cooldown indicator: the click
-	 * lands a short, variable moment after full charge, and every so often a good bit later (a
-	 * read, a reposition, a block). Modelled as a half-normal — most beats short, with a fat
-	 * tail — and scaled by the Follow-up slider. Added to the (charge-dependent) cooldown time,
-	 * this makes the interval between hits a spread-out human distribution instead of a fixed
-	 * period locked to the cooldown, which is what looked robotic. Focus tightens it.
+	 * The beat between the charge topping off and a follow-up swing landing.
+	 * Half-normal distribution scaled by the Follow-up setting and tightened by focus.
 	 */
 	private double commitDelayMs(boolean closingWindow) {
 		double scale = MathHelper.clamp(tuning().followupMs(), 20, 200) / 80.0D;
@@ -489,16 +379,15 @@ public final class HitImprovementsController {
 			if (rng.nextDouble() < 0.05D) urgent += (20D + rng.nextDouble() * 35D) * scale;
 			return Math.min(60D, urgent * (1.08D - focus * 0.16D));
 		}
-		double base = (12D + Math.abs(rng.nextGaussian()) * 44D) * scale;       // ~12-100ms typical
-		if (rng.nextDouble() < 0.16D) base += (65D + rng.nextDouble() * 205D) * scale; // occasional longer beat
+		double base = (12D + Math.abs(rng.nextGaussian()) * 44D) * scale;
+		if (rng.nextDouble() < 0.16D) base += (65D + rng.nextDouble() * 205D) * scale;
 		return Math.min(150D, base * (1.12D - focus * 0.24D));
 	}
 
 	private float thresholdFromSample(ClientPlayerEntity player, WeaponClass weapon, double sample) {
 		CombatModeProfile.Trigger tuning = tuning();
-		// The Cooldown setting is the top of the sampled band. At the 93% default,
-		// swords and axes use 83-93% while sprinting and 88-93% while walking.
-		// getAttackCooldownProgress already includes each weapon's attack speed.
+		// The Cooldown setting is the top of the sampled band; getAttackCooldownProgress
+		// already accounts for each weapon's attack speed.
 		float high = MathHelper.clamp(tuning.cooldownPct(), 60, 100) / 100.0F;
 		float spread;
 		if (tuning.sprintAwareCooldown() && (weapon == WeaponClass.SWORD || weapon == WeaponClass.AXE)) {
@@ -507,7 +396,7 @@ public final class HitImprovementsController {
 			spread = tuning.patient() ? 0.05F : 0.12F;
 		}
 		float low = Math.max(0.55F, high - spread);
-		if (tuning.patient()) sample = Math.sqrt(sample); // patient biases toward the strong end, within the same band
+		if (tuning.patient()) sample = Math.sqrt(sample); // bias toward the strong end of the band
 		return (float) (low + (high - low) * sample);
 	}
 
@@ -527,17 +416,13 @@ public final class HitImprovementsController {
 				&& player.isOnGround() && !allowNaturalSweepThisCycle;
 	}
 
-	/**
-	 * Start the real-input sprint reset while reaction/cooldown are still running.
-	 * At fire time this should already be server-visible, so hard confirmation adds
-	 * no new anti-sweep timer to a short reach window.
-	 */
+	/** Starts the sprint prep input while the reaction and cooldown are still running. */
 	private void maybePrepareNormalHit(MinecraftClient client, PlayerEntity target,
 			long now, float cooldown, boolean urgent) {
 		if (normalHitFallbackNanos != 0L) {
 			if (now < normalHitFallbackNanos) return;
 			clearNormalHitPrep();
-			return; // never turn a soft lock into repeated forward/sprint pulses
+			return; // do not emit repeated forward/sprint pulses
 		}
 		if (plannedWeapon != WeaponClass.SWORD
 				|| allowNaturalSweepThisCycle
@@ -558,8 +443,7 @@ public final class HitImprovementsController {
 		normalHitAttackAfterNanos = normalHitInputStartNanos + ns(urgent
 				? 12D + rng.nextDouble() * 33D
 				: 25D + rng.nextDouble() * 55D);
-		// Keep the real input alive long enough to overlap the final cooldown ticks
-		// and the usual short follow-up beat; it is cleared immediately on attack.
+		// Hold the input across the final cooldown ticks and the follow-up beat.
 		normalHitInputUntilNanos = normalHitAttackAfterNanos + ns(urgent
 				? 180D + rng.nextDouble() * 50D
 				: 260D + rng.nextDouble() * 70D);
@@ -573,7 +457,7 @@ public final class HitImprovementsController {
 		return player.getMovement().horizontalLengthSquared() < movementLimit * movementLimit;
 	}
 
-	/** Mirrors vanilla 1.21.11's grounded sword sweep predicate. */
+	/** Mirrors vanilla 1.21.11 grounded sword sweep predicate. */
 	private boolean wouldVanillaSweep(ClientPlayerEntity player) {
 		return player.getAttackCooldownProgress(0.5F) > 0.9F && wouldSweepIfCharged(player);
 	}
@@ -594,8 +478,7 @@ public final class HitImprovementsController {
 				&& !genuineCrit
 				&& !isSprintClassifiedHitReady(player);
 		if (!wouldVanillaSweep(player) && !sprintConversionPending) {
-			// A prep-started sprint keeps a tiny sampled minimum beat. In a closing
-			// window it normally releases on the first legal tick after START_SPRINT/W.
+			// A prep-started sprint still waits out its sampled minimum beat.
 			if (normalHitAttackAfterNanos != 0L
 					&& player.isSprinting()
 					&& now < normalHitAttackAfterNanos) {
@@ -609,9 +492,7 @@ public final class HitImprovementsController {
 			return false;
 		}
 
-		// The soft attempt's input window has ended and hard legal contact is here:
-		// use the one permitted hard retry immediately instead of waiting through the
-		// bookkeeping fallback grace and losing a one-tick S-tap window.
+		// The soft attempt's window ended without sprint, so spend the one permitted retry now.
 		if (normalHitFallbackNanos != 0L
 				&& now >= normalHitInputUntilNanos
 				&& !player.isSprinting()) {
@@ -626,12 +507,12 @@ public final class HitImprovementsController {
 		return true;
 	}
 
-	/** Fire converted grounded sword cycles only after vanilla sees real sprint + full charge. */
+	/** True once vanilla sees both a real sprint and a full charge. */
 	private boolean isSprintClassifiedHitReady(ClientPlayerEntity player) {
 		return player.isSprinting() && player.getAttackCooldownProgress(0.5F) > 0.9F;
 	}
 
-	/** Give up this unsafe conversion briefly, then plan a fresh human opportunity. */
+	/** Abandons an unsafe conversion and re-plans after a short pause. */
 	private void abandonNormalHitCycle(long now) {
 		clearCyclePlan();
 		skipUntilNanos = now + ns(45D + rng.nextDouble() * 55D);
@@ -667,8 +548,7 @@ public final class HitImprovementsController {
 		double stepZ = (forward * Math.cos(yaw) + sideways * Math.sin(yaw)) * NORMAL_HIT_STEP;
 		Box next = player.getBoundingBox().offset(stepX, 0.0D, stepZ);
 		if (!client.world.isSpaceEmpty(player, next)) return false;
-		// Probe under the projected centre instead of the whole (overlapping) box;
-		// support under only the trailing edge must not green-light a step into a drop.
+		// Probe under the projected centre; support under the trailing edge alone is not enough.
 		double centerX = (next.minX + next.maxX) * 0.5D;
 		double centerZ = (next.minZ + next.maxZ) * 0.5D;
 		Box support = new Box(centerX - 0.18D, next.minY - 0.18D, centerZ - 0.18D,
@@ -705,25 +585,14 @@ public final class HitImprovementsController {
 
 	private long ns(double ms) { return (long)(ms * 1_000_000D); }
 
-	// ── Target detection ────────────────────────────────────────────────────
-
 	/**
-	 * Raycasts from the player's eye using the current rotation vector (which includes
-	 * aim-assist adjustments from the previous WorldRenderEvents.END_MAIN) against a SWEPT
-	 * box — the union of the target's previous-tick (rendered) and current-tick hitboxes.
-	 * You aim at the RENDERED box you see; the tick box a plain raycast tests sits up to a
-	 * whole tick of motion away (~0.28 blocks on a sprinting target), and at 2.8-3.0 blocks
-	 * that offset was the whole miss. The union covers both. This arm-only ray extends 0.45
-	 * blocks beyond the active attack reach so reaction and input prep can begin just before
-	 * contact; the distance cull keeps its extra eye-to-box allowance. The swing remains gated
-	 * on both vanilla crosshair rays, so the tracking margin cannot produce an out-of-range hit.
+	 * Raycasts from the eye along the current rotation against the union of each target's
+	 * rendered and current-tick hitboxes. Extends {@link #TRACKING_MARGIN} past attack reach;
+	 * this ray can only arm, since the swing is gated on both vanilla crosshair rays.
 	 */
 	private PlayerEntity getAimedPlayer(MinecraftClient client) {
 		if (client.world == null) return null;
 		ClientPlayerEntity self = client.player;
-		// Track a narrowly extended, block-aware ray so reaction/cooldown/sprint prep
-		// can finish as an approaching player crosses into legal reach. This ray can
-		// only arm; both vanilla rays below still gate every actual attack.
 		double reach = attackReach() + TRACKING_MARGIN;
 		Vec3d eye  = self.getEyePos();
 		Vec3d end  = eye.add(self.getRotationVector().multiply(reach));
@@ -744,28 +613,23 @@ public final class HitImprovementsController {
 							pl.lastRenderY - pl.getY(),
 							pl.lastRenderZ - pl.getZ()))
 					.expand(HIT_EXPAND);
-			if (box.contains(eye)) return pl; // point blank: a ray from inside a box never "enters" it
+			if (box.contains(eye)) return pl; // a ray starting inside a box never intersects it
 			java.util.Optional<Vec3d> hit = box.raycast(eye, end);
 			if (hit.isPresent()) {
 				double sq = hit.get().squaredDistanceTo(eye);
 				if (sq <= terrainSq + 1.0E-7D && sq < bestSq) {
 					bestSq = sq;
-					best = pl; // nearest visible crossed player, not first-in-list
+					best = pl; // nearest visible crossed player
 				}
 			}
 		}
 		if (best != null) return best;
 
-		// Vanilla's targetedEntity is derived from the cached crosshairTarget in the
-		// same update (not an independent ray). The useful fallback is a fresh,
-		// block-aware vanilla ray using the current rotation.
+		// targetedEntity is derived from the cached crosshairTarget, so use a fresh ray instead.
 		return getFreshCrosshairPlayer(client);
 	}
 
-	/**
-	 * Eligibility for a normal vanilla air crit. Invalid environments fall back to an
-	 * ordinary attack rather than freezing the trigger indefinitely.
-	 */
+	/** Eligibility for a vanilla air crit. */
 	private boolean canAttemptAirCrit(ClientPlayerEntity player) {
 		return !player.isOnGround()
 				&& !player.isSprinting()
@@ -783,7 +647,7 @@ public final class HitImprovementsController {
 	private boolean inCritWindow(ClientPlayerEntity player) {
 		return canAttemptAirCrit(player)
 				&& player.fallDistance > 0.065F
-				&& player.getVelocity().y < 0.0D; // actually descending, past the apex
+				&& player.getVelocity().y < 0.0D; // descending, past the apex
 	}
 
 	/** Returns the player under the vanilla crosshair ray, or null. */
@@ -798,9 +662,7 @@ public final class HitImprovementsController {
 	private PlayerEntity getFreshCrosshairPlayer(MinecraftClient client) {
 		ClientPlayerEntity self = client.player;
 		Entity camera = client.getCameraEntity();
-		// Fire runs in the tick input phase. A render-partial ray can still be one
-		// interpolated movement step behind exactly when an S-tap target crosses reach,
-		// while vanilla's cached doAttack target is already tick-current.
+		// Fire runs in the tick input phase, where a render-partial ray can be one step behind.
 		HitResult fresh = self.getCrosshairTarget(1.0F, camera == null ? self : camera);
 		if (!(fresh instanceof EntityHitResult entityHit)) return null;
 		Entity entity = entityHit.getEntity();
@@ -814,9 +676,6 @@ public final class HitImprovementsController {
 				&& target.getHealth() > 0.0F
 				&& !target.isSpectator();
 	}
-
-
-	// ── Bookkeeping ──────────────────────────────────────────────────────────
 
 	public String status(MinecraftClient client) {
 		if (!triggerConfigured()) return "Off";

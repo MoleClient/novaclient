@@ -45,8 +45,7 @@ class CombatModeRuntimeTest {
 		UUID stunned = UUID.randomUUID();
 		UUID bystander = UUID.randomUUID();
 		config.combatMode = CombatMode.AXE.configValue();
-		// The continuation is what you get when the mode's own Triggerbot switch is OFF: the only
-		// swings allowed are the ones inside the window a stun just opened, on that one target.
+		// With the mode's Triggerbot switch off, only the post-stun window on that target allows a swing.
 		config.axeModeTrigger = false;
 
 		assertFalse(CombatModeRuntime.triggerEnabledFor(config, stunned));

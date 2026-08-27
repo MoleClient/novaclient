@@ -30,7 +30,7 @@ import java.util.Map;
 public final class AmethystDetectorRenderer {
 	private static final int SCAN_INTERVAL_TICKS = 130;
 	private static final int MAX_MARKERS = 128;
-	/** Any confirmed geode triggers the alert; the cooldown + same-count dedupe stop spam. */
+	// One confirmed geode triggers the alert; the cooldown and same-count dedupe limit repeats.
 	private static final int ALERT_THRESHOLD = 1;
 	private static final int ALERT_COOLDOWN_TICKS = 420;
 	private static final int CRYSTAL_COLOR = 0xFFCB74FF;
@@ -43,7 +43,7 @@ public final class AmethystDetectorRenderer {
 	private int lastAlertCount;
 	private boolean failedClosed;
 
-	// ── Incremental scan state (one cycle is spread across many ticks) ─────────
+	// Incremental scan state; one cycle spans many ticks.
 	private final List<long[]> scanQueue = new ArrayList<>();
 	private Map<CellKey, AmethystCluster> pendingClusters;
 	private int scanMinY;
@@ -63,12 +63,12 @@ public final class AmethystDetectorRenderer {
 			return;
 		}
 		if (failedClosed || client.world == null || client.player == null) return;
-		// player.age resets on world change; never let a stale clock stall scans.
+		// player.age resets on world change, so a stale future stamp must be cleared.
 		if (nextScanTick > client.player.age + SCAN_INTERVAL_TICKS) nextScanTick = 0;
 		try {
 			if (scanQueue.isEmpty()) {
 				if (client.player.age < nextScanTick) return;
-				// Defer if another heavy scanner already owns this tick, so scans never stack.
+				// Defer if another heavy scanner already owns this tick.
 				if (!ScanBudget.tryClaim(client.player.age)) return;
 				nextScanTick = client.player.age + SCAN_INTERVAL_TICKS;
 				beginScan(client);
@@ -108,8 +108,8 @@ public final class AmethystDetectorRenderer {
 				visible.add(new MarkerRender(marker, pulse));
 			}
 
-			// The immediate provider owns one active buffer at a time. Finish every
-			// fill before requesting the lines layer, which flushes the fill buffer.
+			// The immediate provider holds one active buffer, so all fills must finish
+			// before requesting the lines layer.
 			VertexConsumer fills = ctx.consumers().getBuffer(DonutWorldRenderer.FILLS);
 			for (MarkerRender render : visible) {
 				AmethystMarker marker = render.marker();
@@ -133,7 +133,7 @@ public final class AmethystDetectorRenderer {
 
 	private record MarkerRender(AmethystMarker marker, float pulse) {}
 
-	/** Open a scan cycle: snapshot bounds and enqueue every in-range chunk, nearest first. */
+	/** Opens a scan cycle: snapshots bounds and enqueues every in-range chunk. */
 	private void beginScan(MinecraftClient client) {
 		ClientWorld world = client.world;
 		int centerChunkX = client.player.getBlockX() >> 4;
@@ -152,7 +152,7 @@ public final class AmethystDetectorRenderer {
 				scanQueue.add(new long[]{chunkX, chunkZ});
 			}
 		}
-		// Farthest first in the list — chunks pop off the tail, so nearest resolve soonest.
+		// Farthest first: chunks pop off the tail, so the nearest resolve soonest.
 		scanQueue.sort(Comparator.comparingInt(c -> {
 			int dx = (int) c[0] - centerChunkX;
 			int dz = (int) c[1] - centerChunkZ;
@@ -160,7 +160,7 @@ public final class AmethystDetectorRenderer {
 		}));
 	}
 
-	/** Process queued chunks until the shared time budget runs out; commit when drained. */
+	/** Processes queued chunks until the shared time budget runs out, then commits when drained. */
 	private void stepScan(MinecraftClient client) {
 		ClientWorld world = client.world;
 		BlockPos.Mutable pos = new BlockPos.Mutable();
@@ -206,7 +206,7 @@ public final class AmethystDetectorRenderer {
 		ScanBudget.reportUsed(client.player.age, ScanBudget.Lane.AMETHYST, System.nanoTime() - start);
 		if (expired || !scanQueue.isEmpty()) return;
 
-		// Cycle complete — publish markers.
+		// Cycle complete; publish markers.
 		List<AmethystMarker> next = new ArrayList<>();
 		for (AmethystCluster cluster : pendingClusters.values()) {
 			if (!cluster.isLikelyGeode()) continue;
@@ -225,7 +225,6 @@ public final class AmethystDetectorRenderer {
 		if (clusterCount < ALERT_THRESHOLD || client.player == null || client.player.age < nextAlertTick) return;
 		if (clusterCount == lastAlertCount && client.player.age < nextAlertTick + ALERT_COOLDOWN_TICKS) return;
 
-		// Chat line in the same style as the base alert, NovaClient-branded and pink.
 		BlockPos nearest = BlockPos.ofFloored(markers.get(0).center());
 		Text message = Text.literal("[").formatted(Formatting.WHITE)
 				.append(Text.literal("NovaClient").formatted(Formatting.LIGHT_PURPLE))
@@ -235,7 +234,6 @@ public final class AmethystDetectorRenderer {
 						.withColor(0xFFA7F2));
 		client.inGameHud.getChatHud().addMessage(message);
 
-		// Achievement-style popup with the amethyst cluster item.
 		client.getToastManager().add(new NovaToast(
 				new ItemStack(Items.AMETHYST_CLUSTER),
 				Text.literal("Amethyst Finder Triggered"),

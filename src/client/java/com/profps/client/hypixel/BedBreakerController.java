@@ -7,7 +7,7 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 
-/** Hypixel bed breaker: acts only on the bed under the player's current legal crosshair ray. */
+/** Breaks the bed under the player's crosshair on Hypixel. */
 public final class BedBreakerController {
 	private final ProFPSConfig config;
 

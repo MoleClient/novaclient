@@ -11,15 +11,8 @@ import net.minecraft.client.network.ClientPlayNetworkHandler;
 import net.minecraft.network.packet.s2c.play.EntityVelocityUpdateS2CPacket;
 
 /**
- * Velocity (anti-knockback). When you take a hit, the server resolves the knockback and sends a
- * {@link EntityVelocityUpdateS2CPacket} carrying your new velocity; the client applies it via
- * {@code Entity.setVelocityClient}. We redirect that ONE call for the local player and scale the
- * knockback by your Horizontal / Vertical percentages (0% = fully negated), on a configurable
- * chance of hits. Altering server-authored knockback is not human input and can
- * be directly identified by multiplayer simulation checks.
- *
- * <p>The redirect runs after {@code NetworkThreadUtils.forceMainThread}, i.e. on the main thread,
- * so reading the player / config here is safe.
+ * Scales incoming knockback from {@link EntityVelocityUpdateS2CPacket}.
+ * The redirect runs after {@code NetworkThreadUtils.forceMainThread}, so main-thread state is safe to read.
  */
 @Mixin(ClientPlayNetworkHandler.class)
 public abstract class VelocityMixin {

@@ -21,4 +21,17 @@ class MaceShieldComboPolicyTest {
 	void ordinaryMaceCombatNeverWaitsOnTheComboRule() {
 		assertFalse(MaceShieldComboPolicy.waitForSmash(false, true, false));
 	}
+
+	@Test
+	void theApexStillWaitsBecauseTheArcIsNotOverYet() {
+		// The middle argument is airborne, not falling; vertical velocity is zero at the apex.
+		assertTrue(MaceShieldComboPolicy.waitForSmash(true, true, false),
+				"an armed follow-up mid-arc must hold until the smash threshold");
+	}
+
+	@Test
+	void landingIsTheOnlyThingThatEndsTheWaitWithoutASmash() {
+		assertFalse(MaceShieldComboPolicy.waitForSmash(true, false, false),
+				"on the ground there is no smash coming, so stop holding the hit");
+	}
 }

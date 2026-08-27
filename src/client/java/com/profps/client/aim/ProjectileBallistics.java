@@ -1,12 +1,6 @@
 package com.profps.client.aim;
 
-/**
- * Pure 1.21.11 projectile math shared by Auto Aim and its regression tests.
- *
- * <p>Persistent projectiles move once, then apply 0.99 air drag and 0.05 gravity.
- * The solver searches the natural low arc and rejects solutions whose vertical
- * miss is wider than a player hitbox can safely absorb.</p>
- */
+/** Projectile math shared by Auto Aim and its tests; vanilla applies 0.99 drag then 0.05 gravity per tick. */
 final class ProjectileBallistics {
 	static final double AIR_DRAG = 0.99D;
 	static final double ARROW_GRAVITY = 0.05D;
@@ -31,8 +25,7 @@ final class ProjectileBallistics {
 			if (sample == null) continue;
 			double error = Math.abs(sample.height() - verticalDistance);
 			ArrowArc arc = new ArrowArc(angle, sample.ticks(), error);
-			// Prefer accuracy first and, among effectively equal roots, the shorter
-			// low arc that a player would naturally choose.
+			// Rank by error, tie-breaking toward the shorter flight time.
 			if (best == null || error + sample.ticks() * 0.00020D
 					< best.error() + best.ticks() * 0.00020D) {
 				best = arc;

@@ -32,13 +32,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Scaffold with Vape's three mode contracts.
- *
- * <p>Legit only edge-sneaks. GodBridge and TellyBridge arm after the configured number of
- * manual placements made while Back is held. Once armed, the bridge heading is fixed in world
- * space, so visible placement rotations cannot bend the movement path. Automated movement is
- * released only after the next landing block exists; Telly jump is a one-tick pulse following a
- * confirmed placement instead of a permanently-held jump key.</p>
+ * Scaffold with three modes. Legit edge-sneaks only; GodBridge and TellyBridge arm after
+ * a configured number of manual placements made with Back held, then fix the bridge
+ * heading in world space and release movement once the next landing block exists.
  */
 public final class ScaffoldController {
 	public static final int LEGIT = 0;
@@ -84,7 +80,7 @@ public final class ScaffoldController {
 		instance = this;
 	}
 
-	/** Layered from KeyboardInput after physical keys have been read. */
+	/** Called from KeyboardInput after physical keys have been read. */
 	public static PlayerInput movementOverride(PlayerInput physical) {
 		ScaffoldController self = instance;
 		if (self == null || physical == null || !self.config.enabled || !self.config.scaffoldAssist) return null;
@@ -111,8 +107,7 @@ public final class ScaffoldController {
 		if (config.scaffoldMode == TELLY_BRIDGE && config.scaffoldTellyRequireRightClick
 				&& !MinecraftClient.getInstance().options.useKey.isPressed()) return null;
 		if (!movementReady || bridgeDirection.lengthSquared() < 0.5D) {
-			// The physical Back key remains the activation/deactivation contract, but it may not
-			// walk the player over an unplaced edge while rotation is still converging.
+			// Hold position rather than walk over an unplaced edge while rotation converges.
 			return new PlayerInput(false, false, false, false, false, true, false);
 		}
 		boolean jump = config.scaffoldMode == TELLY_BRIDGE && tellyJumpPending;
@@ -223,9 +218,7 @@ public final class ScaffoldController {
 		sneakReleaseNanos = System.nanoTime() + delayMs * 1_000_000L;
 		status = "Edge sneak";
 
-		// Legit Auto Place deliberately uses only the selected main-hand stack. It never
-		// silently changes slots: walk backward with an allowed block held and the same
-		// visible, legal ray a real right-click would use performs the placement.
+		// Legit uses only the selected main-hand stack and never changes slots.
 		if (!input.backward() || !usableBlock(player.getMainHandStack())) {
 			legitPlacementActive = false;
 			legitDirection = Vec3d.ZERO;
@@ -264,9 +257,7 @@ public final class ScaffoldController {
 		long now = System.nanoTime();
 		if (now - lastPlaceNanos < PLACE_INTERVAL_NS) return;
 
-		// Legit places silently against the support face, exactly like Clutch and Height
-		// Clutch do. It must never steal yaw/pitch: the whole point of Legit is that you
-		// keep aiming wherever you like while it edge-sneaks and bridges under you.
+		// Placed silently against the support face; Legit never touches yaw or pitch.
 		BlockHitResult ray = new BlockHitResult(placement.point(), placement.face(),
 				placement.support(), false);
 		ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, ray);

@@ -11,9 +11,8 @@ import java.util.PriorityQueue;
 import java.util.Set;
 
 /**
- * Small, bounded A* used only for walking between schematic placement stands.
- * It never mines or invents movement: neighbors are ordinary walk, one-block
- * step/jump, short safe drops, or collision-free creative-flight cells.
+ * Bounded A* for walking between schematic placement stands. Neighbors are walk,
+ * one-block step, short drop, or collision-free flight cells; it never mines.
  */
 final class SchematicPathfinder {
 	private static final int GROUND_HORIZONTAL_HORIZON = 192;
@@ -43,7 +42,7 @@ final class SchematicPathfinder {
 		/** Player-sized collision-free cell, used by creative flight. */
 		boolean passable(int x, int y, int z);
 
-		/** Lava, fire, cactus, void edge, or another cell to cost as impassable. */
+		/** Lava, fire, cactus, void edge, or any other cell treated as impassable. */
 		boolean hazardous(int x, int y, int z);
 	}
 
@@ -178,11 +177,7 @@ final class SchematicPathfinder {
 		return out;
 	}
 
-	/**
-	 * A diagonal flight edge is allowed only when every axis-aligned substep is
-	 * collision-free. This preserves the shorter, smoother 26-way route without
-	 * letting the player's box cut through a solid corner.
-	 */
+	/** A diagonal flight edge is allowed only when every axis-aligned substep is collision-free. */
 	private static boolean flightTransitionClear(Node current, int dx, int dy, int dz, Space space) {
 		if (dx != 0 && !space.passable(current.x + dx, current.y, current.z)) return false;
 		if (dy != 0 && !space.passable(current.x, current.y + dy, current.z)) return false;

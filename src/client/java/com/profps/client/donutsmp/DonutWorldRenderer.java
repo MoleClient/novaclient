@@ -22,12 +22,7 @@ import org.joml.Matrix4fc;
 
 final class DonutWorldRenderer {
 	static final RenderLayer FILLS = createFillLayer();
-	/**
-	 * See-through lines. Vanilla {@link RenderLayers#lines()} depth-tests, so
-	 * outlines vanished behind terrain while the (no-depth) fills showed through
-	 * — half the overlay was missing underground. This is vanilla's exact lines
-	 * pipeline with the depth test turned off.
-	 */
+	/** {@link RenderLayers#lines()} with the depth test off, so outlines show through terrain. */
 	static final RenderLayer LINES = createLineLayer();
 
 	private DonutWorldRenderer() {
@@ -47,11 +42,7 @@ final class DonutWorldRenderer {
 		quad(buf, pos, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0, r, g, b, alpha);
 	}
 
-	/**
-	 * A single flat quad at the box's top face. Tiling these across touching
-	 * chunks makes one seamless translucent sheet (no internal seams or nested
-	 * boxes); the FILLS layer has culling off, so it shows from above and below.
-	 */
+	/** Draws a single quad at the box's top face; tiles seamlessly across touching chunks. */
 	static void drawFlatTop(VertexConsumer buf, Matrix4fc pos, Box box, Vec3d camera, int color, float alpha) {
 		float r = ((color >> 16) & 0xFF) / 255.0F;
 		float g = ((color >> 8) & 0xFF) / 255.0F;
@@ -61,12 +52,7 @@ final class DonutWorldRenderer {
 		quad(buf, pos, x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1, r, g, b, alpha);
 	}
 
-	/**
-	 * Soft-edged box outline: three passes of decreasing width and rising alpha.
-	 * One fixed-width stroke rasterises with a stepped edge at most viewing
-	 * angles, which is what reads as "blocky"; layering the passes reproduces the
-	 * falloff of an antialiased line so the edge stays smooth from anywhere.
-	 */
+	/** Box outline in three passes of decreasing width and rising alpha, approximating antialiasing. */
 	static void drawSoftOutline(VertexConsumer buf, Matrix4fc pos, MatrixStack.Entry entry,
 			Box box, Vec3d camera, int color, float alpha) {
 		drawOutline(buf, pos, entry, box, camera, color, alpha * 0.22F, 5.0F);
@@ -152,9 +138,7 @@ final class DonutWorldRenderer {
 	}
 
 	private static RenderLayer createLineLayer() {
-		// Mirrors RenderPipelines.LINES (rendertype_lines shader, translucent
-		// blend, no cull, LINE_WIDTH vertex format) but with NO_DEPTH_TEST and
-		// no depth write so edges stay visible through terrain.
+		// Mirrors RenderPipelines.LINES but with NO_DEPTH_TEST and no depth write.
 		RenderPipeline pipeline = RenderPipelinesInvoker.profps$register(RenderPipeline.builder()
 				.withLocation(Identifier.of(ProFPS.MOD_ID, "pipeline/donut_detector_lines"))
 				.withUniform("DynamicTransforms", UniformType.UNIFORM_BUFFER)

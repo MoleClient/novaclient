@@ -24,9 +24,8 @@ import java.util.Random;
 import java.util.Set;
 
 /**
- * One serialized click engine shared by AutoArmor, ChestSteal, Refill,
- * AutoHotbar and InvCleaner. Only one owner can mutate a screen handler at a
- * time, and every click is revalidated against the live sync id.
+ * Serialized slot-click queue shared by AutoArmor, ChestSteal, Refill, AutoHotbar and InvCleaner.
+ * Only one owner runs at a time and every click is validated against the live sync id.
  */
 public final class InventoryAutomationController {
 	private final ProFPSConfig config;

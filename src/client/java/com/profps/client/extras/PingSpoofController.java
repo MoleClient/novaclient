@@ -7,19 +7,8 @@ import net.minecraft.network.packet.c2s.common.KeepAliveC2SPacket;
 import net.minecraft.util.math.MathHelper;
 
 /**
- * Ping Spoofer — makes the server report whatever ping you choose.
- *
- * <p>The server measures your latency purely by how long you take to answer its
- * KeepAlive packets. This holds that one reply for the configured number of
- * milliseconds (and ONLY that reply — your movement and everything else still flows
- * normally, so there's no actual lag), so the round-trip the server times comes back
- * as your spoofed ping. The held reply is always sent well within the server's
- * timeout window, and immediately if you switch the module off, so it never
- * disconnects you.
- *
- * <p>The KeepAlive arrives on the network thread; the mixin hands the id here and we
- * fire the delayed reply from the client tick (main thread). Fields are volatile for
- * that hand-off — there's only ever one KeepAlive in flight at a time.
+ * Delays the KeepAlive reply so the server reports a chosen ping. Fields are volatile
+ * because the id arrives on the network thread and the reply is sent from the client tick.
  */
 public final class PingSpoofController {
 	private final ProFPSConfig config;
@@ -34,9 +23,9 @@ public final class PingSpoofController {
 	}
 
 	/**
-	 * Called from the network thread the instant a KeepAlive lands. When spoofing,
-	 * we take ownership of the reply (returning true) so the vanilla immediate answer
-	 * is cancelled, and send it ourselves after the delay.
+	 * Called from the network thread when a KeepAlive lands.
+	 *
+	 * @return true if the reply is taken over here and the vanilla immediate answer should be cancelled
 	 */
 	public boolean captureIfSpoofing(long id) {
 		int ms = effectiveDelayMs();
@@ -48,9 +37,9 @@ public final class PingSpoofController {
 	}
 
 	/**
-	 * How long to hold this reply. The Ping Equalizer (match your opponent) wins when
-	 * it has a live combat target; otherwise the fixed Ping Spoofer value applies. A
-	 * negative result means "don't spoof — answer immediately".
+	 * How long to hold the reply; the equalizer takes precedence over the fixed spoof value.
+	 *
+	 * @return delay in ms, or negative to answer immediately
 	 */
 	private int effectiveDelayMs() {
 		if (!config.enabled) return -1;

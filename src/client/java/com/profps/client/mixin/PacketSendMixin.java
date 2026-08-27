@@ -8,12 +8,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/**
- * The single choke-point for Packet Utils' outbound control. Every client-to-server packet
- * (movement, clicks, chat, keep-alive replies…) runs through {@code sendPacket} on the common
- * network handler, so intercepting here catches them all. {@link PacketManager} decides whether
- * to drop, park or pass each one; when it says "cancel" we skip the vanilla send.
- */
+/** Routes every outbound client-to-server packet through {@link PacketManager}. */
 @Mixin(ClientCommonNetworkHandler.class)
 public abstract class PacketSendMixin {
 

@@ -26,17 +26,13 @@ import org.joml.Matrix4fc;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Player hitbox overlay rendered with dedicated no-depth pipelines. Both the
- * translucent faces and outline remain visible through blocks and entities.
- */
+/** Player hitbox overlay drawn with no-depth pipelines so it stays visible through blocks. */
 public final class HitboxesRenderer {
 	private static final RenderLayer THROUGH_WALL_LINES = createLineLayer();
 	private static final RenderLayer THROUGH_WALL_FILLS = createFillLayer();
 
 	private final ProFPSConfig config;
-	// WorldRenderContext.matrices() is nullable; coordinates are camera-relative,
-	// so an identity stack is a safe fallback for this simple overlay.
+	// Fallback for the nullable WorldRenderContext.matrices(); coordinates are camera-relative.
 	private final MatrixStack identity = new MatrixStack();
 	private boolean renderFailed;
 
@@ -75,8 +71,7 @@ public final class HitboxesRenderer {
 			for (PlayerEntity player : mc.world.getPlayers()) {
 				if (player == mc.player || !player.isAlive() || player.isSpectator()) continue;
 
-				// Offset the authoritative hitbox to the entity's interpolated render
-				// position so fast-moving players do not leave a one-tick-jittering box.
+				// Offset the hitbox to the interpolated render position to avoid per-tick jitter.
 				Vec3d renderPos = player.getLerpedPos(tickProgress);
 				Box box = player.getBoundingBox().offset(
 						renderPos.x - player.getX(),
@@ -85,8 +80,7 @@ public final class HitboxesRenderer {
 				visible.add(box);
 			}
 
-			// Request and finish one layer at a time. getBuffer(lines) flushes the
-			// fill buffer on Minecraft's immediate provider.
+			// One layer at a time: getBuffer(lines) flushes the fill buffer on the immediate provider.
 			if (fillAlpha > 0.0F) {
 				VertexConsumer fills = consumers.getBuffer(THROUGH_WALL_FILLS);
 				for (Box box : visible) {

@@ -23,15 +23,10 @@ import com.profps.client.crystalpvp.TotemTweaksController;
 import com.profps.client.donutsmp.AdvancedEspRenderer;
 import com.profps.client.donutsmp.AmethystDetectorRenderer;
 import com.profps.client.donutsmp.BasicEspRenderer;
-import com.profps.client.donutsmp.ChunkActivityRenderer;
-import com.profps.client.donutsmp.ChunkFinderRenderer;
 import com.profps.client.donutsmp.FreecamController;
-import com.profps.client.donutsmp.NetherPortalMapper;
-import com.profps.client.donutsmp.NovaGotoController;
-import com.profps.client.donutsmp.PlayerSightingLog;
+import com.profps.client.donutsmp.PrimeChunkFinder;
 import com.profps.client.donutsmp.StashPinger;
 import com.profps.client.donutsmp.StorageEspRenderer;
-import com.profps.client.donutsmp.SuspiciousChunksRenderer;
 import com.profps.client.donutsmp.TunnelController;
 import com.profps.client.classics.BoatFlyController;
 import com.profps.client.classics.FlightController;
@@ -53,6 +48,7 @@ import com.profps.client.instants.AutoBreachSwapController;
 import com.profps.client.instants.AutoLungeSwapController;
 import com.profps.client.instants.AutoSpearController;
 import com.profps.client.instants.AutoMaceController;
+import com.profps.client.instants.AxeCritController;
 import com.profps.client.instants.AxeStunController;
 import com.profps.client.instants.KnockbackDisplacementController;
 import com.profps.client.instants.MovementInstantsController;
@@ -97,6 +93,7 @@ public final class ProFPSClient implements ClientModInitializer {
 	private static HitImprovementsController hitImprovements;
 	private static ExpandedHitboxController expandedHitbox;
 	private static AutoMaceController autoMace;
+	private static AxeCritController axeCrit;
 	private static AutoBreachSwapController autoBreachSwap;
 	private static AxeStunController axeStun;
 	private static PearlCatchController pearlCatch;
@@ -114,12 +111,12 @@ public final class ProFPSClient implements ClientModInitializer {
 	private static AntiFireballController antiFireball;
 	private static KnockbackDisplacementController kbDisplace;
 	private static KeyBinding openKey;
-	private static KeyBinding freecamKey;
 
 	@Override
 	public void onInitializeClient() {
 		config = ProFPSConfig.load();
 		FullBrightController.initialize(config);
+		com.profps.client.data.DataContribution.init(config);
 		aimImprovements = new AimImprovementsController(config);
 		strafeImprovements = new StrafeImprovementsController(config);
 		hitImprovements = new HitImprovementsController(config);
@@ -127,7 +124,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		JumpResetController jumpReset = new JumpResetController(config);
 		VelocityController velocity = new VelocityController(config);
 		anchorMacro = new AnchorMacroController(config);
-		fastUse = new FastUseController(config);
+		fastUse = new FastUseController(config, anchorMacro);
 		totemTweaks = new TotemTweaksController(config);
 		pingEqualizer = new PingEqualizerController(config);
 		pingSpoof = new PingSpoofController(config, pingEqualizer);
@@ -139,18 +136,14 @@ public final class ProFPSClient implements ClientModInitializer {
 		BasicEspRenderer basicEsp = new BasicEspRenderer(config);
 		AdvancedEspRenderer advancedEsp = new AdvancedEspRenderer(config);
 		StorageEspRenderer storageEsp = new StorageEspRenderer(config);
-		SuspiciousChunksRenderer suspiciousChunks = new SuspiciousChunksRenderer(config);
-		StashPinger stashPinger = new StashPinger(config, storageEsp);
 		FreecamController freecam = new FreecamController(config);
 		TunnelController tunnel = new TunnelController(config);
-		NovaGotoController novaGoto = new NovaGotoController(config, stashPinger);
-		ChunkActivityRenderer chunkActivity = new ChunkActivityRenderer(config);
-		ChunkFinderRenderer chunkFinder = new ChunkFinderRenderer(config, chunkActivity);
+		PrimeChunkFinder primeChunk = new PrimeChunkFinder(config);
+		StashPinger stashPinger = new StashPinger(config);
 		AmethystDetectorRenderer amethystDetector = new AmethystDetectorRenderer(config);
-		NetherPortalMapper netherMapper = new NetherPortalMapper(config);
-		PlayerSightingLog playerSightings = new PlayerSightingLog(config);
 		autoClicker = new AutoClickerController(config);
 		autoMace = new AutoMaceController(config);
+		axeCrit = new AxeCritController(config);
 		autoBreachSwap = new AutoBreachSwapController(config);
 		axeStun = new AxeStunController(config);
 		pearlCatch = new PearlCatchController(config);
@@ -179,6 +172,8 @@ public final class ProFPSClient implements ClientModInitializer {
 		AutoBedController autoBed = new AutoBedController(config);
 		autoCreeper = new AutoCreeperController(config);
 		AutoMinecartController autoMinecart = new AutoMinecartController(config);
+		// Restore the last loaded schematic at its saved anchor.
+		com.profps.client.extras.SchematicLibrary.restore(config);
 		novaCategories = NovaModules.build(config);
 		ModuleKeybinds moduleKeybinds = new ModuleKeybinds(config, novaCategories);
 		KeyBinding.Category controlsCategory = KeyBinding.Category.create(Identifier.of(ProFPS.MOD_ID, "controls"));
@@ -187,12 +182,6 @@ public final class ProFPSClient implements ClientModInitializer {
 				"key.profps.open",
 				InputUtil.Type.KEYSYM,
 				GLFW.GLFW_KEY_RIGHT_SHIFT,
-				controlsCategory
-		));
-		freecamKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-				"key.profps.freecam",
-				InputUtil.Type.KEYSYM,
-				GLFW.GLFW_KEY_F6,
 				controlsCategory
 		));
 		ClientTickEvents.START_CLIENT_TICK.register(autoMinecart::preTick);
@@ -207,42 +196,33 @@ public final class ProFPSClient implements ClientModInitializer {
 			}
 			moduleKeybinds.tick(client);
 			com.profps.client.classics.NicknameManager.update(config);
-			while (freecamKey.wasPressed()) {
-				freecam.toggle();
-			}
 			aimImprovements.tick(client);
 			strafeImprovements.tick(client);
-			// hitImprovements (triggerbot) is driven from TriggerbotPreMovementMixin instead,
-			// so its attack packet is sent BEFORE the flying packet (vanilla order) and never
-			// trips Grim's "Post" check. Do NOT also tick it here or it would double-fire.
+			// hitImprovements is ticked from TriggerbotPreMovementMixin to keep attack before
+			// flying packet order; ticking it here too would double-fire.
 			jumpReset.tick(client);
 			velocity.tick(client);
 			autoPot.tick(client);
 			autoXp.tick(client);
-			anchorMacro.tick(client);
 			fastUse.tick(client);
 			totemTweaks.tick(client);
+			// Both write body rotation; Tunnel must land last, so Freecam ticks first.
 			freecam.tick(client);
 			tunnel.tick(client);
-			novaGoto.tick(client);
 			advancedEsp.tick(client);
 			storageEsp.tick(client);
-			suspiciousChunks.tick(client);
-			// Stash Pinger reads Storage ESP's areas, so it ticks after it.
+			primeChunk.tick(client);
+			// Reads primeChunk's flag set, so it must tick after it.
 			stashPinger.tick(client);
-			chunkActivity.tick(client);
 			amethystDetector.tick(client);
-			netherMapper.tick(client);
-			playerSightings.tick(client);
 			toolMine.tick(client);
 			fastPlace.tick(client);
 			inventoryAutomation.tick(client);
-			// Auto Sign deliberately runs with a screen open — the sign editor IS its trigger.
+			// Runs with a screen open: the sign editor is its trigger.
 			autoSign.tick(client);
 			rtpFinder.tick(client);
 			movementInstants.tick(client);
-			// autoMace is driven from TriggerbotPreMovementMixin (firePreMovement) so its attack
-			// packet is sent BEFORE the flying packet (vanilla order) and won't trip Grim "Post".
+			// autoMace is ticked from firePreMovement to keep attack before flying packet order.
 			autoAim.tick(client);
 			scaffold.tick(client);
 			clutch.tick(client);
@@ -262,20 +242,13 @@ public final class ProFPSClient implements ClientModInitializer {
 			bedBreaker.tick(client);
 		});
 
-		// Top-left FPS box removed. (ProFPSHud kept in the codebase, just not registered.)
+		// ProFPSHud is intentionally not registered.
 		HudRenderCallback.EVENT.register(new NovaModuleListHud(config, novaCategories));
 		HudRenderCallback.EVENT.register(scaffold::renderHud);
-		HudRenderCallback.EVENT.register(stashPinger);
-		HudRenderCallback.EVENT.register(chunkActivity);
-		HudRenderCallback.EVENT.register(netherMapper);
-		HudRenderCallback.EVENT.register(playerSightings);
 		WorldRenderEvents.END_MAIN.register(context -> {
 				MinecraftClient mc = MinecraftClient.getInstance();
-				// Runs unconditionally and before any aiming module: silent aim is
-				// held by continuous request, so this is what walks the body back
-				// under the camera the moment nothing is asking for it any more —
-				// including when a higher-priority controller stops the mace's
-				// frame hook from running at all.
+				// Must run before any aiming module: silent aim is held by continuous
+				// request, and this restores the body once nothing is requesting it.
 				com.profps.client.aim.SilentAimController.instance().frame(mc, silentAimFrameDelta());
 				pearlCatch.frame(mc);
 				boolean pearlOwnsRotation = pearlCatch.ownsRotation();
@@ -284,24 +257,27 @@ public final class ProFPSClient implements ClientModInitializer {
 				boolean creeperOwnsRotation = autoCreeper.ownsRotation();
 				boolean spearOwnsRotation = false;
 				if (!pearlOwnsRotation && !expandedOwnsRotation && !creeperOwnsRotation) {
-					// Auto Spear steers the approach; the lunge swap never takes the camera.
-					spearOwnsRotation = autoSpear.frame(mc) || autoLunge.frame(mc);
+					// autoLunge is a momentary burst and outranks autoSpear's standing aim.
+					spearOwnsRotation = autoLunge.frame(mc);
+					if (!spearOwnsRotation) spearOwnsRotation = autoSpear.frame(mc);
 				}
 				if (!pearlOwnsRotation && !expandedOwnsRotation && !creeperOwnsRotation
 						&& !spearOwnsRotation) {
 					schematicBuild.frame(mc);
 				}
 				boolean schematicOwnsRotation = schematicBuild.ownsRotation();
+				// The pot flick must own rotation exclusively while it runs.
+				boolean potOwnsRotation = autoPot.ownsRotation();
+				if (!schematicOwnsRotation) {
+					autoPot.frame(mc);
+					tunnel.frame(mc);
+				}
 				boolean modeRotationBlocked = pearlOwnsRotation || expandedOwnsRotation || creeperOwnsRotation
-						|| spearOwnsRotation || schematicOwnsRotation;
+						|| spearOwnsRotation || schematicOwnsRotation || potOwnsRotation;
 				if (!modeRotationBlocked) {
 					aimImprovements.frame(mc);
 					strafeImprovements.frame(mc);
 					hitImprovements.frame(mc);
-				}
-				if (!schematicOwnsRotation) {
-					autoPot.frame(mc);
-					tunnel.frame(mc);
 				}
 				if (!modeRotationBlocked) {
 					autoMace.frame(mc);
@@ -312,19 +288,17 @@ public final class ProFPSClient implements ClientModInitializer {
 				if (!schematicOwnsRotation && !pearlOwnsRotation && !expandedOwnsRotation) autoCreeper.frame(mc);
 				if (!schematicOwnsRotation) autoMinecart.frame(mc);
 			});
-		// Do not attach overlays to BEFORE_DEBUG_RENDER. Performance mods can skip the
-		// vanilla debug-renderer invocation entirely, which also skips Fabric's event.
-		// END_MAIN is part of the normal world pass and renders these overlays after
-		// terrain/translucency regardless of whether debug rendering is active.
+		// Use END_MAIN, not BEFORE_DEBUG_RENDER: performance mods can skip the vanilla
+		// debug-renderer invocation and with it Fabric's event.
 		WorldRenderEvents.END_MAIN.register(hitboxes::render);
 		WorldRenderEvents.END_MAIN.register(advancedEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(storageEsp::renderWorld);
-		WorldRenderEvents.END_MAIN.register(suspiciousChunks::renderWorld);
 		WorldRenderEvents.END_MAIN.register(remember::render);
-		WorldRenderEvents.END_MAIN.register(chunkFinder::renderWorld);
+		WorldRenderEvents.END_MAIN.register(
+				new com.profps.client.extras.SchematicGhostRenderer(config)::render);
+		WorldRenderEvents.END_MAIN.register(primeChunk::renderWorld);
+		WorldRenderEvents.END_MAIN.register(stashPinger::renderWorld);
 		WorldRenderEvents.END_MAIN.register(amethystDetector::renderWorld);
-		WorldRenderEvents.END_MAIN.register(netherMapper::renderWorld);
-		WorldRenderEvents.END_MAIN.register(playerSightings::renderWorld);
 
 		AttackEntityCallback.EVENT.register((player, world, hand, entity, hitResult) -> {
 			MinecraftClient client = MinecraftClient.getInstance();
@@ -332,6 +306,11 @@ public final class ProFPSClient implements ClientModInitializer {
 			strafeImprovements.markAttack(client, entity);
 			pingEqualizer.markAttack(client, entity);
 			swordAi.markAttack(client, entity);
+			com.profps.client.data.DataContribution.noteAttack();
+			return ActionResult.PASS;
+		});
+		UseBlockCallback.EVENT.register((player, world, hand, hitResult) -> {
+			com.profps.client.data.DataContribution.noteBlockPlace();
 			return ActionResult.PASS;
 		});
 		UseBlockCallback.EVENT.register(anchorMacro::onUseBlock);
@@ -341,72 +320,51 @@ public final class ProFPSClient implements ClientModInitializer {
 		UseBlockCallback.EVENT.register(autoMinecart::onUseBlock);
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> dispatcher.register(
 				ClientCommandManager.literal("nova")
-						.then(ClientCommandManager.literal("goto")
-								.then(ClientCommandManager.literal("near")
-										.executes(context -> novaGoto.startNear(MinecraftClient.getInstance())))
-								.then(ClientCommandManager.literal("stop")
-										.executes(context -> novaGoto.stop(MinecraftClient.getInstance()))))
-						.then(ClientCommandManager.literal("bases")
-								.executes(context -> listBases(MinecraftClient.getInstance(), chunkActivity)))
+						.then(ClientCommandManager.literal("data")
+								.executes(context -> reportDataContribution(MinecraftClient.getInstance())))
 		));
 
-		// Packet Utils: draw the in-GUI toolbar on every screen and reset its live state on
-		// disconnect so a reconnect never rejoins already silenced or holding a stale queue.
 		PacketOverlay.register();
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
 			PacketManager.INSTANCE.reset();
 			CombatModeRuntime.reset();
 			if (pearlCatch != null) pearlCatch.reset();
+			// Flush the last partial batch before the session state is lost.
+			com.profps.client.data.DataContribution.endSession();
 		});
 
 		ProFPS.LOGGER.info("ProFPS client loaded.");
 	}
 
-	/**
-	 * Chat listing of every archived (confirmed) base on this server, strongest
-	 * first, with distance from the player; each entry click-copies its coords.
-	 */
-	private static int listBases(MinecraftClient client, ChunkActivityRenderer engine) {
+	/** Prints the data recorder's status for {@code /nova data}. */
+	private static int reportDataContribution(MinecraftClient client) {
 		if (client.player == null) return 0;
-		java.util.List<ChunkActivityRenderer.BaseSummary> bases = engine.baseSummaries();
-		if (bases.isEmpty()) {
-			client.player.sendMessage(net.minecraft.text.Text.literal("[ProFPS] ")
-					.formatted(net.minecraft.util.Formatting.DARK_GRAY)
-					.append(net.minecraft.text.Text.literal("No confirmed bases archived yet — Base Heat saves red-tier chunks automatically.")
-							.formatted(net.minecraft.util.Formatting.GRAY)), false);
+		com.profps.client.data.DataContribution recorder = com.profps.client.data.DataContribution.instance();
+		if (recorder == null) {
+			client.player.sendMessage(net.minecraft.text.Text.literal("Data contribution is not initialised.")
+					.formatted(net.minecraft.util.Formatting.RED), false);
 			return 1;
 		}
-		client.player.sendMessage(net.minecraft.text.Text.literal("[ProFPS] ")
-				.formatted(net.minecraft.util.Formatting.DARK_GRAY)
-				.append(net.minecraft.text.Text.literal("Confirmed bases (click to copy coords):")
-						.formatted(net.minecraft.util.Formatting.GOLD)), false);
-		int shown = 0;
-		for (ChunkActivityRenderer.BaseSummary base : bases) {
-			if (shown++ >= 10) break;
-			int dist = (int) Math.sqrt(client.player.squaredDistanceTo(base.blockX(), client.player.getY(), base.blockZ()));
-			String coords = base.blockX() + " " + base.blockZ();
-			client.player.sendMessage(net.minecraft.text.Text.literal("  " + coords)
-					.styled(style -> style
-							.withColor(net.minecraft.util.Formatting.YELLOW)
-							.withClickEvent(new net.minecraft.text.ClickEvent.CopyToClipboard(coords)))
-					.append(net.minecraft.text.Text.literal("  " + dist + "m · " + base.why())
-							.formatted(net.minecraft.util.Formatting.GRAY)), false);
+		client.player.sendMessage(net.minecraft.text.Text.literal("Data contribution")
+				.formatted(net.minecraft.util.Formatting.AQUA), false);
+		for (String line : recorder.status()) {
+			client.player.sendMessage(net.minecraft.text.Text.literal("  " + line)
+					.formatted(net.minecraft.util.Formatting.GRAY), false);
 		}
 		return 1;
 	}
 
 	public static ProFPSConfig config() { return config; }
 
-	/** The built module catalogue, for screens (home/menus) that open the Modules UI. */
+	/** The built module catalogue used by screens that open the Modules UI. */
 	public static java.util.List<NovaModules.Category> novaCategories() { return novaCategories; }
 	public static AimImprovementsController aimImprovements() { return aimImprovements; }
 	public static StrafeImprovementsController strafeImprovements() { return strafeImprovements; }
 	public static HitImprovementsController hitImprovements() { return hitImprovements; }
 
 	/**
-	 * Tick click/action modules at the tail of {@code handleInputEvents()}, the same phase
-	 * vanilla handles a click and before the player tick sends movement. Their action packets
-	 * therefore keep vanilla action → flying order. Driven by {@code TriggerbotPreMovementMixin}.
+	 * Ticks click/action modules at the tail of {@code handleInputEvents()}, before movement is
+	 * sent, so action packets precede the flying packet. Called by {@code TriggerbotPreMovementMixin}.
 	 */
 	public static void firePreMovement(MinecraftClient client) {
 		CombatModeRuntime.beginPreMovementTick(config);
@@ -424,29 +382,31 @@ public final class ProFPSClient implements ClientModInitializer {
 		CombatMode mode = CombatModePolicy.mode(config);
 		switch (mode) {
 			case SWORD -> {
-				// Disabled controllers still tick first so an in-flight hotbar sequence from
-				// the previously selected mode can restore its item and clear transient state.
+				// Disabled controllers still tick so an in-flight hotbar sequence can restore.
 				if (autoMace != null) autoMace.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
 				if (axeStun != null) axeStun.tick(client);
+				if (axeCrit != null) axeCrit.tick(client);
 				if (hitImprovements != null) hitImprovements.tick(client);
 			}
 			case AXE -> {
 				if (autoMace != null) autoMace.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
 				if (axeStun != null) axeStun.tick(client);
+				if (axeCrit != null) axeCrit.tick(client);
 				if (hitImprovements != null) hitImprovements.tick(client);
 			}
 			case MACE -> {
 				if (axeStun != null) axeStun.tick(client);
+				if (axeCrit != null) axeCrit.tick(client);
 				if (hitImprovements != null) hitImprovements.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
 				if (autoMace != null) autoMace.tick(client);
 			}
 			case OFF -> {
-				// Let any in-flight hotbar sequence restore first after Modes are turned off;
-				// the shared action claim still permits only one ordered action in this tick.
+				// Order lets an in-flight hotbar sequence restore first once Modes are off.
 				if (axeStun != null) axeStun.tick(client);
+				if (axeCrit != null) axeCrit.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
 				if (autoMace != null) autoMace.tick(client);
 				if (hitImprovements != null) hitImprovements.tick(client);
@@ -455,12 +415,16 @@ public final class ProFPSClient implements ClientModInitializer {
 		if (autoLunge != null) autoLunge.tickPreMovement(client);
 		if (autoSpear != null) autoSpear.tick(client);
 		if (kbDisplace != null) kbDisplace.tick(client);
+		if (anchorMacro != null) anchorMacro.tick(client);
 		if (autoCrystal != null) autoCrystal.tick(client);
 		if (autoClicker != null) autoClicker.tickPreMovement(client);
+		// Read-only, and last, so it samples the state the modules above settled.
+		com.profps.client.data.DataContribution recorder = com.profps.client.data.DataContribution.instance();
+		if (recorder != null) recorder.tick(client);
 	}
 	private static long silentAimFrameNanos;
 
-	/** Elapsed render-frame time in tick units, so the hand-back is frame-rate independent. */
+	/** Elapsed render-frame time in tick units. */
 	private static float silentAimFrameDelta() {
 		long now = System.nanoTime();
 		long previous = silentAimFrameNanos;

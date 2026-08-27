@@ -1,14 +1,6 @@
 package com.profps.client.ui.nova;
 
-/**
- * Resolves Nova's drawing scale from the current GUI viewport.
- *
- * <p>The 650x450 virtual canvas is the smallest layout at which the complete
- * sidebar, all seven module categories, the six General destinations, the
- * account card, combat-mode cards, and modal settings have their designed
- * spacing. The returned scale may make that canvas smaller on screen, but it
- * never lets resizing or a manual preference collapse the internal geometry.
- */
+/** Resolves Nova's drawing scale from the current GUI viewport, never below the 650x450 virtual canvas. */
 public final class NovaUiScale {
 	public static final int MIN_LAYOUT_WIDTH = 650;
 	public static final int MIN_LAYOUT_HEIGHT = 450;

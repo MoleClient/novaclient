@@ -8,14 +8,7 @@ import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.MathHelper;
 
-/**
- * Teleporter — right-click a block you're looking at to teleport onto it.
- *
- * <p>On each fresh right-click it raycasts where you're aiming (up to the configured
- * range) and moves your player to the face you clicked. Because this directly changes
- * client position rather than performing a vanilla teleport, multiplayer movement
- * checks can directly flag or reject it.
- */
+/** Teleports the player onto the block face targeted by a fresh right-click. */
 public final class TeleporterController {
 	private final ProFPSConfig config;
 	private boolean prevUse;
@@ -34,7 +27,7 @@ public final class TeleporterController {
 		}
 
 		boolean use = client.options.useKey.isPressed();
-		boolean clicked = use && !prevUse; // rising edge = one fresh right-click
+		boolean clicked = use && !prevUse; // rising edge
 		prevUse = use;
 		if (!clicked) return;
 
@@ -46,12 +39,12 @@ public final class TeleporterController {
 		if (hit.getType() != HitResult.Type.BLOCK) return;
 
 		BlockHitResult block = (BlockHitResult) hit;
-		BlockPos dest = block.getBlockPos().offset(block.getSide()); // the open space against the clicked face
+		BlockPos dest = block.getBlockPos().offset(block.getSide()); // open space against the clicked face
 
 		player.setVelocity(0.0, 0.0, 0.0);
 		player.setPosition(dest.getX() + 0.5, dest.getY(), dest.getZ() + 0.5);
 		player.setVelocity(0.0, 0.0, 0.0);
-		player.resetPosition();   // snap render to the new spot (don't lerp the whole way)
+		player.resetPosition();   // snap render to the new spot instead of lerping
 		player.fallDistance = 0.0F;
 		cooldownUntilNanos = now + 250_000_000L;
 	}

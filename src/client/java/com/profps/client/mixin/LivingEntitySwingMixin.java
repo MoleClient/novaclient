@@ -7,17 +7,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/**
- * Slow module — stretches the local player's hand-swing animation.
- *
- * <p>{@code getHandSwingDuration()} controls how many ticks one swing animation
- * plays over (and how long {@code handSwinging} stays true). Multiplying the
- * returned value for the local player alone makes mining/attacking/placing look
- * far slower without changing the attack, block-break or use packets the
- * interaction manager sends — those run on their own clock, so the server keeps
- * registering everything at full speed. Haste / mining-fatigue scaling is
- * preserved because we hook the value vanilla already computed at RETURN.
- */
+/** Stretches the local player's hand-swing animation duration. Visual only; packets are unaffected. */
 @Mixin(LivingEntity.class)
 public abstract class LivingEntitySwingMixin {
 	@Inject(method = "getHandSwingDuration", at = @At("RETURN"), cancellable = true)

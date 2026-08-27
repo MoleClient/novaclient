@@ -9,12 +9,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/**
- * Lets Ping Spoofer hold the KeepAlive reply. When spoofing, the controller takes
- * ownership of the response and we cancel the vanilla immediate answer; otherwise
- * the packet is handled normally. KeepAlive is part of the common protocol, so this
- * targets {@link ClientCommonNetworkHandler}.
- */
+/** Lets Ping Spoofer take ownership of the KeepAlive reply instead of vanilla answering immediately. */
 @Mixin(ClientCommonNetworkHandler.class)
 public abstract class KeepAliveSpoofMixin {
 	@Inject(method = "onKeepAlive", at = @At("HEAD"), cancellable = true)

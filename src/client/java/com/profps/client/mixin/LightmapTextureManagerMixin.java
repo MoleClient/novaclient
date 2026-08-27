@@ -7,9 +7,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
 
 /**
- * Enhances only the two brightness inputs written to Minecraft's lightmap UBO.
- * The ordinals mirror LightmapTextureManager.update's std140 layout:
- * night-vision is float #4 and gamma/brightness is float #7.
+ * Adjusts the night-vision and gamma floats written to the lightmap UBO.
+ * Ordinals follow update()'s std140 layout: night-vision is float #4, gamma is float #7.
  */
 @Mixin(LightmapTextureManager.class)
 public abstract class LightmapTextureManagerMixin {

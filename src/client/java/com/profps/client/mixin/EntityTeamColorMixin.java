@@ -7,14 +7,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/**
- * Colours the Mob ESP outline. Vanilla tints the outline pass with the entity's
- * team colour, so this is the supported way to choose it: red for hostile, green
- * for passive.
- *
- * <p>Scoped to entities Mob ESP is actually outlining, so a real scoreboard team
- * colour is never overwritten for anything else that reads this value.
- */
+/** Supplies the outline tint for Mob ESP targets, leaving real team colours alone. */
 @Mixin(Entity.class)
 public abstract class EntityTeamColorMixin {
 	@Inject(method = "getTeamColorValue", at = @At("HEAD"), cancellable = true)

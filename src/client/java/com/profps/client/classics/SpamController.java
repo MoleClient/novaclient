@@ -7,13 +7,7 @@ import net.minecraft.util.math.MathHelper;
 
 import java.security.SecureRandom;
 
-/**
- * Spam — repeatedly sends a message you type into the chat. Speed (1..10) sets how
- * fast, with a little jitter so it isn't a perfect metronome. A message starting
- * with "/" is sent as a command. Pauses while any screen is open so you can edit
- * the message or chat without it talking over you. Servers rate-limit / mute chat
- * spam, so the top speed is bounded to something a server will actually accept.
- */
+/** Repeatedly sends a configured chat message; a leading "/" sends it as a command. */
 public final class SpamController {
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
@@ -35,7 +29,7 @@ public final class SpamController {
 		long now = System.nanoTime();
 		if (nextSendNanos != 0L && now < nextSendNanos) return;
 
-		// Speed 1..10 → ~1500ms down to ~140ms between sends, lightly jittered.
+		// Speed 1..10 maps to ~1500ms down to ~140ms between sends, jittered.
 		int speed = MathHelper.clamp(config.spamSpeed, 1, 10);
 		double baseMs = 1500.0 - (speed - 1) * 151.0;
 		double ms = baseMs * (0.9 + rng.nextDouble() * 0.2);

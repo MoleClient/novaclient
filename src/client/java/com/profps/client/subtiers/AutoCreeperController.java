@@ -30,10 +30,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
-/**
- * After the player places a creeper egg, visibly lines up a KB-II-or-better
- * sword hit that sends the creeper along the player-to-target corridor.
- */
+/** Aims a Knockback II sword hit at a creeper spawned by the player's egg placement. */
 public final class AutoCreeperController {
 	private enum Phase { IDLE, WAIT_CREEPER, REACTION, AIMING, RECOVERING }
 
@@ -186,7 +183,7 @@ public final class AutoCreeperController {
 			aimError = rotation.recover(player);
 			return;
 		}
-		if (phase != Phase.AIMING) return; // genuine reaction pause before the hand starts moving
+		if (phase != Phase.AIMING) return;
 		CreeperEntity creeper = byUuid(client, creeperUuid);
 		if (creeper == null) return;
 		Box box = creeper.getBoundingBox();
@@ -197,7 +194,7 @@ public final class AutoCreeperController {
 		aimError = rotation.aimAt(player, point);
 	}
 
-	/** True while this explicit creeper sequence owns the visible camera. */
+	/** True while this sequence owns the camera rotation. */
 	public boolean ownsRotation() {
 		return phase == Phase.AIMING || phase == Phase.RECOVERING;
 	}

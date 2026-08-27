@@ -22,45 +22,16 @@ import net.minecraft.util.math.Vec3d;
 import java.security.SecureRandom;
 
 /**
- * Auto Lunge Swap — the attribute-swap form of a spear lunge.
- *
- * <p>Held normally, a Lunge spear is nearly useless as movement. The lunge only
- * fires at full attack charge, and the charge bar divides by the <em>held</em>
- * item's attack speed, so a spear in hand means waiting out its own long
- * recharge for every single burst.
- *
- * <p>The swap gets around that. The server drains its packet queue before it
- * ticks entities, and it is {@code LivingEntity#tick -> sendEquipmentChanges}
- * that applies a newly-held item's {@code ATTACK_SPEED} modifier. So an attack
- * arriving in the same tick as the slot change resolves against a mixed state:
- * the <em>carry</em> item's attack speed — which is why the bar reads full — with
- * the <em>spear's</em> stack, which is what supplies Lunge. Charge on a bare
- * fist refills in about five ticks instead of the spear's own recharge, so the
- * bursts chain far faster than holding the weapon ever allows.
- *
- * <p>Three details make it reliable rather than occasional:
- * <ul>
- *   <li><b>Carry first.</b> The lunge cannot be swapped <em>into</em> a full bar
- *       that does not exist yet, so the module puts a fast item in hand and lets
- *       the bar fill before it ever tries.</li>
- *   <li><b>Gate on the outgoing item.</b> The charge that matters is the one the
- *       server will divide by — the carry item's, not the spear's. Gating on the
- *       spear's own bar is what would make it fire almost never.</li>
- *   <li><b>Vanilla packet order.</b> The slot change is emitted immediately
- *       before the attack, in the same dispatch, with nothing hand-rolled in
- *       between, and the return swap waits for a later tick so it cannot
- *       overtake the attack it is recovering from.</li>
- * </ul>
- *
- * <p>Every delay here is sampled per activation rather than fixed: reaction
- * before the burst, a short overshoot past full charge, and the recovery gap.
- * A macro that fires on exactly the same frame offset every time is a stronger
- * tell than the swap itself.
+ * Attribute-swap form of a spear lunge. The server drains packets before
+ * {@code LivingEntity#tick -> sendEquipmentChanges} applies a newly-held item's
+ * {@code ATTACK_SPEED}, so an attack sent in the same tick as the slot change resolves with the
+ * carry item's attack speed and the spear's stack. The charge gate is therefore the carry item's,
+ * and the return swap waits a later tick so it cannot overtake the attack.
  */
 public final class AutoLungeSwapController {
-	/** Safety net so a swap can never strand the player holding the spear. */
+	/** Upper bound on a sequence, so a stalled phase cannot strand the spear in hand. */
 	private static final int RESTORE_DEADLINE_TICKS = 34;
-	/** Give up waiting for lift-off rather than hanging the sequence on it. */
+	/** Upper bound on waiting for lift-off. */
 	private static final int LAUNCH_TIMEOUT_TICKS = 8;
 
 	private final ProFPSConfig config;
@@ -78,13 +49,13 @@ public final class AutoLungeSwapController {
 	private boolean ownsRotation;
 	private String status = "Idle";
 
-	// The player's own keys, restored the moment the burst is over.
+	// The player's own keys, restored when the burst ends.
 	private boolean originalForward;
 	private boolean originalSprint;
 	private boolean originalJump;
 	private boolean holdingInput;
 
-	// Spam scaling: the burst is paced by how fast the key is actually pressed.
+	// Burst pacing scales with the observed keypress rate.
 	private long lastPressNanos;
 	private double pressRateHz;
 	private boolean queuedRequest;
@@ -107,8 +78,7 @@ public final class AutoLungeSwapController {
 				queuedRequest = false;
 				if (allowed(client)) begin(client);
 			}
-			// Fall through when a queued press just opened a burst, so it runs
-			// its first step now instead of waiting another tick.
+			// Fall through so a queued press runs its first step in this tick.
 			if (phase == Phase.IDLE) return;
 		}
 		if (!allowed(client)) {
@@ -119,7 +89,6 @@ public final class AutoLungeSwapController {
 		ClientPlayerEntity player = client.player;
 		int age = player.age;
 		if (age > deadlineAge) {
-			// Never leave the spear in hand because a phase stopped advancing.
 			abort(client);
 			return;
 		}
@@ -134,45 +103,31 @@ public final class AutoLungeSwapController {
 	}
 
 	/**
-	 * Sprint-jump, then wait for the player to actually leave the ground.
-	 *
-	 * <p>This is what turns the burst into distance. A lunge landing while the
-	 * player is still standing is scrubbed off almost immediately: on the ground
-	 * vanilla multiplies horizontal velocity by the block's slipperiness every
-	 * tick, which bleeds a burst away in two or three ticks and reads as sliding
-	 * along the floor. In the air only the much gentler drag applies, so the same
-	 * velocity carries for the whole arc.
-	 *
-	 * <p>Sprinting matters too: vanilla adds a forward impulse to a jump taken
-	 * while sprinting, and that stacks with the lunge instead of replacing it.
+	 * Sprint-jumps and waits for lift-off. On the ground vanilla scrubs horizontal velocity by
+	 * block slipperiness each tick, so a lunge fired while standing is mostly lost.
 	 */
 	private void launch(MinecraftClient client, ClientPlayerEntity player, int age) {
 		if (!player.isOnGround()) {
 			applyMovement(client, player, false);
 			if (age < nextActionAge) return;
-			// Fire in this same tick rather than scheduling the next one. Lift-off
-			// is only observable a tick after the jump input, and every further
-			// tick spent arranging the swap is airtime the burst does not get to
-			// travel through — waiting one more turns a long arc into a hop.
+			// Fire in this tick; every extra tick is airtime the burst loses.
 			phase = Phase.FIRE;
 			fire(client, player, age);
 			return;
 		}
 		if (age > launchDeadlineAge) {
-			// Something is holding the player down — a ceiling, a slab, cobweb.
-			// Lunge from the ground rather than abandoning the press entirely.
+			// Blocked from jumping; lunge from the ground rather than dropping the press.
 			phase = Phase.FIRE;
 			fire(client, player, age);
 			return;
 		}
 		applyMovement(client, player, true);
 		status = "Launching";
-		// One tick of airtime before the swap, plus an occasional extra so the
-		// burst never lands on the same frame offset twice running.
+		// One tick of airtime before the swap, occasionally two.
 		nextActionAge = age + 1 + (humanize() && rng.nextInt(4) == 0 ? 1 : 0);
 	}
 
-	/** Presses forward+sprint (and optionally jump) without losing the player's own keys. */
+	/** Presses forward, sprint, and optionally jump, saving the player's own key states first. */
 	private void applyMovement(MinecraftClient client, ClientPlayerEntity player, boolean jump) {
 		if (!config.lungeSwapJump) return;
 		if (!holdingInput) {
@@ -196,16 +151,12 @@ public final class AutoLungeSwapController {
 	}
 
 	/**
-	 * Puts a fast item in hand and waits for its bar to fill. This is the whole
-	 * reason the technique is quick: the bar that the swap hands to the spear is
-	 * the carry item's, and a bare fist refills in about five ticks.
+	 * Puts a fast item in hand and waits for its charge bar to fill. A bare fist refills in
+	 * about five ticks.
 	 */
 	private void prepare(MinecraftClient client, ClientPlayerEntity player, int age) {
-		// The bar the server will divide by is the held item's, so this is the
-		// gate — and when it already reads full there is nothing to refill. The
-		// carry item exists purely to refill it fast; switching to it anyway
-		// would cost the slot change and a tick of settling for no gain, which
-		// is most of what made a press feel late.
+		// Gate on the held item's bar, since that is what the server divides by. A bar that
+		// already reads full needs no carry item at all.
 		if (!SpearCombatPolicy.jabCharged(player.getAttackCooldownProgress(0.0F))) {
 			if (carrySlot < 0) {
 				notify(client, "Auto Lunge Swap: needs a free slot or a wind charge to swap from");
@@ -216,21 +167,15 @@ public final class AutoLungeSwapController {
 				if (returnSlot < 0) returnSlot = player.getInventory().getSelectedSlot();
 				select(client, player, carrySlot);
 			}
-			// The attack-speed attribute still reads the previous item this tick,
-			// so the refilled bar is only observable from the next one.
+			// The attack-speed attribute still reads the previous item this tick.
 			status = "Charging";
 			return;
 		}
 		if (age < nextActionAge) return;
 
-		// Whatever is in hand supplied the full bar, so that is what the swap
-		// hands to the spear and what to come back to afterwards.
+		// Whatever is in hand supplied the full bar, so that is the slot to return to.
 		if (returnSlot < 0) returnSlot = player.getInventory().getSelectedSlot();
 
-		// Take off first; the swap is worthless against ground friction. Chain
-		// straight into the next phase rather than waiting for the next tick —
-		// the whole burst is only a few ticks long, so a tick spent changing
-		// phase is a tick of felt delay.
 		launchDeadlineAge = age + LAUNCH_TIMEOUT_TICKS;
 		nextActionAge = age;
 		if (config.lungeSwapJump && player.isOnGround()) {
@@ -243,21 +188,19 @@ public final class AutoLungeSwapController {
 	}
 
 	/**
-	 * The swap itself, in one dispatch: select the spear locally, emit the slot
-	 * packet, then attack. Both land in the same server tick, in vanilla's order.
+	 * Selects the spear, emits the slot packet, then attacks, all in one dispatch so both
+	 * packets land in the same server tick.
 	 */
 	private void fire(MinecraftClient client, ClientPlayerEntity player, int age) {
 		if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_LUNGE)) return;
 		ItemStack spear = player.getInventory().getStack(spearSlot);
 		if (!isSpear(spear) || !hasLunge(spear)) {
-			// Someone moved it mid-sequence; do not swing a random item.
+			// The spear moved mid-sequence.
 			abort(client);
 			return;
 		}
 
-		// Only fall back to the carry slot when PREPARE did not already record
-		// what was in hand — on the instant path the bar came from the player's
-		// own item, and that is what has to come back.
+		// Fall back to the carry slot only when PREPARE did not record what was in hand.
 		if (returnSlot < 0) returnSlot = carrySlot >= 0 ? carrySlot : player.getInventory().getSelectedSlot();
 		select(client, player, spearSlot);
 		boolean swung = ((MinecraftClientInvoker) client).invokeDoAttack();
@@ -269,23 +212,16 @@ public final class AutoLungeSwapController {
 		}
 		phase = Phase.RECOVER;
 		// At least one tick, so the return slot change cannot overtake the attack.
-		// The swap back to the carry item is also what keeps the swing short, so
-		// it should not wait any longer than that.
 		nextActionAge = age + 1 + (humanize() ? rng.nextInt(2) : 0);
 		status = config.lungeSpearMace && target != null ? "Spear → Mace armed" : "Recovering";
 	}
 
-	/**
-	 * Back to the fast item. Holding the spear after the burst would drag the
-	 * swing animation and the next bar through the spear's own slow recharge,
-	 * which is exactly what the swap exists to avoid.
-	 */
+	/** Swaps back to the carry item so the next charge bar is the fast one. */
 	private void recover(MinecraftClient client, ClientPlayerEntity player, int age) {
-		// Keep carrying the burst while it is still in the air; letting go of
-		// forward mid-arc costs the air control that steers the landing.
+		// Keep holding forward mid-arc to retain air control.
 		if (!player.isOnGround()) applyMovement(client, player, false);
 		if (age < nextActionAge) return;
-		// Manual scrolling wins; only restore while our own spear is still up.
+		// Only restore while our own spear is still selected, so manual scrolling wins.
 		if (player.getInventory().getSelectedSlot() == spearSlot) {
 			select(client, player, returnSlot);
 		}
@@ -317,9 +253,7 @@ public final class AutoLungeSwapController {
 			notify(client, "Auto Lunge Swap: need a Lunge spear in the hotbar");
 			return;
 		}
-		// Optional on purpose. A carry item is only needed to refill a spent bar;
-		// with a full bar the burst can go from whatever is already in hand, so a
-		// completely full hotbar is no longer a refusal.
+		// Optional: a carry item is only needed to refill a spent bar.
 		carrySlot = findCarrySlot(player, spearSlot);
 
 		phase = Phase.PREPARE;
@@ -330,13 +264,7 @@ public final class AutoLungeSwapController {
 		// switch, so PREPARE already runs in this same tick.
 	}
 
-	/**
-	 * No pre-delay. The human timing is the keypress itself — it already arrives
-	 * on a moment nobody can predict — and stalling on top of it does not make
-	 * the burst look more human, it just makes the module feel broken. The
-	 * sampled variation that is worth having lives where it costs nothing: the
-	 * occasional extra tick of airtime before the swap, and the recovery gap.
-	 */
+	/** No pre-delay; variation is sampled in the airtime and recovery gaps instead. */
 	private int reactionTicks() {
 		return 0;
 	}
@@ -346,20 +274,8 @@ public final class AutoLungeSwapController {
 	}
 
 	/**
-	 * The slot to swap out of and back into.
-	 *
-	 * <p>Ranked by how fast the charge bar refills, because that is the entire
-	 * cadence of the technique:
-	 * <ol>
-	 *   <li><b>An empty slot.</b> A bare fist carries no attack-speed modifier at
-	 *       all, so the bar fills fastest and the recovery swing is shortest.</li>
-	 *   <li><b>A wind charge.</b> It carries no attack-speed modifier either, so
-	 *       it hands the swap exactly the same full bar a fist would — and unlike
-	 *       a spare tool it stays useful in the hand it is parked in, since it
-	 *       can be thrown mid-air to extend the same burst it is carrying.</li>
-	 *   <li><b>Anything that is not a weapon or tool</b>, which at least still
-	 *       fills faster than the spear's own bar.</li>
-	 * </ol>
+	 * Slot to swap out of and back into, preferred in order of charge refill speed: an empty
+	 * slot, then a wind charge, then any non-weapon, non-tool item.
 	 */
 	private int findCarrySlot(ClientPlayerEntity player, int excludeSlot) {
 		for (int slot = 0; slot < 9; slot++) {
@@ -378,7 +294,7 @@ public final class AutoLungeSwapController {
 		return -1;
 	}
 
-	/** Best Lunge spear in the hotbar; a higher tier is a bigger burst. */
+	/** Hotbar slot with the highest Lunge level, or -1. */
 	private int findLungeSpear(ClientPlayerEntity player) {
 		int best = -1;
 		int bestLevel = 0;
@@ -434,18 +350,13 @@ public final class AutoLungeSwapController {
 		return (System.nanoTime() - lastPressNanos) < 1_500_000_000L && pressRateHz >= 4.0D;
 	}
 
-	/**
-	 * Rotation hook kept for the shared frame chain. The swap never steals the
-	 * camera: a lunge is aimed where you want to go, not at a target, so pointing
-	 * it for you would fight the whole purpose of the burst. Spear aim now belongs
-	 * to Auto Spear, which is about contact rather than travel.
-	 */
+	/** Rotation hook kept for the shared frame chain. This controller never takes the camera. */
 	public boolean frame(MinecraftClient client) {
 		ownsRotation = false;
 		return false;
 	}
 
-	/** Nearest player in front, used only to arm the optional Spear → Mace follow-up. */
+	/** Nearest living player, used to arm the optional spear-to-mace follow-up. */
 	private PlayerEntity nearestTarget(MinecraftClient client, ClientPlayerEntity self) {
 		PlayerEntity best = null;
 		double bestSq = 36.0D;
@@ -493,13 +404,12 @@ public final class AutoLungeSwapController {
 		if (client.player != null) client.inGameHud.setOverlayMessage(Text.literal(message), false);
 	}
 
-	/** Gives up and puts the carry item back, whatever state the sequence was in. */
+	/** Cancels the sequence, restoring the carry item and the player's keys. */
 	private void abort(MinecraftClient client) {
 		if (client != null && client.player != null && returnSlot >= 0
 				&& client.player.getInventory().getSelectedSlot() == spearSlot) {
 			select(client, client.player, returnSlot);
 		}
-		// Whatever went wrong, the player gets their own keys back.
 		restoreInput(client);
 		reset();
 	}
@@ -513,19 +423,18 @@ public final class AutoLungeSwapController {
 		deadlineAge = 0;
 		ownsRotation = false;
 		status = "Idle";
-		// The spam estimate deliberately survives: it describes the player's
-		// rhythm across bursts, which is the whole point of scaling to it.
+		// pressRateHz is not cleared; it tracks the player's rhythm across bursts.
 	}
 
 	private enum Phase {
 		IDLE,
-		/** Carry item in hand, letting its fast bar fill. */
+		/** Carry item in hand, waiting for its charge bar to fill. */
 		PREPARE,
-		/** Sprint-jump, then wait for lift-off so the burst is not eaten by friction. */
+		/** Sprint-jump, then wait for lift-off. */
 		LAUNCH,
 		/** One tick: slot packet then attack, same dispatch. */
 		FIRE,
-		/** Back to the carry item so the swing and the next bar stay fast. */
+		/** Back to the carry item. */
 		RECOVER
 	}
 }

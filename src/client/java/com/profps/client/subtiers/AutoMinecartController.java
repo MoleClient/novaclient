@@ -29,11 +29,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
-/**
- * Confirmed rail placement -> confirmed TNT minecart -> movement-aware ballistic
- * bow shot. Every transition is acknowledged or retried; no phase advances from
- * a client-predicted interaction alone.
- */
+/** Places a TNT minecart on a freshly placed rail, then fires a ballistic bow shot at it. */
 public final class AutoMinecartController {
 	private static final int MAX_CART_ATTEMPTS = 3;
 	private static final int MAX_DRAW_ATTEMPTS = 3;
@@ -98,8 +94,7 @@ public final class AutoMinecartController {
 		if (!isRailItem(held)) return ActionResult.PASS;
 
 		long now = System.nanoTime();
-		// Holding the physical placement click can invoke the callback again. Never let
-		// that second callback erase an in-flight placement/shot sequence.
+		// A held placement click re-invokes this callback; ignore it mid-sequence.
 		if (phase != Phase.IDLE && phase != Phase.RECOVERING) return ActionResult.PASS;
 		if (now - lastRailTriggerNanos < ns(180D)) return ActionResult.PASS;
 
@@ -114,16 +109,12 @@ public final class AutoMinecartController {
 		rememberNearbyObjects(world, railHint);
 
 		phase = Phase.WAIT_RAIL;
-		actionAtNanos = now; // the predicted block is normally visible by END_CLIENT_TICK
+		actionAtNanos = now; // predicted block is visible by END_CLIENT_TICK
 		expireAtNanos = now + ns(2800D);
 		return ActionResult.PASS;
 	}
 
-	/**
-	 * Runs at START_CLIENT_TICK, before vanilla input handling and the movement
-	 * packet. It prevents the physical rail-click release from cancelling our bow
-	 * and ensures the server receives the solved rotation before RELEASE_USE_ITEM.
-	 */
+	/** Runs at START_CLIENT_TICK, before vanilla input handling and the movement packet. */
 	public void preTick(MinecraftClient client) {
 		if (!allowed(client)) return;
 		if (ownsUseKey && (phase == Phase.AIMING || phase == Phase.DRAWING)) {
@@ -161,7 +152,7 @@ public final class AutoMinecartController {
 			if (now < actionAtNanos) return;
 			railPos = findPlacedRail(client);
 			if (railPos == null) {
-				actionAtNanos = now; // one poll per client tick; no fake sub-tick delay
+				actionAtNanos = now; // one poll per client tick
 				return;
 			}
 
@@ -193,8 +184,7 @@ public final class AutoMinecartController {
 
 			int currentCount = stackCount(player, minecartSlot, Items.TNT_MINECART);
 			if (placementConsumed && currentCount < minecartCountBefore) {
-				// Client/server still agree that the cart item was consumed. Await its
-				// spawn packet instead of risking a duplicate placement.
+				// Item was consumed; wait for the spawn packet instead of placing again.
 				actionAtNanos = now + ns(45D);
 				return;
 			}
@@ -231,7 +221,7 @@ public final class AutoMinecartController {
 		}
 
 		if (phase == Phase.DRAWING) {
-			// END tick runs after other controllers: keep ownership asserted here too.
+			// END tick runs after other controllers, so re-assert use-key ownership.
 			if (ownsUseKey) client.options.useKey.setPressed(true);
 			if (isDrawingBow(player)) {
 				drawConfirmed = true;
@@ -248,8 +238,7 @@ public final class AutoMinecartController {
 				startRecovery(client, now);
 				return;
 			} else {
-				// The active use vanished before our intentional release. Retry only if
-				// it was too short to have produced a valid arrow.
+				// Use ended early; a draw under 3 ticks cannot have fired an arrow.
 				if (lastObservedUseTicks < 3 && drawAttempts < MAX_DRAW_ATTEMPTS) {
 					drawConfirmed = false;
 					ownsUseKey = false;
@@ -273,7 +262,6 @@ public final class AutoMinecartController {
 				return;
 			}
 			if (now >= abortDrawAtNanos) {
-				// Never solve a stuck bow by firing a known miss.
 				startRecovery(client, now);
 			}
 		}
@@ -306,7 +294,7 @@ public final class AutoMinecartController {
 			minecartSlot = findHotbarItem(player, Items.TNT_MINECART);
 		}
 		if (minecartSlot < 0) {
-			phase = Phase.WAIT_CART; // an accepted last item may be awaiting its spawn packet
+			phase = Phase.WAIT_CART; // last item may already be awaiting its spawn packet
 			actionAtNanos = now + ns(45D);
 			return;
 		}
@@ -317,8 +305,7 @@ public final class AutoMinecartController {
 				new Vec3d(railPos.getX() + 0.5D, railPos.getY() + 0.0625D, railPos.getZ() + 0.5D),
 				Direction.UP, railPos, false);
 		ActionResult result = client.interactionManager.interactBlock(player, Hand.MAIN_HAND, railClick);
-		// Consume the physical rail-placement hold so vanilla cannot issue a second
-		// minecart interaction on the following tick.
+		// Release the held use key so vanilla does not place a second cart next tick.
 		client.options.useKey.setPressed(false);
 		int after = stackCount(player, minecartSlot, Items.TNT_MINECART);
 		placementAttempts++;
@@ -349,7 +336,7 @@ public final class AutoMinecartController {
 		phase = Phase.AIMING;
 		actionAtNanos = now;
 		updateAim(client, minecart, false);
-		tryStartBowDraw(client, now); // slot sync + bow use are ordered in this interaction
+		tryStartBowDraw(client, now); // slot sync must precede the bow use packet
 	}
 
 	private void tryStartBowDraw(MinecraftClient client, long now) {
@@ -415,11 +402,7 @@ public final class AutoMinecartController {
 		aimError = rotation.aimAt(player, player.getEyePos().add(solution.direction().multiply(12.0D)));
 	}
 
-	/**
-	 * Solves the first low-time ballistic intercept under vanilla arrow physics.
-	 * The required launch velocity subtracts the movement inherited from the
-	 * shooter, which is the critical correction while walking backward.
-	 */
+	/** Solves the lowest-time ballistic intercept under vanilla arrow physics. */
 	private AimSolution solveBallisticAim(ClientPlayerEntity player, TntMinecartEntity minecart,
 			int chargeTicks, boolean anticipateMovement) {
 		double speed = BowItem.getPullProgress(chargeTicks) * 3.0D;
@@ -489,7 +472,7 @@ public final class AutoMinecartController {
 		expireAtNanos = recoverUntilNanos + ns(120D);
 	}
 
-	/** Cancel an invalid draw by changing slots, never by releasing a stray arrow. */
+	/** Cancels an in-progress draw by switching slots rather than releasing the arrow. */
 	private void cancelOwnedDraw(MinecraftClient client) {
 		if (!ownsUseKey || client == null || client.options == null) return;
 		client.options.useKey.setPressed(false);
@@ -652,13 +635,13 @@ public final class AutoMinecartController {
 				&& client.currentScreen == null && player.isAlive() && !player.isSpectator();
 	}
 
-	/** Level 4 is the original 1.45x camera response; higher levels ramp quickly. */
+	/** Camera response scale; level 4 maps to 1.45x. */
 	private double bowAimSpeedScale() {
 		int speed = MathHelper.clamp(config.subTiersMinecartBowSpeed, 1, 10);
 		return MathHelper.clamp(1.45D * Math.pow(1.24D, speed - 4), 0.72D, 4.0D);
 	}
 
-	/** Shorten retry/failsafe windows without bypassing the accurate trajectory gate. */
+	/** Scale applied to retry and failsafe windows. */
 	private double bowTimingScale() {
 		int speed = MathHelper.clamp(config.subTiersMinecartBowSpeed, 1, 10);
 		return MathHelper.clamp(Math.pow(0.88D, speed - 4), 0.48D, 1.5D);

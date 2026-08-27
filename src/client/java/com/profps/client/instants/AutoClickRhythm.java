@@ -2,10 +2,7 @@ package com.profps.client.instants;
 
 import net.minecraft.util.math.MathHelper;
 
-/**
- * Pure timing policy for Auto Clicker. Kept separate from Minecraft state so the
- * click distribution and its hard safety limits can be regression-tested.
- */
+/** Pure timing policy for Auto Clicker. */
 public final class AutoClickRhythm {
 	static final int MAX_LEFT_CPS = 16;
 	static final int MAX_RIGHT_CPS = 12;
@@ -21,10 +18,7 @@ public final class AutoClickRhythm {
 		);
 	}
 
-	/**
-	 * Samples the next whole-tick interval. Fractional intervals are stochastically
-	 * rounded instead of accumulated, so timing error is never paid back as a burst.
-	 */
+	/** Samples the next whole-tick interval, stochastically rounding the fractional part. */
 	static int intervalTicks(
 			int configuredCps,
 			boolean rightClick,
@@ -39,8 +33,7 @@ public final class AutoClickRhythm {
 		double timing = MathHelper.clamp(timingSample, 0.0, 1.0);
 		double rounding = MathHelper.clamp(roundingSample, 0.0, 1.0);
 
-		// ±19% local variation around a slowly drifting pace. The controller feeds
-		// a triangular sample, making ordinary timing much more common than extremes.
+		// +/-19% variation around the drifting pace; the caller supplies a triangular sample.
 		double exactTicks = (20.0 / cps) * pace * (0.81 + timing * 0.38);
 		if (hesitation) exactTicks += 1.0 + rounding;
 
@@ -49,8 +42,7 @@ public final class AutoClickRhythm {
 		int interval = wholeTicks + (rounding < fraction ? 1 : 0);
 		interval = MathHelper.clamp(interval, 1, MAX_INTERVAL_TICKS);
 
-		// Never sustain a one-packet-per-tick run. Three quick clicks are possible;
-		// the fourth interval must breathe.
+		// Cap sustained one-tick intervals at three in a row.
 		if (interval == 1 && consecutiveFastIntervals >= 3) interval = 2;
 		return interval;
 	}

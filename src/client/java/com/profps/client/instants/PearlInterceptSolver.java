@@ -8,17 +8,9 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * Pure trajectory solver for the vanilla ender-pearl / player-wind-charge catch.
- *
- * <p>The collision is deliberately modelled in the direction vanilla evaluates it. An ender
- * pearl is not a redirectable projectile, so a wind charge cannot select it as an entity hit.
- * A player wind charge <em>is</em> redirectable, however, and the older pearl's swept collision
- * can select the charge. Since the pearl was spawned first, it normally ticks first: during a
- * pearl step it sees the charge at the position reached after {@code windMoves} completed charge
- * ticks. This is why {@code windMoves} starts at zero on the first pearl step after launch.
- *
- * <p>No world state is read here. Callers must separately reject solutions whose pearl or wind
- * path intersects a block/entity before the planned catch.
+ * Pure trajectory solver for the ender-pearl and player-wind-charge catch. The collision is
+ * modelled from the pearl's side, since only the older pearl's swept collision can select the
+ * charge. Reads no world state, so callers must reject solutions whose path is obstructed.
  */
 public final class PearlInterceptSolver {
 	public static final double PEARL_DRAG = 0.99D;
@@ -63,11 +55,7 @@ public final class PearlInterceptSolver {
 		return candidates.isEmpty() ? null : candidates.getFirst();
 	}
 
-	/**
-	 * Returns centre-line solutions in quality order. Exposing a short candidate list lets the
-	 * world-aware controller discard a mathematically good route hidden behind a block and use the
-	 * next clear one without coupling block access into this solver.
-	 */
+	/** Returns centre-line solutions in quality order, best first. */
 	public static List<Solution> solveCandidates(Request request, int limit) {
 		Vec3d pearlPos = request.pearlPosition();
 		Vec3d pearlVelocity = request.pearlVelocity();
@@ -80,9 +68,7 @@ public final class PearlInterceptSolver {
 					pearlVelocity.z * PEARL_DRAG);
 			Vec3d nextPos = pearlPos.add(nextVelocity);
 
-			// On the first pearl tick after the charge is spawned, the older pearl sees the
-			// not-yet-ticked charge at its launch origin. A direction becomes meaningful once
-			// the charge has completed at least one movement tick.
+			// The direction is only meaningful once the charge has completed a movement tick.
 			int windMoves = pearlStep - request.launchDelayTicks() - 1;
 			if (windMoves >= 1) {
 				Solution candidate = candidate(request, pearlPos, nextPos, pearlStep, windMoves);
@@ -101,10 +87,8 @@ public final class PearlInterceptSolver {
 
 	private static Solution candidate(Request request, Vec3d pearlFrom, Vec3d pearlTo,
 			int pearlStep, int windMoves) {
-		// Shooter motion is inherited by the charge after the 1.5-block/tick launch vector.
-		// Therefore every reachable charge centre after N ticks lies on a sphere of radius
-		// 1.5*N around (origin + shooterVelocity*N). Find the point of the swept pearl segment
-		// nearest that sphere, then aim along the corresponding radius.
+		// The charge inherits shooter motion, so reachable centres after N ticks lie on a sphere
+		// of radius 1.5*N around (origin + shooterVelocity*N).
 		Vec3d reachableCenter = request.windOrigin().add(request.shooterVelocity().multiply(windMoves));
 		Vec3d closest = closestPointOnSegment(reachableCenter, pearlFrom, pearlTo);
 		Vec3d radial = closest.subtract(reachableCenter);
@@ -119,22 +103,16 @@ public final class PearlInterceptSolver {
 		double windDistance = windPosition.distanceTo(request.windOrigin());
 		if (!Double.isFinite(miss) || windDistance > request.maxWindDistance()) return null;
 
-		// ProjectileUtil grows a thrown projectile's entity tolerance from 0 to 0.30 over
-		// ages 2..8. It expands the charge's 0.3125-wide box by that amount. Reserve part of
-		// the mathematical radius for vanilla's divergence and small client/server phase error;
-		// this makes the caller fail closed instead of spending charges on edge-only solutions.
+		// ProjectileUtil grows a thrown projectile's entity tolerance from 0 to 0.30 over ages 2..8.
 		int ageAtCatch = request.pearlAge() + pearlStep;
 		double vanillaMargin = MathHelper.clamp((ageAtCatch - 2) / 20.0D, 0.0D, 0.30D);
 		double collisionRadius = WIND_HALF_SIZE + vanillaMargin;
-		// Divergence grows with flight time. Do not cap this reserve: once accumulated
-		// uncertainty exceeds the collision radius, a long shot is no longer reliable and
-		// must fail closed instead of being presented as a guaranteed interception.
+		// Uncapped on purpose: past the collision radius the shot must fail closed.
 		double divergenceReserve = 0.03D + windMoves * 0.0105D;
 		double usableTolerance = collisionRadius - divergenceReserve;
 		if (usableTolerance < 0.10D || miss > usableTolerance) return null;
 
-		// Prefer a deep intersection, then a shorter flight. The time term is deliberately
-		// small: an older pearl has the larger vanilla targeting margin and can be more robust.
+		// Prefer a deep intersection, then a shorter flight.
 		double score = miss / usableTolerance + pearlStep * 0.004D + divergenceReserve * 0.10D;
 		return new Solution(direction, intercept, windPosition, pearlStep, windMoves,
 				miss, usableTolerance, score);

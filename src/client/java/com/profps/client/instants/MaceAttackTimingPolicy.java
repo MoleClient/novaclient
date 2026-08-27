@@ -1,13 +1,9 @@
 package com.profps.client.instants;
 
 /**
- * Pure first-contact cooldown policy for AutoMace.
- *
- * <p>A mace slot change resets vanilla attack charge and a full recharge is about
- * 1.6 seconds. Waiting that entire period after the reticle has already crossed a
- * briefly exposed player misses the interaction completely. One initial low-charge
- * click is legal vanilla behavior; subsequent swings in the same engagement retain
- * the normal configured charge gate.</p>
+ * Pure first-contact cooldown policy for AutoMace. A mace slot change resets vanilla
+ * attack charge and a full recharge takes about 1.6 seconds, so the first contact may
+ * swing under-charged; later swings use the configured charge gate.
  */
 final class MaceAttackTimingPolicy {
 	static final long MIN_INITIAL_REATTACK_NANOS = 320_000_000L;
@@ -21,9 +17,7 @@ final class MaceAttackTimingPolicy {
 		if (cooldown >= threshold) return true;
 		if (!firstContact) return false;
 		if (genuineSmash) return true;
-		// If only a short wait remains, take the stronger hit. If the mace has
-		// effectively just reset, use the current legal contact instead of tracking
-		// the opponent for a full recharge after the opportunity has passed.
+		// Wait for the stronger hit only when the remaining recharge fits the hold budget.
 		return Math.max(0.0D, remainingChargeMs) > Math.max(0.0D, holdBudgetMs);
 	}
 }

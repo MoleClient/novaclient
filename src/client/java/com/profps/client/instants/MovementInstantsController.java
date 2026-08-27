@@ -4,13 +4,7 @@ import com.profps.client.config.ProFPSConfig;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 
-/**
- * AutoWalk (hold forward) and AutoSprint (sprint while moving forward). Both
- * just hold the same keybinds a player would — vanilla still decides whether a
- * sprint actually engages (hunger, collisions), so nothing here is abnormal.
- * Each only ever touches a key while its own module is on, so they never fight
- * your manual movement when off.
- */
+/** Holds the forward and sprint keybinds for AutoWalk and AutoSprint. */
 public final class MovementInstantsController {
 	private final ProFPSConfig config;
 	private boolean walkHeld;

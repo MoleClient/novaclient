@@ -2,10 +2,12 @@ package com.profps.client.ui.nova;
 
 import com.profps.client.config.NickEntry;
 import com.profps.client.config.ProFPSConfig;
+import com.profps.client.extras.SchematicLibrary;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.PotionContentsComponent;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.Items;
 import net.minecraft.potion.Potions;
 
@@ -18,29 +20,20 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 /**
- * Declarative catalogue of every NovaClient module, bound straight to
- * {@link ProFPSConfig} fields. Both the GUI and the in-game keybind handler
- * work off this model, so toggling from either place behaves identically
- * (including the one real cross-module dependency: Stash Pinger feeds off the
- * Storage ESP container scan, so enabling it pulls Storage ESP on — Mob ESP and
- * Hole/Tunnel/Stairs ESP are independent of both).
+ * Declarative catalogue of every module, bound directly to {@link ProFPSConfig} fields
+ * and shared by the GUI and the in-game keybind handler.
  */
 public final class NovaModules {
-	/** Mode module ids. These match the keybind ids the Modes panel used, so existing binds survive. */
+	/** Mode module ids, matching the ids used by existing keybinds. */
 	public static final String MODE_SWORD = "combat_mode_sword";
 	public static final String MODE_AXE = "combat_mode_axe";
 	public static final String MODE_MACE = "combat_mode_mace";
 
-	/**
-	 * Standalone modules each mode actually drives, mapped to the mode-side switch that stands in
-	 * for them — and ONLY those. A mode owning the mace does not own your Triggerbot: anything not
-	 * listed here keeps running from its own module while the mode is on, which is exactly what
-	 * {@code CombatModePolicy.enabled} now falls through to.
-	 */
+	/** Per combat mode, the standalone modules it drives mapped to the mode-side switch that replaces them. */
 	private static final Map<Integer, Map<String, String>> MANAGED = Map.of(
 			1, Map.of("aim", "swordModeAim", "strafe", "swordModeStrafe",
 					"hit", "swordModeTrigger", "swordai", "swordModeAiBot"),
-			2, Map.of("aim", "axeModeAim", "axestun", "axeModeStun",
+			2, Map.of("aim", "axeModeAim", "axestun", "axeModeStun", "axecrit", "axeModeCrit",
 					"autoaim", "axeModeProjectileAim", "hit", "axeModeTrigger"),
 			3, Map.of("automace", "maceModeAutoMace", "autobreachswap", "maceModeBreachSwap"));
 
@@ -50,11 +43,9 @@ public final class NovaModules {
 	private NovaModules() {}
 
 	/**
-	 * Whether the ACTIVE combat mode has taken this module over, and if so whether the mode is
-	 * currently running it. Null means the module is the player's own to toggle. Drives three
-	 * things: the UI locks the card, paints it in mode colours instead of the accent, and the HUD
-	 * leaves it out so only the mode itself is listed. Modules the mode does not drive return null
-	 * and stay entirely yours — Triggerbot is still yours to run while Mace mode is on.
+	 * Whether the active combat mode drives this module, and if so whether the mode is running it.
+	 *
+	 * @return null if no active mode owns the module
 	 */
 	public static Boolean managedState(ProFPSConfig cfg, String moduleId) {
 		if (cfg == null || moduleId == null) return null;
@@ -77,6 +68,7 @@ public final class NovaModules {
 			case "swordModeAiBot" -> cfg.swordModeAiBot;
 			case "axeModeAim" -> cfg.axeModeAim;
 			case "axeModeStun" -> cfg.axeModeStun;
+			case "axeModeCrit" -> cfg.axeModeCrit;
 			case "axeModeProjectileAim" -> cfg.axeModeProjectileAim;
 			case "axeModeTrigger" -> cfg.axeModeTrigger;
 			case "maceModeAutoMace" -> cfg.maceModeAutoMace;
@@ -104,9 +96,8 @@ public final class NovaModules {
 		public final Supplier<Boolean> get;
 		public final Consumer<Boolean> set;
 		public final List<Setting> settings;
-		public boolean momentary; // keybind-only action (no persistent toggle) — UI hides the toggle pill
-		/** 0 for an ordinary module; 1/2/3 mark the Sword/Axe/Mace combat modes, which the UI draws
-		 *  as hero cards and which take over the standalone modules listed in {@link #MANAGED}. */
+		public boolean momentary; // keybind-only action with no persistent toggle
+		/** 0 for an ordinary module; 1/2/3 mark the Sword/Axe/Mace combat modes. */
 		public int combatMode;
 
 		Module(String id, String name, Item icon, Supplier<Boolean> get, Consumer<Boolean> set, Setting... settings) {
@@ -122,13 +113,13 @@ public final class NovaModules {
 			this.settings = List.of(settings);
 		}
 
-		/** Mark this as a keybind-fired one-shot: no toggle pill, triggered only by its bound key. */
+		/** Marks this as a keybind-fired one-shot with no toggle pill. */
 		Module momentary() {
 			this.momentary = true;
 			return this;
 		}
 
-		/** Mark this as a combat mode: exclusive with the other modes, drawn as a hero card. */
+		/** Marks this as a combat mode, exclusive with the other modes. */
 		Module mode(int combatMode) {
 			this.combatMode = combatMode;
 			return this;
@@ -157,16 +148,17 @@ public final class NovaModules {
 		}
 	}
 
-	/** An ordinary inline mode selector, rendered with the same dropdown language as combat tiers. */
+	/** An inline dropdown selector over a fixed or computed option list. */
 	public static final class ChoiceSetting extends Setting {
-		public final List<String> options;
+		private final Supplier<List<String>> options;
 		public final IntSupplier get;
 		public final IntConsumer set;
 
 		ChoiceSetting(String label, List<String> options, IntSupplier get, IntConsumer set) {
 			super(label);
 			if (options == null || options.isEmpty()) throw new IllegalArgumentException("ChoiceSetting needs options");
-			this.options = List.copyOf(options);
+			List<String> fixed = List.copyOf(options);
+			this.options = () -> fixed;
 			this.get = get;
 			this.set = set;
 		}
@@ -174,9 +166,23 @@ public final class NovaModules {
 		ChoiceSetting(String label, String[] options, IntSupplier get, IntConsumer set) {
 			this(label, List.of(options), get, set);
 		}
+
+		/** Options computed on read, for lists that change at runtime. The supplier runs during rendering, so it must be cheap. */
+		ChoiceSetting(String label, Supplier<List<String>> options, IntSupplier get, IntConsumer set) {
+			super(label);
+			this.options = options == null ? List::of : options;
+			this.get = get;
+			this.set = set;
+		}
+
+		/** Never returns an empty list, so the dropdown always has a row to draw. */
+		public List<String> options() {
+			List<String> live = options.get();
+			return live == null || live.isEmpty() ? List.of("(none)") : live;
+		}
 	}
 
-	/** A momentary action button (e.g. Advanced ESP "Reload"). */
+	/** A momentary action button. */
 	public static final class ButtonSetting extends Setting {
 		public final String caption;
 		public final Runnable action;
@@ -188,11 +194,7 @@ public final class NovaModules {
 		}
 	}
 
-	/**
-	 * A dynamic list of "real name → shown name (+ skin)" rows, for Nick Other. The
-	 * UI edits {@link #entries} in place (add via +, remove via −) and calls
-	 * {@link #onChange} to persist.
-	 */
+	/** A dynamic name-remap list; the UI edits {@link #entries} in place and calls {@link #onChange} to persist. */
 	public static final class NickListSetting extends Setting {
 		public final List<NickEntry> entries;
 		public final Runnable onChange;
@@ -204,7 +206,7 @@ public final class NovaModules {
 		}
 	}
 
-	/** A free-text field (e.g. the Spam message) — click to focus, type to edit. */
+	/** A free-text field. */
 	public static final class StringSetting extends Setting {
 		public final String placeholder;
 		public final Supplier<String> get;
@@ -218,11 +220,7 @@ public final class NovaModules {
 		}
 	}
 
-	/**
-	 * A searchable multi-select block list (e.g. BreakOn's "Certain Blocks"): an
-	 * on/off toggle that, when on, expands a dropdown of block suggestions you
-	 * tick. The selected list is the live config list, mutated in place by the UI.
-	 */
+	/** A toggle plus a searchable multi-select block list; {@link #selected} is the live config list, mutated in place. */
 	public static final class BlockPickerSetting extends Setting {
 		public final Supplier<Boolean> enabledGet;
 		public final Consumer<Boolean> enabledSet;
@@ -239,7 +237,7 @@ public final class NovaModules {
 	public static final class BoolSetting extends Setting {
 		public final Supplier<Boolean> get;
 		public final Consumer<Boolean> set;
-		/** Dependency gate — false greys the row out and refuses the click (e.g. "requires AI Bot"). */
+		/** Dependency gate; false greys the row out and refuses the click. */
 		public final Supplier<Boolean> available;
 
 		BoolSetting(String label, Supplier<Boolean> get, Consumer<Boolean> set) {
@@ -254,10 +252,7 @@ public final class NovaModules {
 		}
 	}
 
-	/**
-	 * The LT5→HT1 strength ramp for a combat mode. Its own type because it is neither a plain int
-	 * slider nor a toggle: it renders as a ten-notch track carrying the tier colour ramp.
-	 */
+	/** The LT5 to HT1 strength ramp for a combat mode, rendered as a ten-notch track. */
 	public static final class TierSetting extends Setting {
 		public final String modeKey;      // "sword" / "axe" / "mace"
 		public final IntSupplier get;
@@ -276,7 +271,7 @@ public final class NovaModules {
 		public final int min;
 		public final int max;
 		public final int step;
-		public final int divisor;   // display value = stored / divisor (1 = plain int; >1 shows a decimal)
+		public final int divisor;   // display value = stored / divisor
 		public final IntSupplier get;
 		public final IntConsumer set;
 
@@ -303,10 +298,10 @@ public final class NovaModules {
 		return stack;
 	}
 
-	/** One-line description per module id, shown as a tooltip in the panel. */
+	/** Module id to tooltip description. */
 	private static final java.util.Map<String, String> DESCRIPTIONS = buildDescriptions();
 
-	/** The blurb for a module id, or empty if none. */
+	/** Description for a module id, or empty if none. */
 	public static String description(String id) {
 		return DESCRIPTIONS.getOrDefault(id, "");
 	}
@@ -323,14 +318,15 @@ public final class NovaModules {
 		d.put("autopot", "Throws a healing potion when low.");
 		d.put("velocity", "BLATANT FLAG · Alters server-authored knockback.");
 		d.put("axestun", "Swaps to an axe to break a shield, then swaps back.");
+		d.put("axecrit", "Jump onto a player with an axe and the swing lands as a crit.");
 		d.put("kbdisplace", "Keybind: sprint-reset hit that shoves a nearby player back.");
 		d.put("automace", "Auto-attacks the nearest player with mace.");
 		d.put("autobreachswap", "Server-ordered sword-to-Breach-mace jump-crit swap and restore.");
 		d.put("autolunge", "Swaps a Lunge spear in on the attack frame for a fast movement burst.");
-		d.put("autospear", "Times the spear charge so flying through a player lands the kinetic hit.");
+		d.put("autospear", "Keeps a spear charged during a player-steered fly-through; never changes aim or movement.");
 		d.put("anchor", "Reliably places and charges an anchor, with optional detonation or safe-item finish.");
 		d.put("totem", "Rapidly refills your offhand and prepares a hotbar backup after a pop.");
-		d.put("autocrystal", "Right-click obsidian or bedrock to place and quickly break a crystal.");
+		d.put("autocrystal", "Hold right click on obsidian to place and break crystals in a loop.");
 		d.put("fastuse", "Removes the right-click use delay.");
 		d.put("autoxp", "Throws XP bottles until your Mending armour is full.");
 		d.put("autosign", "Writes your configured text onto every sign you place.");
@@ -343,15 +339,14 @@ public final class NovaModules {
 		d.put("mobesp", "Outlines living entities through walls.");
 		d.put("advesp", "Finds dug shafts, tunnels, staircases and rooms.");
 		d.put("storageesp", "Outlines every container and redstone build through walls.");
-		d.put("suschunks", "Flags chunks holding base evidence you cannot see from above.");
-		d.put("heatmap", "Marks where players were recently seen.");
-		d.put("baseheat", "Colors chunks by player activity.");
-		d.put("chunkfinder", "Colors chunks by how much has been happening in them.");
-		d.put("stash", "Pings storage stashes the scan finds.");
+		d.put("primechunk", "Flags chunks with under-render base evidence below deepslate. "
+				+ "Reads leaked light, containers and palettes, sideways-placed deepslate that "
+				+ "generation never makes, and cultivated growth like thick bamboo, ripe cocoa "
+				+ "and picked-over glow berries.");
+		d.put("stash", "Classifies real bases and pings you with distance and tracers.");
 		d.put("amethyst", "Highlights amethyst geodes through the ground.");
-		d.put("portals", "Maps nether portals and their links.");
+		d.put("freecam", "Flies the camera while your body stays put; scroll trims speed.");
 		d.put("tunnel", "Auto-mines a straight 1x2 tunnel.");
-		d.put("freecam", "Flies the camera while you stay put.");
 		d.put("novahome", "Custom NovaClient main menu. Off = classic Minecraft menu.");
 		d.put("breakon", "Auto-swaps tool and mines what you see.");
 		d.put("autoclicker", "Clicks autonomously at a naturally varied CPS; no mouse hold required.");
@@ -381,10 +376,12 @@ public final class NovaModules {
 		d.put("nickname", "Changes your name everywhere on your client.");
 		d.put("nickother", "Rewrites other players' names on your client.");
 		d.put("remember", "Captures multiple builds as see-through ghosts; Delete removes the one you see.");
-		d.put("schematicbuild", "Builds Remember or loaded Litematica schematics layer by layer, "
-				+ "deepest interior cell first so a thick or wide layer never seals itself in. "
-				+ "Auto Move walks and flies the build itself and sweeps every layer again until "
-				+ "a whole sweep places nothing; off, it places whatever is under your crosshair.");
+		d.put("schematicbuild", "Pick a .litematic from your schematics folder and press Load here "
+				+ "to anchor it where you stand — no Litematica placement needed. Builds layer by "
+				+ "layer, deepest interior cell first so a thick or wide layer never seals itself "
+				+ "in. Auto Move walks the build itself, standing where each block's rotation "
+				+ "requires, crouching to place against repeaters and chests, and saving water for "
+				+ "a final pass. Remember captures still work and take priority.");
 		d.put(MODE_SWORD, "Full sword kit at one strength — aim, strafe, sprint and trigger together.");
 		d.put(MODE_AXE, "Full axe kit at one strength — shield stun, sword handoff and projectile aim.");
 		d.put(MODE_MACE, "Full mace kit at one strength — smash aim, Breach swaps and stun slams.");
@@ -393,15 +390,10 @@ public final class NovaModules {
 	}
 
 	public static List<Category> build(ProFPSConfig cfg) {
-		// Every module is defined once here; the categories below just group them by id, so
-		// re-categorising is a one-line change to an id list rather than moving code around.
+		// Modules are defined once here; the categories below group them by id.
 		Map<String, Module> m = new java.util.LinkedHashMap<>();
 
 		// ── Combat modes ─────────────────────────────────────────────────────────────
-		// Modes are ordinary catalogue entries so they toggle, keybind and appear on the HUD like
-		// anything else — but they are exclusive with each other and, while one is on, it takes over
-		// the standalone modules in MANAGED (the UI locks those and shows them running in mode
-		// colours; the HUD hides them so only "Sword Mode" is listed).
 		m.put(MODE_SWORD, new Module(MODE_SWORD, "Sword Mode", Items.NETHERITE_SWORD,
 				() -> cfg.combatMode == 1, v -> cfg.combatMode = v ? 1 : 0,
 				new TierSetting("Tier", "sword", () -> cfg.swordModeTier, v -> cfg.swordModeTier = v),
@@ -418,6 +410,7 @@ public final class NovaModules {
 				new TierSetting("Tier", "axe", () -> cfg.axeModeTier, v -> cfg.axeModeTier = v),
 				new BoolSetting("Aim Assist", () -> cfg.axeModeAim, v -> cfg.axeModeAim = v),
 				new BoolSetting("Axe Stun", () -> cfg.axeModeStun, v -> cfg.axeModeStun = v),
+				new BoolSetting("Axe Crit", () -> cfg.axeModeCrit, v -> cfg.axeModeCrit = v),
 				new BoolSetting("Triggerbot", () -> cfg.axeModeTrigger, v -> cfg.axeModeTrigger = v),
 				new BoolSetting("Sword Follow-up", () -> cfg.axeModeSwordFollowup, v -> cfg.axeModeSwordFollowup = v),
 				new BoolSetting("Trigger Follow-up", () -> cfg.axeModeTriggerFollowup, v -> cfg.axeModeTriggerFollowup = v, () -> cfg.axeModeSwordFollowup),
@@ -523,6 +516,8 @@ public final class NovaModules {
 						() -> cfg.axeStunRestorePrevious, v -> cfg.axeStunRestorePrevious = v),
 				new IntSetting("Reaction", " ms", 0, 300, 5, () -> cfg.axeStunReactionMs, v -> cfg.axeStunReactionMs = v),
 				new IntSetting("Switch Back", " ms", 30, 250, 5, () -> cfg.axeStunSwitchBackMs, v -> cfg.axeStunSwitchBackMs = v)));
+		m.put("axecrit", new Module("axecrit", "Axe Crit", Items.NETHERITE_AXE,
+				() -> cfg.axeCrit, v -> cfg.axeCrit = v));
 		m.put("kbdisplace", new Module("kbdisplace", "Knockback Displace", Items.WIND_CHARGE,
 				() -> false, v -> { if (v) cfg.kbDisplaceRequested = true; },
 				new BoolSetting("Sprint Reset", () -> cfg.kbDisplaceReset, v -> cfg.kbDisplaceReset = v),
@@ -534,10 +529,8 @@ public final class NovaModules {
 		m.put("anchor", new Module("anchor", "Anchor Macro", Items.RESPAWN_ANCHOR,
 				() -> cfg.anchorMacro, v -> cfg.anchorMacro = v,
 				new ChoiceSetting("Mode", new String[] {"On bind", "On place"}, () -> cfg.anchorMode, v -> cfg.anchorMode = v),
+				new IntSetting("Total Speed", "/10", 1, 10, 1, () -> cfg.anchorSpeed, v -> cfg.anchorSpeed = v),
 				new BoolSetting("Detonate", () -> cfg.anchorDetonate, v -> cfg.anchorDetonate = v),
-				new BoolSetting("Double anchor", () -> cfg.anchorDouble, v -> cfg.anchorDouble = v)
-						.when(() -> cfg.anchorDetonate),
-				new BoolSetting("Safe anchor", () -> cfg.anchorSafe, v -> cfg.anchorSafe = v),
 				new BoolSetting("Use item whitelist", () -> cfg.anchorExplosionItemWhitelist,
 						v -> cfg.anchorExplosionItemWhitelist = v),
 				new StringSetting("Use / finish item", "minecraft:totem_of_undying",
@@ -547,22 +540,12 @@ public final class NovaModules {
 								String clean = id.trim().toLowerCase(java.util.Locale.ROOT);
 								if (!clean.isEmpty() && !cfg.anchorExplosionItems.contains(clean)) cfg.anchorExplosionItems.add(clean);
 							}
-						}).when(() -> cfg.anchorExplosionItemWhitelist),
-				new BoolSetting("Aim assist", () -> cfg.anchorAimAssist, v -> cfg.anchorAimAssist = v),
-				new BoolSetting("Silent aim", () -> cfg.anchorSilentAim, v -> cfg.anchorSilentAim = v)
-						.when(() -> cfg.anchorAimAssist),
-				new IntSetting("Aim speed", "", 10, 150, 1, 10,
-						() -> cfg.anchorAimSpeedTenths, v -> cfg.anchorAimSpeedTenths = v)
-						.when(() -> cfg.anchorAimAssist),
-				new IntSetting("Delay min", " ms", 0, 500, 5, () -> cfg.anchorDelayMinMs, v -> cfg.anchorDelayMinMs = v),
-				new IntSetting("Delay max", " ms", 0, 500, 5, () -> cfg.anchorDelayMaxMs, v -> cfg.anchorDelayMaxMs = v),
-				new BoolSetting("Stop When No Totem", () -> cfg.anchorStopWhenNoTotem,
-						v -> cfg.anchorStopWhenNoTotem = v).when(() -> cfg.anchorDetonate)));
+						}).when(() -> cfg.anchorExplosionItemWhitelist)));
 		m.put("totem", new Module("totem", "Auto Totem", Items.TOTEM_OF_UNDYING,
-				() -> cfg.totemTweaks, v -> cfg.totemTweaks = v,
-				new BoolSetting("Open Inventory", () -> cfg.totemOpenInventory, v -> cfg.totemOpenInventory = v)));
+				() -> cfg.totemTweaks, v -> cfg.totemTweaks = v));
 		m.put("autocrystal", new Module("autocrystal", "Auto Crystal", Items.END_CRYSTAL,
-				() -> cfg.autoCrystal, v -> cfg.autoCrystal = v));
+				() -> cfg.autoCrystal, v -> cfg.autoCrystal = v,
+				new IntSetting("Speed", "", 1, 10, 1, () -> cfg.autoCrystalSpeed, v -> cfg.autoCrystalSpeed = v)));
 		m.put("fastuse", new Module("fastuse", "Fast Use", Items.SUGAR,
 				() -> cfg.fastUse, v -> cfg.fastUse = v,
 				new IntSetting("Speed", "", 1, 10, 1, () -> cfg.fastUseLevel, v -> cfg.fastUseLevel = v)));
@@ -593,11 +576,11 @@ public final class NovaModules {
 				new BoolSetting("Spear → Mace", () -> cfg.lungeSpearMace, v -> cfg.lungeSpearMace = v)).momentary());
 		m.put("autospear", new Module("autospear", "Auto Spear", Items.DIAMOND_SPEAR,
 				() -> cfg.autoSpearEnabled, v -> cfg.autoSpearEnabled = v,
-				new IntSetting("Range", "m", 8, 96, 2, () -> cfg.autoSpearRange, v -> cfg.autoSpearRange = v),
+				new IntSetting("Range", "m", 4, 64, 2, () -> cfg.autoSpearRange, v -> cfg.autoSpearRange = v),
 				new IntSetting("FOV", "°", 20, 140, 5, () -> cfg.autoSpearFov, v -> cfg.autoSpearFov = v),
 				new IntSetting("Turn Speed", "%", 20, 90, 1, () -> cfg.autoSpearTurnSpeed, v -> cfg.autoSpearTurnSpeed = v),
-				new BoolSetting("Auto Switch", () -> cfg.autoSpearAutoSwitch, v -> cfg.autoSpearAutoSwitch = v),
-				new BoolSetting("Silent Aim", () -> cfg.autoSpearSilentAim, v -> cfg.autoSpearSilentAim = v)));
+				new BoolSetting("Silent Aim", () -> cfg.autoSpearSilentAim, v -> cfg.autoSpearSilentAim = v),
+				new BoolSetting("Auto Switch", () -> cfg.autoSpearAutoSwitch, v -> cfg.autoSpearAutoSwitch = v)));
 
 		// ── SubTiers ───────────────────────────────────────────────────────────────
 		m.put("subtiers_autobed", new Module("subtiers_autobed", "Auto Bed", Items.RED_BED,
@@ -609,7 +592,7 @@ public final class NovaModules {
 				new IntSetting("Bow Fire Speed", "", 1, 10, 1,
 						() -> cfg.subTiersMinecartBowSpeed, v -> cfg.subTiersMinecartBowSpeed = v)));
 
-		// ── DonutSMP (finding + ESP + freecam) ───────────────────────────────────────
+		// ── DonutSMP (finding + ESP) ─────────────────────────────────────────────────
 		m.put("mobesp", new Module("mobesp", "Mob ESP", Items.ZOMBIE_HEAD,
 				() -> cfg.donutBasicEsp, v -> cfg.donutBasicEsp = v,
 				new IntSetting("Range", "m", 32, 1024, 32, () -> cfg.donutBasicEspRange, v -> cfg.donutBasicEspRange = v),
@@ -626,49 +609,30 @@ public final class NovaModules {
 				new BoolSetting("Pockets", () -> cfg.donutAdvancedShowPockets, v -> cfg.donutAdvancedShowPockets = v),
 				new ButtonSetting("Reload", "Rescan area", () -> cfg.donutAdvancedEspReloadRequested = true)));
 		m.put("storageesp", new Module("storageesp", "Storage ESP", Items.CHEST,
-				() -> cfg.donutStorageEsp, v -> {
-					cfg.donutStorageEsp = v;
-					if (!v) cfg.donutStashPinger = false;
-				},
+				() -> cfg.donutStorageEsp, v -> cfg.donutStorageEsp = v,
 				new IntSetting("Range", "m", 32, 512, 16, () -> cfg.donutStorageEspRange, v -> cfg.donutStorageEspRange = v),
 				new IntSetting("Fill", "%", 5, 60, 1, () -> cfg.donutStorageEspOpacity, v -> cfg.donutStorageEspOpacity = v),
 				new BoolSetting("Chests", () -> cfg.donutStorageShowChests, v -> cfg.donutStorageShowChests = v),
 				new BoolSetting("Shulkers & Barrels", () -> cfg.donutStorageShowShulkers, v -> cfg.donutStorageShowShulkers = v),
 				new BoolSetting("Redstone", () -> cfg.donutStorageShowRedstone, v -> cfg.donutStorageShowRedstone = v),
 				new BoolSetting("Furnaces", () -> cfg.donutStorageShowFurnaces, v -> cfg.donutStorageShowFurnaces = v)));
-		m.put("suschunks", new Module("suschunks", "Suspicious Chunks", Items.SCULK_SENSOR,
-				() -> cfg.donutSuspiciousChunks, v -> cfg.donutSuspiciousChunks = v,
-				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutSuspiciousChunksRange, v -> cfg.donutSuspiciousChunksRange = v),
-				new IntSetting("Ceiling", "y", -64, 64, 4, () -> cfg.donutSuspiciousChunksCeiling, v -> cfg.donutSuspiciousChunksCeiling = v),
-				new BoolSetting("Labels", () -> cfg.donutSuspiciousChunksLabels, v -> cfg.donutSuspiciousChunksLabels = v)));
-		m.put("heatmap", new Module("heatmap", "Player Heatmap", Items.PLAYER_HEAD,
-				() -> cfg.donutPlayerSightings, v -> cfg.donutPlayerSightings = v));
-		m.put("baseheat", new Module("baseheat", "Base Heat", Items.CAMPFIRE,
-				() -> cfg.donutChunkActivity, v -> cfg.donutChunkActivity = v,
-				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutChunkActivityRange, v -> cfg.donutChunkActivityRange = v)));
-		m.put("chunkfinder", new Module("chunkfinder", "Activity Chunks", Items.FILLED_MAP,
-				() -> cfg.donutChunkFinder, v -> cfg.donutChunkFinder = v,
-				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutChunkFinderRange, v -> cfg.donutChunkFinderRange = v),
-				new BoolSetting("Tracers", () -> cfg.donutChunkFinderTracers, v -> cfg.donutChunkFinderTracers = v),
-				new BoolSetting("Labels", () -> cfg.donutChunkFinderLabels, v -> cfg.donutChunkFinderLabels = v),
-				new BoolSetting("Experimental", () -> cfg.donutChunkExperimental, v -> cfg.donutChunkExperimental = v)));
+		m.put("primechunk", new Module("primechunk", "Prime Chunk Finder", Items.RED_STAINED_GLASS,
+				() -> cfg.donutPrimeChunk, v -> cfg.donutPrimeChunk = v,
+				new IntSetting("Weight", "/100", 0, 100, 5, () -> cfg.donutPrimeChunkWeight, v -> cfg.donutPrimeChunkWeight = v),
+				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutPrimeChunkRange, v -> cfg.donutPrimeChunkRange = v),
+				new BoolSetting("Tracers", () -> cfg.donutPrimeChunkTracers, v -> cfg.donutPrimeChunkTracers = v)));
 		m.put("stash", new Module("stash", "Stash Pinger", Items.ENDER_CHEST,
-				() -> cfg.donutStashPinger && cfg.donutStorageEsp,
-				v -> {
-					cfg.donutStashPinger = v;
-					if (v) cfg.donutStorageEsp = true;
-				},
-				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutStashPingerRange, v -> cfg.donutStashPingerRange = v),
-				new BoolSetting("Bases", () -> cfg.donutStashShowBases, v -> cfg.donutStashShowBases = v),
-				new BoolSetting("Spawners", () -> cfg.donutStashShowSpawners, v -> cfg.donutStashShowSpawners = v)));
+				() -> cfg.donutStashPinger, v -> cfg.donutStashPinger = v,
+				new IntSetting("Temperature", "/100", 0, 100, 5, () -> cfg.donutStashTemperature, v -> cfg.donutStashTemperature = v),
+				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutStashRange, v -> cfg.donutStashRange = v),
+				new BoolSetting("Tracers", () -> cfg.donutStashTracers, v -> cfg.donutStashTracers = v)));
 		m.put("amethyst", new Module("amethyst", "Amethyst Finder", Items.AMETHYST_SHARD,
 				() -> cfg.donutAmethystDetector, v -> cfg.donutAmethystDetector = v,
 				new IntSetting("Range", "m", 48, 1024, 32, () -> cfg.donutAmethystDetectorRange, v -> cfg.donutAmethystDetectorRange = v)));
-		m.put("portals", new Module("portals", "Nether Mapper", Items.CRYING_OBSIDIAN,
-				() -> cfg.donutNetherPortalMapper, v -> cfg.donutNetherPortalMapper = v));
 		m.put("freecam", new Module("freecam", "Freecam", Items.ENDER_PEARL,
 				() -> cfg.donutFreecam, v -> cfg.donutFreecam = v,
-				new IntSetting("Speed", "/10", 1, 10, 1, () -> cfg.donutFreecamSpeed, v -> cfg.donutFreecamSpeed = v)));
+				new IntSetting("Speed", "/10", 1, 100, 1, () -> cfg.donutFreecamSpeed, v -> cfg.donutFreecamSpeed = v),
+				new BoolSetting("Turbo ×2.5", () -> cfg.donutFreecamTurbo, v -> cfg.donutFreecamTurbo = v)));
 		m.put("tunnel", new Module("tunnel", "Tunnel", Items.IRON_PICKAXE,
 				() -> cfg.donutTunnel, v -> cfg.donutTunnel = v,
 				new IntSetting("Eat At", " hp", 4, 20, 1, () -> cfg.donutTunnelHpThreshold, v -> cfg.donutTunnelHpThreshold = v)));
@@ -677,7 +641,7 @@ public final class NovaModules {
 		m.put("autoclicker", new Module("autoclicker", "Auto Clicker", Items.GOLDEN_HOE,
 				() -> cfg.instantAutoClicker, v -> cfg.instantAutoClicker = v,
 				new BoolSetting("Hold to click", () -> cfg.instantClickHoldToClick, v -> cfg.instantClickHoldToClick = v),
-				new BoolSetting("Trigger mode", () -> cfg.instantClickTargetOnly, v -> cfg.instantClickTargetOnly = v),
+				new BoolSetting("Only on targets", () -> cfg.instantClickTargetOnly, v -> cfg.instantClickTargetOnly = v),
 				new IntSetting("CPS min", "", 1, 20, 1, () -> cfg.instantClickMinCps,
 						v -> cfg.instantClickMinCps = Math.min(v, cfg.instantClickCps)),
 				new IntSetting("CPS max", "", 1, 20, 1, () -> cfg.instantClickCps,
@@ -808,6 +772,16 @@ public final class NovaModules {
 				() -> cfg.rememberEnabled, v -> cfg.rememberEnabled = v));
 		m.put("schematicbuild", new Module("schematicbuild", "Schematic Build", Items.FILLED_MAP,
 				() -> cfg.schematicBuildEnabled, v -> cfg.schematicBuildEnabled = v,
+				new ChoiceSetting("Schematic", SchematicLibrary::names,
+						() -> cfg.schematicLibrarySelection,
+						v -> cfg.schematicLibrarySelection = v),
+				// Anchors the schematic at the player position and enables the builder.
+				new ButtonSetting("Place", "Load here", () -> SchematicLibrary.load(
+						MinecraftClient.getInstance(), cfg, cfg.schematicLibrarySelection)),
+				new ButtonSetting("Folder", "Rescan", SchematicLibrary::rescan),
+				new ButtonSetting("Loaded", "Unload", () -> SchematicLibrary.clear(cfg)),
+				new BoolSetting("Hologram", () -> cfg.schematicShowGhost,
+						v -> cfg.schematicShowGhost = v),
 				new BoolSetting("Auto Move", () -> cfg.schematicAutoMove,
 						v -> cfg.schematicAutoMove = v),
 				new BoolSetting("Temporary Blocks", () -> cfg.schematicTemporaryBlocks,
@@ -907,13 +881,13 @@ public final class NovaModules {
 		List<Category> categories = new ArrayList<>();
 		categories.add(new Category("Combat", Items.NETHERITE_SWORD, pick(m,
 				MODE_SWORD, MODE_AXE, "swordai", "hit", "aim", "strafe", "autoaim", "reach", "expandedhitbox", "jumpreset", "autopot", "velocity",
-				"hitboxes", "axestun", "kbdisplace", "anchor", "totem", "autocrystal", "fastuse", "autoxp")));
+				"hitboxes", "axestun", "axecrit", "kbdisplace", "anchor", "totem", "autocrystal", "fastuse", "autoxp")));
 		categories.add(new Category("Mace & Spear", Items.MACE, pick(m,
 				MODE_MACE, "automace", "autobreachswap", "autolunge", "autospear")));
 		categories.add(new Category("SubTiers", Items.DIAMOND, pick(m,
 				"subtiers_autobed", "subtiers_autocreeper", "subtiers_autominecart")));
 		categories.add(new Category("DonutSMP", Items.ENDER_EYE, pick(m,
-				"mobesp", "advesp", "storageesp", "heatmap", "baseheat", "chunkfinder", "suschunks", "stash", "amethyst", "portals", "freecam", "tunnel")));
+				"mobesp", "advesp", "storageesp", "primechunk", "stash", "amethyst", "freecam", "tunnel")));
 		categories.add(new Category("Hypixel", Items.GOLD_INGOT, pick(m,
 				"autoclicker", "antifireball", "heightclutch", "clutch", "scaffold", "bedbreaker", "remember", "schematicbuild")));
 		categories.add(new Category("Instants", Items.CLOCK, pick(m,
@@ -935,7 +909,7 @@ public final class NovaModules {
 		return out;
 	}
 
-	/** Coordinates are typed, not dragged, so a bad keystroke keeps the previous value. */
+	/** Parses a typed coordinate, returning the fallback when unparseable. */
 	private static int parseCoord(String value, int fallback) {
 		try {
 			return Integer.parseInt(value.trim().replace(",", "").replace("_", ""));

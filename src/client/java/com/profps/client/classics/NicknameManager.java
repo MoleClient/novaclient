@@ -32,27 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Universal client-side name (and skin) spoofing for the Nickname / Nick Other
- * modules. The goal is that the chosen name appears <i>everywhere</i> the real one
- * would — chat, tab list, nametags, scoreboards, team prefixes, death messages,
- * anything — and the real name is left nowhere.
- *
- * <p>Replacement happens at the rendering chokepoints. Every string the game draws
- * goes through one of {@code TextRenderer.draw(String|Text|OrderedText, …)}; the
- * three mixins funnel each into {@link #spoof}. A {@code Text} keeps its styling
- * (the tree is rebuilt), an {@code OrderedText} is flattened and re-laid (only when
- * it actually contains a target, so untouched lines keep their styling), and a raw
- * {@code String} is swapped directly. Chat is also caught at {@code ChatHud.addMessage}.
- *
- * <p>Skins are pulled the same way NameMC shows them: resolve the source username
- * to its Mojang profile, hand that to the vanilla skin provider, and serve the
- * resulting {@link SkinTextures} from a {@code PlayerListEntry} mixin so both the
- * tab head and the in-world model change.
- *
- * <p>This is purely cosmetic on the local client — the server still knows your real
- * identity; only what you see is rewritten.
- */
+/** Client-side name and skin spoofing for the Nickname and Nick Other modules. */
 public final class NicknameManager {
 	private static final HttpClient HTTP = HttpClient.newHttpClient();
 
@@ -61,17 +41,15 @@ public final class NicknameManager {
 	private static volatile Pattern pattern;            // alternation of all real names
 	private static volatile Map<String, String> map = Map.of(); // real -> nick
 
-	// realName -> resolved skin (served to the PlayerListEntry mixin)
-	private static final Map<String, SkinTextures> resolvedSkins = new ConcurrentHashMap<>();
+	private static final Map<String, SkinTextures> resolvedSkins = new ConcurrentHashMap<>(); // realName -> skin
 	private static final Map<String, String> skinSourceFor = new ConcurrentHashMap<>(); // realName -> source username
-	private static final Map<String, SkinTextures> sourceCache = new ConcurrentHashMap<>(); // source -> skin (shared)
+	private static final Map<String, SkinTextures> sourceCache = new ConcurrentHashMap<>(); // source -> skin
 
 	private static String lastSignature = "";
 
 	private NicknameManager() {}
 
-	// ── Driven once per client tick ─────────────────────────────────────────────
-
+	/** Rebuilds the name and skin replacement sets. Called once per client tick. */
 	public static void update(ProFPSConfig config) {
 		LinkedHashMap<String, String> desired = new LinkedHashMap<>();
 		Map<String, String> wantSkin = new LinkedHashMap<>(); // realName -> source username
@@ -99,9 +77,7 @@ public final class NicknameManager {
 			}
 		}
 
-		// NovaClient "Configure" skin: wear another player's skin everywhere YOU see (your own
-		// model, hand, inventory, tab) WITHOUT changing your name. Applies independently of the
-		// Nickname module and even with the master toggle off — it's a cosmetic you set on purpose.
+		// Standalone skin override: applies without a name change and ignores the master toggle.
 		String selfForSkin = selfName();
 		if (selfForSkin != null) {
 			String novaSkin = trim(config.novaSkinUsername);
@@ -111,7 +87,7 @@ public final class NicknameManager {
 		}
 
 		String signature = desired + "|" + wantSkin;
-		if (signature.equals(lastSignature)) return; // nothing changed → no rebuild
+		if (signature.equals(lastSignature)) return;
 		lastSignature = signature;
 
 		if (desired.isEmpty()) {
@@ -134,8 +110,6 @@ public final class NicknameManager {
 
 		updateSkins(wantSkin);
 	}
-
-	// ── Text replacement (called from the mixins) ───────────────────────────────
 
 	public static boolean isActive() {
 		return active;
@@ -163,9 +137,7 @@ public final class NicknameManager {
 		if (text == null || !active) return text;
 		if (!matches(text.getString())) return text;
 		MutableText rebuilt = rebuild(text);
-		// If a name still survives (e.g. it lived inside translatable args, not a
-		// literal/sibling), flatten the whole thing so nothing remains — keeping the
-		// root style. Common case (literal names + siblings) keeps full styling.
+		// Names inside translatable args survive the rebuild, so flatten to the root style.
 		if (matches(rebuilt.getString())) {
 			return Text.literal(spoof(text.getString())).setStyle(text.getStyle());
 		}
@@ -199,30 +171,24 @@ public final class NicknameManager {
 		});
 		String original = flat.toString();
 		String replaced = spoof(original);
-		if (replaced.equals(original)) return ordered; // untouched line → keep its styling
+		if (replaced.equals(original)) return ordered; // unchanged line keeps its styling
 		return Text.literal(replaced).setStyle(firstStyle[0]).asOrderedText();
 	}
 
-	// ── Skins ────────────────────────────────────────────────────────────────────
-
-	/** The spoofed skin to serve for a player shown under {@code realName}, or null. */
-	/** Resolve a username's skin (NameMC-style) for the home-screen preview. */
+	/** Resolves a username's skin for the home-screen preview. */
 	public static CompletableFuture<SkinTextures> previewSkin(String username) {
 		return fetchSkin(username);
 	}
 
+	/** The spoofed skin to serve for a player shown under {@code realName}, or null. */
 	public static SkinTextures skinFor(String realName) {
-		// NOTE: do NOT gate on `active` (which only tracks NAME spoofing). A skin override can
-		// be set with no name change (the home-screen Configure skin), and resolvedSkins only
-		// ever holds entries we actually want — so its presence is the correct test.
+		// Not gated on `active`, which tracks name spoofing only; a skin override can stand alone.
 		return realName == null ? null : resolvedSkins.get(realName);
 	}
 
 	/**
-	 * Your OWN resolved skin override, looked up by the session username — exactly how
-	 * {@link #update} keys it. The local player entity's {@code getGameProfile().name()} can
-	 * differ from the session name (casing / offline mode), so keying the self-skin off the
-	 * entity profile would miss; the in-world getSkin hook uses this for the local player.
+	 * The local player's resolved skin override, keyed by session username.
+	 * The entity game profile name can differ from the session name, so it is not usable as a key.
 	 */
 	public static SkinTextures selfSkinOverride() {
 		String self = selfName();
@@ -235,7 +201,7 @@ public final class NicknameManager {
 		skinSourceFor.keySet().removeIf(real -> !wantSkin.containsKey(real));
 
 		wantSkin.forEach((real, source) -> {
-			if (source.equals(skinSourceFor.get(real))) return; // already resolving/resolved this source
+			if (source.equals(skinSourceFor.get(real))) return; // already resolved or in flight
 			skinSourceFor.put(real, source);
 			resolvedSkins.remove(real);
 			SkinTextures cached = sourceCache.get(source);
@@ -254,14 +220,12 @@ public final class NicknameManager {
 		});
 	}
 
-	// Shares one lookup per username so callers (preview + nickname + repeats) don't each fire
-	// their own Mojang request and rate-limit (429) themselves. Successful futures stay cached;
-	// failed ones are evicted so a later attempt can retry — but never as a parallel burst.
+	// One shared lookup per username; Mojang rate-limits (429) parallel duplicate requests.
 	private static final Map<String, CompletableFuture<SkinTextures>> inFlight = new ConcurrentHashMap<>();
 
 	private static CompletableFuture<SkinTextures> fetchSkin(String username) {
 		return inFlight.computeIfAbsent(username, u -> doFetchSkin(u).whenComplete((skin, ex) -> {
-			if (skin == null) inFlight.remove(u); // allow a future retry; keep successes cached
+			if (skin == null) inFlight.remove(u); // evict failures so a later attempt can retry
 		}));
 	}
 
@@ -295,7 +259,7 @@ public final class NicknameManager {
 				});
 	}
 
-	/** Resolve a username to a Mojang {@link GameProfile} with its textures property. */
+	/** Resolves a username to a Mojang {@link GameProfile} with its textures property. */
 	private static GameProfile resolveProfile(String username) {
 		try {
 			String idBody = get("https://api.mojang.com/users/profiles/minecraft/" + username);
@@ -310,9 +274,7 @@ public final class NicknameManager {
 			JsonObject profileJson = JsonParser.parseString(profileBody).getAsJsonObject();
 			JsonArray props = profileJson.getAsJsonArray("properties");
 
-			// authlib's 2-arg GameProfile gives an IMMUTABLE property map, so put() throws
-			// UnsupportedOperationException. Build a mutable PropertyMap and pass it to the
-			// 3-arg constructor instead.
+			// The 2-arg GameProfile constructor yields an immutable property map, so build one here.
 			PropertyMap properties = new PropertyMap(com.google.common.collect.LinkedHashMultimap.create());
 			for (int i = 0; i < props.size(); i++) {
 				JsonObject prop = props.get(i).getAsJsonObject();
@@ -330,8 +292,7 @@ public final class NicknameManager {
 	}
 
 	private static String get(String url) throws java.io.IOException, InterruptedException {
-		// A User-Agent is required-ish: some Mojang/CDN front-ends reject UA-less requests
-		// with 403, which would make every skin look-up silently fail.
+		// Some Mojang/CDN front-ends reject requests without a User-Agent with 403.
 		HttpResponse<String> response = HTTP.send(
 				HttpRequest.newBuilder(URI.create(url))
 						.header("User-Agent", "NovaClient/1.0 (Minecraft skin preview)")

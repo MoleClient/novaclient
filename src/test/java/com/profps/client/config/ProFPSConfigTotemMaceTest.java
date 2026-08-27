@@ -9,22 +9,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Version 92: Auto Totem silent-by-default, silent aim, lunge spam scaling, crit sprint release. */
+/** Auto Totem, silent aim, lunge spam scaling and crit sprint release defaults. */
 final class ProFPSConfigTotemMaceTest {
 	@Test
-	void migrationMovesAutoTotemOffTheInventoryScreen() throws Exception {
+	void oldAutoTotemDefaultsMigrateForward() throws Exception {
 		ProFPSConfig config = new ProFPSConfig();
 		config.configVersion = 91;
-		config.totemOpenInventory = true;
 
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(95, config.configVersion),
-				// The visible-inventory refill locks the player's own movement and
-				// clicks for as long as the screen is up, which is the worst moment
-				// to do it. Silent swap is the default the migration installs.
-				() -> assertFalse(config.totemOpenInventory),
+				() -> assertEquals(112, config.configVersion),
 				() -> assertTrue(config.lungeSpamScaling),
 				() -> assertTrue(config.hitCritSprintRelease));
 	}
@@ -36,24 +31,19 @@ final class ProFPSConfigTotemMaceTest {
 
 		sanitize(config);
 
-		// Silent aim decouples the camera from the body; it must never arrive
-		// switched on for someone who did not choose it.
 		assertFalse(config.maceSilentAim);
 	}
 
 	@Test
 	void anAlreadyCurrentConfigKeepsTheUsersOwnChoices() throws Exception {
 		ProFPSConfig config = new ProFPSConfig();
-		config.totemOpenInventory = true;   // a deliberate opt-in after the migration
 		config.maceSilentAim = true;
 
 		sanitize(config);
 
-		// Migrations are keyed on the version, so a config already at 92 must not
-		// have its settings re-stamped back to the defaults on every launch.
+		// Migrations are keyed on the version, so a current config is never re-stamped.
 		assertAll(
-				() -> assertEquals(95, config.configVersion),
-				() -> assertTrue(config.totemOpenInventory, "a re-run must not undo the user's own choice"),
+				() -> assertEquals(112, config.configVersion),
 				() -> assertTrue(config.maceSilentAim));
 	}
 

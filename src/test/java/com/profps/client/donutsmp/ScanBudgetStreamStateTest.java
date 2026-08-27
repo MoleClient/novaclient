@@ -7,11 +7,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * The chunk-stream stamp decides whether scanners run reduced, and the modules'
- * burst refresh is edge-triggered on it. Getting it wrong is invisible in game —
- * the overlay just quietly stops updating — so the state machine is pinned here.
- */
+/** Pins the chunk-stream state machine that decides when scanners run reduced. */
 final class ScanBudgetStreamStateTest {
 	@BeforeEach
 	void reset() {
@@ -20,10 +16,7 @@ final class ScanBudgetStreamStateTest {
 
 	@Test
 	void neverStreamedIsNotReportedAsStreaming() {
-		// chunkLoadedAt starts at Integer.MIN_VALUE. Subtracting that from a
-		// small player age overflows to a negative number, which used to read as
-		// "chunks are streaming" before a single chunk packet had arrived — so
-		// every scanner started life throttled for no reason.
+		// chunkLoadedAt starts at Integer.MIN_VALUE, so the subtraction must not overflow.
 		assertFalse(streaming(0));
 		assertFalse(streaming(20));
 	}
@@ -40,9 +33,7 @@ final class ScanBudgetStreamStateTest {
 	@Test
 	void anAgeResetCannotLeaveTheStampInTheFuture() {
 		ScanBudget.notifyChunkLoaded(50_000);
-		// Respawn/dimension change restarts player.age near zero while the stamp
-		// still holds a large tick. Subtraction would go negative and latch
-		// "streaming" on forever; the comparison has to reject a future stamp.
+		// A respawn restarts player.age near zero while the stamp still holds a large tick.
 		assertFalse(streaming(5));
 
 		ScanBudget.resetForWorldChange();
@@ -55,14 +46,11 @@ final class ScanBudgetStreamStateTest {
 		config.enabled = true;
 		config.donutAdvancedEsp = true;
 		config.donutStorageEsp = true;
-		config.donutSuspiciousChunks = true;
-		config.donutStashPinger = true;
-		config.donutChunkFinder = true;
 		config.donutAmethystDetector = true;
-		config.donutNetherPortalMapper = true;
+		config.donutPrimeChunk = true;
+		config.donutStashPinger = true;
 
-		// A lane that can be handed zero nanoseconds never pops a chunk, so its
-		// cycle would never finish and its results would age out on screen.
+		// A lane handed zero nanoseconds would never pop a chunk.
 		for (ScanBudget.Lane lane : ScanBudget.Lane.values()) {
 			assertTrue(ScanBudget.laneBudget(config, lane, true) > 0L, lane + " must get time");
 		}
@@ -70,13 +58,11 @@ final class ScanBudgetStreamStateTest {
 
 	@Test
 	void sustainedStreamingStopsThrottlingTheScanners() {
-		// A wave starts: throttled, so chunk geometry compiles smoothly.
+		// A fresh wave is throttled.
 		ScanBudget.notifyChunkLoaded(0);
 		assertTrue(ScanBudget.shouldReduceFor(0));
 
-		// Flight keeps chunks arriving every tick. The old rule kept the pool
-		// halved for the entire flight — exactly when there is the most ground
-		// to cover — because it only ever asked "did a chunk arrive recently".
+		// Flight keeps chunks arriving every tick.
 		for (int tick = 1; tick <= 200; tick++) ScanBudget.notifyChunkLoaded(tick);
 
 		assertTrue(streaming(200), "chunks really are still arriving");
@@ -89,8 +75,7 @@ final class ScanBudgetStreamStateTest {
 		for (int tick = 1; tick <= 200; tick++) ScanBudget.notifyChunkLoaded(tick);
 		assertFalse(ScanBudget.shouldReduceFor(200));
 
-		// Land, stop moving, then teleport somewhere new. That is a fresh spike
-		// and has to be protected again.
+		// A new spike after a quiet gap is throttled again.
 		ScanBudget.notifyChunkLoaded(1_000);
 		assertTrue(ScanBudget.shouldReduceFor(1_000));
 	}

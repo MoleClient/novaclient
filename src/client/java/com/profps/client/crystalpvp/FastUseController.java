@@ -11,13 +11,15 @@ import java.security.SecureRandom;
 
 public final class FastUseController {
 	private final ProFPSConfig config;
+	private final AnchorMacroController anchorMacro;
 	private final SecureRandom rng = new SecureRandom();
 
 	private long nextRerollNanos;
 	private int itemUseCap = 3;
 
-	public FastUseController(ProFPSConfig config) {
+	public FastUseController(ProFPSConfig config, AnchorMacroController anchorMacro) {
 		this.config = config;
+		this.anchorMacro = anchorMacro;
 	}
 
 	public void tick(MinecraftClient client) {
@@ -46,9 +48,7 @@ public final class FastUseController {
 	private void rerollCaps(long now) {
 		int level = Math.max(1, Math.min(10, config.fastUseLevel));
 		double t = (level - 1) / 9.0D;
-		// Never rewrite attack or mining cooldowns. Fast Use now accelerates only
-		// right-click combat items, with a two-tick floor and a continuously
-		// re-rolled cap so it cannot produce impossible zero-cooldown bursts.
+		// Item-use cooldown only, floored at two ticks; attack and mining cooldowns are untouched.
 		itemUseCap = randomCap(5, 2, t, 0.35D);
 		nextRerollNanos = now + (long) ((95D + rng.nextDouble() * 105D) * 1_000_000D);
 	}
@@ -62,11 +62,18 @@ public final class FastUseController {
 	}
 
 	private boolean crystalPvpContext(MinecraftClient client) {
+		// Anchor Macro relies on vanilla's use cooldown, so never shorten it mid-sequence.
+		boolean anchorSequenceActive = anchorMacro != null && anchorMacro.isSequencing();
+		if (!canAccelerate(client.options.useKey.isPressed(), anchorSequenceActive)) return false;
 		ItemStack main = client.player.getMainHandStack();
 		ItemStack off = client.player.getOffHandStack();
 		boolean combatItem = isCrystalPvpItem(main) || isCrystalPvpItem(off);
-		if (!combatItem) return false;
-		return client.options.useKey.isPressed() || config.autoCrystal || config.anchorMacro;
+		return combatItem;
+	}
+
+	/** Acceleration requires real held input and no active anchor sequence. */
+	static boolean canAccelerate(boolean physicalUsePressed, boolean anchorSequenceActive) {
+		return physicalUsePressed && !anchorSequenceActive;
 	}
 
 	private boolean isCrystalPvpItem(ItemStack stack) {

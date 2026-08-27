@@ -8,25 +8,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class ScanBudgetTest {
 	@Test
-	void advancedEspCannotStarveStashOrChunkFinder() {
+	void advancedEspCannotStarveStorageOrAmethyst() {
 		ProFPSConfig config = new ProFPSConfig();
 		config.enabled = true;
 		config.donutAdvancedEsp = true;
-		// Stash Pinger reads Storage ESP's containers now, not the terrain scan,
-		// so that is what has to be on for its lane to be live.
 		config.donutStorageEsp = true;
-		config.donutStashPinger = true;
-		config.donutChunkFinder = true;
+		config.donutAmethystDetector = true;
 
 		long advanced = ScanBudget.laneBudget(config, ScanBudget.Lane.ADVANCED_ESP, false);
-		long stash = ScanBudget.laneBudget(config, ScanBudget.Lane.STASH_PINGER, false);
-		long finder = ScanBudget.laneBudget(config, ScanBudget.Lane.BASE_FINDER, false);
+		long storage = ScanBudget.laneBudget(config, ScanBudget.Lane.STORAGE_ESP, false);
+		long amethyst = ScanBudget.laneBudget(config, ScanBudget.Lane.AMETHYST, false);
 
-		assertEquals(8_000_000L / 4L, advanced);
-		assertEquals(advanced, stash);
-		assertEquals(advanced, finder);
-		assertTrue(stash > 0L);
-		assertTrue(finder > 0L);
+		assertEquals(8_000_000L / 3L, advanced);
+		assertEquals(advanced, storage);
+		assertEquals(advanced, amethyst);
+		assertTrue(storage > 0L);
+		assertTrue(amethyst > 0L);
 	}
 
 	@Test
@@ -35,11 +32,9 @@ final class ScanBudgetTest {
 		config.enabled = true;
 		config.donutAdvancedEsp = true;
 		config.donutStorageEsp = true;
-		config.donutSuspiciousChunks = true;
-		config.donutStashPinger = true;
-		config.donutChunkFinder = true;
 		config.donutAmethystDetector = true;
-		config.donutNetherPortalMapper = true;
+		config.donutPrimeChunk = true;
+		config.donutStashPinger = true;
 
 		int lanes = ScanBudget.Lane.values().length;
 		for (ScanBudget.Lane lane : ScanBudget.Lane.values()) {
@@ -51,9 +46,9 @@ final class ScanBudgetTest {
 	void aSingleScannerKeepsTheFullPool() {
 		ProFPSConfig config = new ProFPSConfig();
 		config.enabled = true;
-		config.donutChunkFinder = true;
+		config.donutAmethystDetector = true;
 
 		assertEquals(8_000_000L,
-				ScanBudget.laneBudget(config, ScanBudget.Lane.BASE_FINDER, false));
+				ScanBudget.laneBudget(config, ScanBudget.Lane.AMETHYST, false));
 	}
 }

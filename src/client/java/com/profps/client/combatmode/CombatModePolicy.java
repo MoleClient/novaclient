@@ -7,13 +7,11 @@ import static com.profps.client.combatmode.CombatModeProfile.*;
 /**
  * Resolves the persisted mode/tier controls into effective controller settings.
  *
- * <p>This class never mutates the legacy module fields. With Modes off it returns
- * those fields verbatim (bounded to their supported ranges); with a mode active it
- * returns a fixed, reviewed tier profile <i>for the features that mode actually drives</i>
- * and falls through to the standalone module for everything else — Mace mode owns the mace,
- * it does not switch your Triggerbot off. Safety invariants such as vanilla reach,
- * crosshair confirmation, packet phase, collision checks, and mouse-GCD snapping are
- * intentionally absent from the profiles so a tier can never weaken them.</p>
+ * <p>Never mutates the legacy module fields. With Modes off the legacy fields are returned
+ * clamped to their supported ranges; with a mode active a fixed tier profile is returned for
+ * the features that mode drives, and everything else falls through to the standalone module.
+ * Legality gates (reach, crosshair, packet phase, collision, mouse GCD) are not represented
+ * here and stay owned by the controllers.</p>
  */
 public final class CombatModePolicy {
 	private static final double NATURAL_SWEEP_CHANCE = 0.045D;
@@ -43,7 +41,7 @@ public final class CombatModePolicy {
 		if (config != null) config.combatMode = (mode == null ? CombatMode.OFF : mode).configValue();
 	}
 
-	/** Clicking the already-active card turns Modes off; another card atomically replaces it. */
+	/** Selecting the active mode turns Modes off; any other mode replaces it. */
 	public static void toggleMode(ProFPSConfig config, CombatMode requested) {
 		if (config == null) return;
 		CombatMode safe = requested == null ? CombatMode.OFF : requested;
@@ -62,20 +60,19 @@ public final class CombatModePolicy {
 				case SWORD_AI -> config.swordModeAiBot;
 				case SWORD_AI_AIM -> config.swordModeAiBot && config.swordModeAiAim;
 				case SWORD_AI_JUMP -> config.swordModeAiBot && config.swordModeAiJump;
-				// Not a system this mode drives — leave it to its own module.
 				default -> legacyEnabled(config, feature);
 			};
 			case AXE -> switch (feature) {
 				case MELEE_AIM -> config.axeModeAim;
 				case TRIGGER -> config.axeModeTrigger;
 				case AXE_STUN -> config.axeModeStun;
+				case AXE_CRIT -> config.axeModeCrit;
 				case PROJECTILE_AIM -> config.axeModeProjectileAim
 						&& (config.axeModeBowAim || config.axeModeCrossbowAim);
 				case BOW_AIM -> config.axeModeProjectileAim && config.axeModeBowAim;
 				case CROSSBOW_AIM -> config.axeModeProjectileAim && config.axeModeCrossbowAim;
 				case AXE_SWORD_FOLLOWUP -> config.axeModeSwordFollowup;
 				case AXE_TRIGGER_FOLLOWUP -> config.axeModeSwordFollowup && config.axeModeTriggerFollowup;
-				// Not a system this mode drives — leave it to its own module.
 				default -> legacyEnabled(config, feature);
 			};
 			case MACE -> switch (feature) {
@@ -83,19 +80,16 @@ public final class CombatModePolicy {
 				case MACE_AIM -> config.maceModeAutoMace && config.maceModeAim;
 				case MACE_STUN_SLAM -> config.maceModeAutoMace && config.maceModeStunSlam;
 				case BREACH_SWAP -> config.maceModeBreachSwap;
-				// PEARL_CATCH is retired: no longer a setting, and never armed (see legacyEnabled).
-				// Not a system this mode drives — leave it to its own module.
 				default -> legacyEnabled(config, feature);
 			};
 		};
 	}
 
-	/** Whether Auto Mace may visibly select a mace before attempting a hit. */
+	/** Whether Auto Mace may select a mace before attempting a hit. */
 	public static boolean autoMaceAutoSwitch(ProFPSConfig config) {
 		if (config == null || !config.enabled) return false;
 		return switch (mode(config)) {
 			case MACE -> config.maceModeAutoMace && config.maceModeAutoSwitch;
-			// Under Sword/Axe (or no mode) AutoMace is the standalone module, so its switch is too.
 			default -> config.autoMace && config.autoMaceAutoSwitch;
 		};
 	}
@@ -110,13 +104,13 @@ public final class CombatModePolicy {
 			case SWORD_AI_AIM -> c.swordAiEnabled && c.swordAiAim;
 			case SWORD_AI_JUMP -> c.swordAiEnabled && c.swordAiJump;
 			case AXE_STUN -> c.axeStun;
+			case AXE_CRIT -> c.axeCrit;
 			case PROJECTILE_AIM, BOW_AIM, CROSSBOW_AIM, FIREBALL_AIM -> c.autoAim;
 			case AUTO_MACE -> c.autoMace;
 			case MACE_AIM -> c.autoMace;
 			case MACE_STUN_SLAM -> c.autoMace && c.autoMaceShieldBreak;
 			case BREACH_SWAP -> c.autoBreachSwap;
-			// Auto Pearl Catch was pulled out of the Mace module: the controller stays in the
-			// tree but this switch is the single gate, so it can never arm or steal rotation.
+			// Pearl Catch has no setting; this is the single gate that keeps it disarmed.
 			case PEARL_CATCH -> false;
 			case AXE_SWORD_FOLLOWUP, AXE_TRIGGER_FOLLOWUP -> false;
 		};

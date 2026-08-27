@@ -17,21 +17,12 @@ import java.security.SecureRandom;
 import java.util.UUID;
 
 /**
- * Knockback Displacement — a momentary, keybind-fired PvP move (no toggle; like Auto Lunge).
- *
- * <p>This is NOT anti-knockback or packet trickery. It's the legit vanilla displacement technique
- * automated: tap your sprint (W-reset) so the swing counts as a fresh SPRINT attack, frame-smoothly
- * put your view on the nearest player, then land a sprint hit while you're moving into them. Vanilla
- * knockback is server-side velocity along the attacker→victim line plus the sprint bonus, so a sprint
- * hit taken head-on shoves them away from you — backwards, against their approach — instead of letting
- * them walk through you. Everything here is real input (keys + a normal attack) with a humanized aim,
- * so there's nothing fake for movement/velocity checks to catch.
- *
- * <p>Press the bound key (default none): if a player is in range it fires once.
+ * Keybind-fired sprint-hit displacement. Taps sprint to reset it, aims at the nearest player over
+ * several frames, then lands a sprint attack so vanilla applies the sprint knockback bonus.
  */
 public final class KnockbackDisplacementController {
-	private static final double ENGAGE_RANGE = 4.5D; // acquire within this; only SWING within ~3.0
-	private static final long WINDOW_NANOS = 850_000_000L; // give up if it can't land in time
+	private static final double ENGAGE_RANGE = 4.5D; // acquisition range; swings only within 3.0
+	private static final long WINDOW_NANOS = 850_000_000L;
 
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
@@ -67,22 +58,22 @@ public final class KnockbackDisplacementController {
 		PlayerEntity target = byUuid(client, targetUuid);
 		if (target == null || now > deadlineNanos) { reset(client); return; }
 
-		applyKeys(client); // forward+sprint, except the brief sprint-reset tap
+		applyKeys(client);
 
 		if (now < nextActionNanos) return;
 
 		switch (phase) {
 			case RESET -> {
-				// the sprint-tap window just elapsed (sprint was released by applyKeys) — re-engage
+				// The sprint-tap window has elapsed; applyKeys re-presses on the next tick.
 				phase = Phase.ENGAGE;
 			}
 			case ENGAGE -> {
 				ClientPlayerEntity player = client.player;
-				player.setSprinting(true); // make sure the server sees a sprint hit
+				player.setSprinting(true); // the server needs the sprint flag set at attack time
 				Vec3d eye = player.getEyePos();
 				Vec3d point = aimPoint(target);
 				double dist = point.distanceTo(eye);
-				if (dist > 3.0D) return; // not in swing range yet — keep closing + aiming
+				if (dist > 3.0D) return; // keep closing and aiming
 
 				Vec3d look = player.getRotationVec(1.0F);
 				double dot = dist < 0.1 ? 1.0 : point.subtract(eye).multiply(1.0 / dist).dotProduct(look);
@@ -94,7 +85,7 @@ public final class KnockbackDisplacementController {
 				if (player.getAttackCooldownProgress(0.0F) >= 0.9F) {
 					if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.KB_DISPLACE)) return;
 					client.interactionManager.attackEntity(player, target);
-					player.swingHand(Hand.MAIN_HAND); // sprint hit → knockback away from us (backwards for them)
+					player.swingHand(Hand.MAIN_HAND);
 					player.resetTicksSinceLastAttack();
 					reset(client);
 				}
@@ -129,7 +120,7 @@ public final class KnockbackDisplacementController {
 		float k = 1.0F - (float) Math.pow(1.0F - speed, dt);
 		float cap = MathHelper.clamp(config.kbDisplaceAimSpeed, 20, 95) * 0.6F * dt;
 
-		float yawStep = yawErr * k + (float) (rng.nextGaussian() * 0.28D);   // micro-tremor
+		float yawStep = yawErr * k + (float) (rng.nextGaussian() * 0.28D);
 		float pitchStep = pitchErr * k + (float) (rng.nextGaussian() * 0.20D);
 
 		float yawApplied = mouse.yaw(MathHelper.clamp(yawStep, -cap, cap));
@@ -156,17 +147,17 @@ public final class KnockbackDisplacementController {
 		deadlineNanos = now + WINDOW_NANOS;
 		if (config.kbDisplaceReset) {
 			phase = Phase.RESET;
-			nextActionNanos = now + 55_000_000L; // ~1 tick sprint-tap (W-reset)
+			nextActionNanos = now + 55_000_000L; // roughly one tick of sprint-tap
 		} else {
 			phase = Phase.ENGAGE;
 			nextActionNanos = now;
 		}
 	}
 
-	/** Hold forward + sprint through the move; drop sprint only for the brief reset tap. */
+	/** Holds forward and sprint, releasing both during the reset tap. */
 	private void applyKeys(MinecraftClient client) {
 		boolean resetTap = phase == Phase.RESET;
-		client.options.forwardKey.setPressed(!resetTap); // release W during the tap, then re-press
+		client.options.forwardKey.setPressed(!resetTap);
 		client.options.sprintKey.setPressed(!resetTap);
 		if (client.player != null && !resetTap) client.player.setSprinting(true);
 	}
@@ -220,7 +211,7 @@ public final class KnockbackDisplacementController {
 
 	private void pickPoint() {
 		fx = 0.35 + rng.nextDouble() * 0.30;
-		fy = 0.50 + rng.nextDouble() * 0.25; // upper chest
+		fy = 0.50 + rng.nextDouble() * 0.25;
 		fz = 0.35 + rng.nextDouble() * 0.30;
 	}
 
