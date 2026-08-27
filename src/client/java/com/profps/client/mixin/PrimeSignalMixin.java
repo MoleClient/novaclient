@@ -13,12 +13,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Feeds Prime Chunk Finder the traffic that depth-hiding cannot sanitize.
- * Sounds, block updates, block events (chest lids, pistons) and particles are
- * all broadcast with their TRUE coordinates even while the blocks themselves
- * are masked — underground coordinates in any of them are someone's base
- * doing something. Injected at TAIL so vanilla has already applied the packet
- * on the client thread; every hook fast-exits unless the module is listening.
+ * Feeds sound, block update, block event and particle packets to Prime Chunk Finder.
+ * Injected at TAIL so vanilla has already applied the packet on the client thread.
  */
 @Mixin(ClientPlayNetworkHandler.class)
 public abstract class PrimeSignalMixin {

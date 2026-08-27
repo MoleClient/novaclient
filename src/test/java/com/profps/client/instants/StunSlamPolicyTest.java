@@ -7,14 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Pins the arithmetic behind the stun slam, all of it read off 1.21.11 bytecode.
- *
- * <p>The combo failed for years of tuning because the timing was never the problem: below about
- * 3.8 blocks of fall the mace cannot beat the axe hit it has to overwrite inside the
- * invulnerability window, so it deals nothing at all. These tests exist so a future "improvement"
- * that lowers the trigger has to argue with the damage numbers first.
- */
+/** Pins the stun slam damage arithmetic, read off 1.21.11 bytecode. */
 class StunSlamPolicyTest {
 	private static final double NETHERITE_AXE = 10.0D;
 	private static final double MACE = 7.0D;
@@ -40,14 +33,13 @@ class StunSlamPolicyTest {
 				() -> assertEquals(1.0D, StunSlamPolicy.chargeMultiplier(2.0D), 1e-9));
 	}
 
-	/** A full-charge netherite axe crit is the floor the slam has to clear: 10 × 1.0 × 1.5. */
+	/** A full-charge netherite axe crit is the floor the slam has to clear: 10 x 1.0 x 1.5. */
 	@Test
 	void theAxeTapSetsAFifteenDamageFloor() {
 		assertEquals(15.0D, StunSlamPolicy.axeTapDamage(NETHERITE_AXE, 1.0D, true), 1e-9);
 		assertEquals(10.0D, StunSlamPolicy.axeTapDamage(NETHERITE_AXE, 1.0D, false), 1e-9);
 	}
 
-	/** The number this whole rework turns on. */
 	@Test
 	void breakEvenIsAboutThreePointEightBlocks() {
 		double breakEven = StunSlamPolicy.breakEvenFall(15.0D, MACE, MACE_CHARGE_AT_SLAM);
@@ -71,7 +63,7 @@ class StunSlamPolicyTest {
 		assertTrue(StunSlamPolicy.netSlamDamage(slam, axe) > 8.0D);
 	}
 
-	/** Gravity projection: a dive committed at 1.3 blocks is still short when the mace swings. */
+	/** A dive committed at 1.3 blocks is still short of break-even when the mace swings. */
 	@Test
 	void theOldTriggerCouldNotReachBreakEvenInTime() {
 		double fallAtSlam = StunSlamPolicy.projectFall(1.3D, -0.5D, StunSlamPolicy.SLAM_DELAY_TICKS);
@@ -87,11 +79,6 @@ class StunSlamPolicyTest {
 				NETHERITE_AXE, 1.0D, true, MACE, MACE_CHARGE_AT_SLAM));
 	}
 
-	/**
-	 * A weaker axe lowers the floor, so the same fall becomes worth committing. The rule reads the
-	 * real weapon rather than assuming netherite, which is what keeps it from being either too
-	 * eager with a strong axe or needlessly shy with a wooden one.
-	 */
 	@Test
 	void aWeakerAxeLowersTheRequiredFall() {
 		double netherite = StunSlamPolicy.breakEvenFall(
@@ -101,10 +88,7 @@ class StunSlamPolicyTest {
 		assertTrue(wooden < netherite, wooden + " should be less than " + netherite);
 	}
 
-	/**
-	 * The rule the controller now uses: sprint is kept below 0.9 charge, so the tap does not crit
-	 * and the floor collapses. This is what makes an ordinary dive land instead of being refused.
-	 */
+	/** Sprint is kept below 0.9 charge so the axe tap does not crit and the floor drops. */
 	@Test
 	void keepingSprintBelowTheLaunchThresholdMakesOrdinaryDivesLand() {
 		double axeSprinted = StunSlamPolicy.axeTapDamage(NETHERITE_AXE, 0.9D, false);
@@ -112,14 +96,13 @@ class StunSlamPolicyTest {
 		assertAll(
 				() -> assertTrue(StunSlamPolicy.breakEvenFall(axeSprinted, MACE, MACE_CHARGE_AT_SLAM) < 2.0D),
 				() -> assertTrue(StunSlamPolicy.breakEvenFall(axeCrit, MACE, MACE_CHARGE_AT_SLAM) > 3.5D),
-				// a 1.5-block dive: refused under the old crit floor, lands under the new rule
+				// A 1.5-block dive is refused with a crit tap and committed without one.
 				() -> assertFalse(StunSlamPolicy.worthCommitting(1.5D, -0.6D,
 						NETHERITE_AXE, 1.0D, true, MACE, MACE_CHARGE_AT_SLAM)),
 				() -> assertTrue(StunSlamPolicy.worthCommitting(1.5D, -0.6D,
 						NETHERITE_AXE, 0.9D, false, MACE, MACE_CHARGE_AT_SLAM)));
 	}
 
-	/** Not critting the axe halves the problem — worth knowing if the sprint rule ever changes. */
 	@Test
 	void aNonCritAxeIsMuchEasierToBeat() {
 		double crit = StunSlamPolicy.breakEvenFall(

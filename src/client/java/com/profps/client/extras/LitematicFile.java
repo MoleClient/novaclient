@@ -18,26 +18,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * A {@code .litematic} file read directly, without Litematica.
- *
- * <p>The format is gzipped NBT: a {@code Regions} compound of named regions,
- * each carrying a block-state palette and a bit-packed index array. Two details
- * are easy to get wrong and both are load-bearing here.
- *
- * <p><b>Sizes may be negative.</b> A region's {@code Position} is one corner and
- * {@code Size} is a signed extent, so a region can grow toward negative
- * coordinates. The real minimum corner is the componentwise minimum of the
- * position and the position plus the extent, and the array is indexed from
- * <em>that</em> corner using absolute sizes.
- *
- * <p><b>Entries straddle longs.</b> The index array is packed continuously at
- * {@code max(2, ceil(log2(paletteSize)))} bits per entry, so an entry can begin
- * in one long and finish in the next. That is the older, tight packing — not the
- * padded per-long layout modern chunk sections use — and reading it the modern
- * way silently yields plausible garbage rather than an error.
- *
- * <p>Verified against real files by decoding every entry and checking the
- * resulting non-air count against the header's own {@code TotalBlocks}.
+ * Reader for {@code .litematic} files (gzipped NBT: named regions, each with a
+ * block-state palette and a bit-packed index array).
  */
 final class LitematicFile {
 	private final String name;
@@ -110,12 +92,7 @@ final class LitematicFile {
 				sizeX, sizeY, sizeZ, palette, data, bits);
 	}
 
-	/**
-	 * The lower corner of an axis given one corner and a signed extent. A size
-	 * of 5 from x=0 spans 0..4; a size of −5 from x=4 spans 0..4 as well, and
-	 * real files use both — the schematic that exposed this had
-	 * {@code Position x=72, Size x=-73}.
-	 */
+	/** Lower corner of an axis given one corner and a signed extent; region sizes may be negative. */
 	static int minCorner(int position, int extent) {
 		return Math.min(position, position + (extent > 0 ? extent - 1 : extent + 1));
 	}
@@ -125,14 +102,7 @@ final class LitematicFile {
 		return Math.max(2, 32 - Integer.numberOfLeadingZeros(Math.max(0, paletteSize - 1)));
 	}
 
-	/**
-	 * One entry out of the continuously packed array.
-	 *
-	 * <p>Entries are packed end to end with no padding, so an entry may begin in
-	 * one long and finish in the next. Reading it the way modern chunk sections
-	 * are packed — entries aligned within a long, remainder bits wasted — gives
-	 * no error, just wrong blocks, which is why this is pinned by tests.
-	 */
+	/** Reads one entry from the array. Entries are packed end to end and may straddle two longs. */
 	static int unpack(long[] data, int bits, int index) {
 		long startOffset = (long) index * bits;
 		int startArray = (int) (startOffset >> 6);
@@ -158,9 +128,7 @@ final class LitematicFile {
 		StateManager<Block, BlockState> manager = block.getStateManager();
 		for (String propertyName : properties.getKeys()) {
 			Property<?> property = manager.getProperty(propertyName);
-			// A property this version of the game no longer has is skipped rather
-			// than failing the block: an old schematic should still build, minus
-			// whatever detail the game itself has dropped.
+			// Skip properties this game version no longer has rather than failing the block.
 			if (property != null) state = withValue(state, property, properties.getString(propertyName, ""));
 		}
 		return state;

@@ -9,12 +9,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/**
- * Spoofs the TAB-LIST row name. {@link PlayerListHud#getPlayerName(PlayerListEntry)} builds
- * each row's text from the entry's display name / profile name; rewriting its result makes
- * the tab show the Nickname / Nick Other value (the old TextRenderer hook missed it because
- * the tab text is drawn through the deferred GUI render state in 1.21.11).
- */
+/** Spoofs the tab-list row name built by {@link PlayerListHud#getPlayerName(PlayerListEntry)}. */
 @Mixin(PlayerListHud.class)
 public abstract class PlayerListHudNameMixin {
 

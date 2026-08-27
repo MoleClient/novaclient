@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** Version 112: Auto Spear is rebuilt around the charge it holds and the aim it drives. */
+/** Version 112: Auto Spear defaults, range migration and clamping. */
 final class ProFPSConfigAutoSpearTest {
 	@Test
 	void autoSpearArrivesOffAndWithSilentAimOff() throws Exception {
@@ -21,8 +21,6 @@ final class ProFPSConfigAutoSpearTest {
 		assertAll(
 				() -> assertEquals(112, config.configVersion),
 				() -> assertFalse(config.autoSpearEnabled, "a module that aims for you is opt-in"),
-				// Silent aim decouples the camera from the body; it must never be
-				// switched on for somebody who did not choose it.
 				() -> assertFalse(config.autoSpearSilentAim));
 	}
 
@@ -33,9 +31,7 @@ final class ProFPSConfigAutoSpearTest {
 
 		sanitize(config);
 
-		// Contact resolves between 2 and ~4.5 blocks, so the range only decides how early
-		// the spear comes out. The old 42m default armed a charge at elytra distance and
-		// held the use key down across half a server; 20m is the engagement itself.
+		// Contact resolves between 2 and 4.5 blocks; range only decides how early the spear comes out.
 		assertTrue(config.autoSpearRange <= 24, "was " + config.autoSpearRange);
 		assertTrue(config.autoSpearRange >= 12, "was " + config.autoSpearRange);
 	}

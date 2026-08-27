@@ -18,11 +18,6 @@ final class ProFPSConfigTotemMaceTest {
 
 		sanitize(config);
 
-		// Auto Totem no longer has an inventory setting at all. A hotbar totem
-		// reaches the offhand with the swap-hands key, which needs no screen; a
-		// totem stored deeper leaves no legal alternative to a real inventory,
-		// and the only other outcome there is doing nothing — not a choice worth
-		// offering, so the field is gone rather than defaulted.
 		assertAll(
 				() -> assertEquals(112, config.configVersion),
 				() -> assertTrue(config.lungeSpamScaling),
@@ -36,8 +31,6 @@ final class ProFPSConfigTotemMaceTest {
 
 		sanitize(config);
 
-		// Silent aim decouples the camera from the body; it must never arrive
-		// switched on for someone who did not choose it.
 		assertFalse(config.maceSilentAim);
 	}
 
@@ -48,8 +41,7 @@ final class ProFPSConfigTotemMaceTest {
 
 		sanitize(config);
 
-		// Migrations are keyed on the version, so a config already at 92 must not
-		// have its settings re-stamped back to the defaults on every launch.
+		// Migrations are keyed on the version, so a current config is never re-stamped.
 		assertAll(
 				() -> assertEquals(112, config.configVersion),
 				() -> assertTrue(config.maceSilentAim));

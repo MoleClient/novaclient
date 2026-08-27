@@ -18,8 +18,6 @@ final class ProFPSConfigAutoClickerTest {
 
 		sanitize(config);
 
-		// Enabling the clicker should produce a click rhythm straight away.
-		// "Only on targets" remains available to narrow it back down.
 		assertAll(
 				() -> assertEquals(112, config.configVersion),
 				() -> assertFalse(config.instantClickTargetOnly));

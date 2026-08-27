@@ -17,18 +17,7 @@ import net.minecraft.world.GameMode;
 
 import java.security.SecureRandom;
 
-/**
- * Auto XP — throws experience bottles to mend your armour back to full.
- *
- * <p>Runs only while a bottle is in the hotbar and at least one worn piece is both damaged
- * and carries Mending; the moment every piece is full it stops and hands your old slot back.
- * The Mending gate matters: damaged armour without Mending can never reach full, so without
- * it the module would drain the whole stack and never stop.</p>
- *
- * <p>Like Clutch and Height Clutch it NEVER rotates your view. A bottle thrown on your own
- * heading lands a few blocks out at most and the orbs travel back to you on their own, so
- * there is nothing to gain from taking the camera.</p>
- */
+/** Throws experience bottles to repair damaged Mending armor, then restores the previous slot. */
 public final class AutoXPController {
 	private static final EquipmentSlot[] ARMOR = {
 			EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET
@@ -51,7 +40,6 @@ public final class AutoXPController {
 		}
 		ClientPlayerEntity player = client.player;
 		if (!needsMending(player)) {
-			// Full again — give the hand back and stand down.
 			reset(client);
 			return;
 		}
@@ -76,7 +64,7 @@ public final class AutoXPController {
 		nextThrowNanos = now + throwDelayNanos();
 	}
 
-	/** True while any worn piece is damaged and can actually be mended. */
+	/** True while any worn piece is damaged and has Mending. */
 	private boolean needsMending(ClientPlayerEntity player) {
 		for (EquipmentSlot slot : ARMOR) {
 			ItemStack stack = player.getEquippedStack(slot);
@@ -102,7 +90,7 @@ public final class AutoXPController {
 		return -1;
 	}
 
-	/** The throw cadence, jittered so it isn't a perfect metronome. */
+	/** Configured throw delay plus jitter, in nanoseconds. */
 	private long throwDelayNanos() {
 		int base = MathHelper.clamp(config.autoXpDelayMs, 0, 1000);
 		int jitter = Math.max(1, base / 5);

@@ -20,9 +20,6 @@ final class ProFPSConfigLungeSwapTest {
 
 		assertAll(
 				() -> assertEquals(112, config.configVersion),
-				// A swap that fires on the same frame offset every time is a
-				// stronger tell than the swap itself, so the sampled delays are
-				// the default rather than an opt-in.
 				() -> assertTrue(config.lungeSwapHumanize),
 				() -> assertTrue(config.lungeSpamScaling));
 	}

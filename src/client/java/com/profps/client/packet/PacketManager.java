@@ -17,70 +17,48 @@ import net.minecraft.text.TextCodecs;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Runtime engine behind the Packet Utils overlay — the plumbing every button on the
- * in-GUI toolbar drives. All state here is session-only (never written to the config):
- * a reconnect always starts clean, so you never accidentally rejoin a server already
- * silenced or holding a stale queue.
- *
- * <h2>Outbound interception</h2>
- * {@code PacketSendMixin} funnels every client-to-server packet through
- * {@link #interceptOutbound(Packet)} at the head of {@code ClientCommonNetworkHandler.sendPacket}.
- * Three states can hold a packet back:
- * <ul>
- *   <li><b>Send Packets = false</b> — the packet is dropped and gone. Full radio silence
- *       (keep-alives included, so the server will eventually time you out — leave on your
- *       own terms with "Disconnect &amp; flush").</li>
- *   <li><b>Delay Packets = true</b> / <b>De-sync</b> — the packet is parked in {@link #held}
- *       in order; releasing the hold re-sends the whole queue verbatim ("blink").</li>
- *   <li>a one-shot close suppression for "Close without packet".</li>
- * </ul>
- * The mixin never sees our own flush: {@link #flushHeld()} raises {@link #bypass} so the
- * queued packets sail straight through.
- */
+/** Outbound packet interception and queueing behind the Packet Utils overlay. State is session-only. */
 public final class PacketManager {
 	public static final PacketManager INSTANCE = new PacketManager();
 
 	private static final Gson GSON = new Gson();
 
-	// ── Live (session) state — mirrored by the overlay switches and the Packet Utils page ──
-	/** false = drop every outbound packet (hard silence). */
+	/** false = drop every outbound packet. */
 	public boolean sendPackets = true;
-	/** true = park outbound packets in {@link #held} instead of sending (persistent blink). */
+	/** true = park outbound packets in {@link #held} instead of sending. */
 	public boolean delayPackets = false;
-	/** De-sync ("blink") — a quick one-tap freeze that also parks outbound packets. */
+	/** One-tap freeze that parks outbound packets. */
 	public boolean desyncActive = false;
 
 	private final List<Packet<?>> held = new ArrayList<>();
-	private boolean bypass;              // true only while WE re-send the queue (skips interception)
+	private boolean bypass;              // true only while re-sending the queue, skips interception
 	private boolean suppressCloseOnce;   // drop exactly one CloseHandledScreenC2SPacket
 
-	private Screen savedScreen;          // "Save GUI" target, re-openable from the Packet Utils page
+	private Screen savedScreen;
 	private PacketManager() {}
 
-	/** Master gate: the overlay renders and interception runs only while Packet Utils is enabled. */
+	/** True while the Packet Utils feature is enabled in config. */
 	public boolean active() {
 		var cfg = ProFPSClient.config();
 		return cfg != null && cfg.packetUtils;
 	}
 
-	/** Are outbound packets currently being parked (delay mode or an active de-sync)? */
+	/** True while outbound packets are being parked. */
 	public boolean holding() {
 		return delayPackets || desyncActive;
 	}
 
 	/**
-	 * Called at the head of the client's packet-send path. Returns {@code true} to CANCEL the
-	 * send — the packet is either dropped (silence) or parked (delay/de-sync). Precedence:
-	 * our own flush &gt; disabled &gt; close-suppression &gt; silence &gt; hold.
+	 * Called at the head of the client's packet-send path. Returns true to cancel the send.
+	 * Precedence: flush bypass, disabled, close-suppression, silence, hold.
 	 */
 	public boolean interceptOutbound(Packet<?> packet) {
-		if (bypass) return false;         // this is us flushing the queue — let it go
+		if (bypass) return false;
 		if (active() && suppressCloseOnce && packet instanceof CloseHandledScreenC2SPacket) {
 			suppressCloseOnce = false;
-			return true;                  // eat the close packet requested by "Close without packet"
+			return true;
 		}
-		if (active() && !sendPackets) return true;    // hard drop
+		if (active() && !sendPackets) return true;
 		if (active() && holding()) {
 			held.add(packet);
 			return true;
@@ -93,7 +71,7 @@ public final class PacketManager {
 		return held.size();
 	}
 
-	/** Re-send every parked packet in order, bypassing interception, then clear the queue. */
+	/** Re-sends parked packets in order, bypassing interception, then clears the queue. */
 	public void flushHeld() {
 		if (held.isEmpty()) return;
 		ClientPlayNetworkHandler net = MinecraftClient.getInstance().getNetworkHandler();
@@ -122,35 +100,28 @@ public final class PacketManager {
 		}
 	}
 
-	/** Throw the queue away without sending it. */
+	/** Discards the queue without sending it. */
 	public void clearHeld() {
 		held.clear();
 	}
 
-	// ── Toolbar actions ───────────────────────────────────────────────────────────
-
 	public void setSendPackets(boolean value) {
 		sendPackets = value;
-		// Turning sending back on while nothing is being held releases anything already parked.
 		if (value && !holding()) flushHeld();
 	}
 
 	public void setDelayPackets(boolean value) {
 		delayPackets = value;
-		if (!holding()) flushHeld();      // dropped out of every hold mode → release the queue
+		if (!holding()) flushHeld();
 	}
 
-	/** De-sync toggle: press once to freeze (park outbound), press again to re-sync (flush). */
+	/** Toggles de-sync: parks outbound packets, or flushes them when turned off. */
 	public void toggleDesync() {
 		desyncActive = !desyncActive;
 		if (!holding()) flushHeld();
 	}
 
-	/**
-	 * Close the current screen client-side WITHOUT telling the server. The server keeps the
-	 * container open (handy for keeping an auction/menu session alive); the one-shot suppression
-	 * is belt-and-suspenders in case the close path still tries to emit a close packet.
-	 */
+	/** Closes the current screen client-side without sending a close packet, leaving the server container open. */
 	public void closeWithoutPacket() {
 		MinecraftClient mc = MinecraftClient.getInstance();
 		if (mc.player == null) return;
@@ -158,7 +129,7 @@ public final class PacketManager {
 		mc.setScreen(null);
 	}
 
-	/** Remember the current screen so it can be re-opened later from the Packet Utils page. */
+	/** Stores the current screen so it can be re-opened later. */
 	public void saveGui() {
 		savedScreen = MinecraftClient.getInstance().currentScreen;
 	}
@@ -171,7 +142,7 @@ public final class PacketManager {
 		if (savedScreen != null) MinecraftClient.getInstance().setScreen(savedScreen);
 	}
 
-	/** Flush anything parked, then drop the connection on your own terms. */
+	/** Flushes the held queue, then disconnects. */
 	public void disconnectAndSend() {
 		flushHeld();
 		ClientPlayNetworkHandler net = MinecraftClient.getInstance().getNetworkHandler();
@@ -180,11 +151,7 @@ public final class PacketManager {
 		}
 	}
 
-	/**
-	 * Fabricate a container slot-click and send it through vanilla's interaction manager, which
-	 * builds a fully-valid {@code ClickSlotC2SPacket} (correct sync id, revision and slot-state
-	 * snapshot). Great for poking container plugins with clicks the real UI wouldn't let you make.
-	 */
+	/** Sends a slot click through vanilla's interaction manager so sync id, revision and slot state are valid. */
 	public void fabricateClick(int slot, int button, SlotActionType action) {
 		MinecraftClient mc = MinecraftClient.getInstance();
 		if (mc.player == null || mc.interactionManager == null) return;
@@ -196,7 +163,7 @@ public final class PacketManager {
 		}
 	}
 
-	/** Send a chat line — or a command when it begins with '/' — from inside an open GUI. */
+	/** Sends a chat message, or a command when the text begins with '/'. */
 	public void sendChat(String message) {
 		if (message == null) return;
 		String text = message.trim();
@@ -210,7 +177,7 @@ public final class PacketManager {
 		}
 	}
 
-	/** The current screen's title, serialised to a chat-component JSON string (falls back to plain text). */
+	/** Returns the current screen title as chat-component JSON, falling back to plain text. */
 	public String currentTitleJson() {
 		MinecraftClient mc = MinecraftClient.getInstance();
 		Screen screen = mc.currentScreen;
@@ -227,19 +194,19 @@ public final class PacketManager {
 		}
 	}
 
-	/** The live sync id of the open screen handler (0 = the player's own inventory handler). */
+	/** Sync id of the open screen handler; 0 is the player's own inventory handler. */
 	public int currentSyncId() {
 		MinecraftClient mc = MinecraftClient.getInstance();
 		return mc.player == null ? -1 : mc.player.currentScreenHandler.syncId;
 	}
 
-	/** The open screen handler's revision counter — the value the server acknowledges clicks against. */
+	/** Revision counter the server acknowledges clicks against. */
 	public int currentRevision() {
 		MinecraftClient mc = MinecraftClient.getInstance();
 		return mc.player == null ? -1 : mc.player.currentScreenHandler.getRevision();
 	}
 
-	/** Reset all live state (called on disconnect) so the next session starts sending normally. */
+	/** Resets all session state; called on disconnect. */
 	public void reset() {
 		sendPackets = true;
 		delayPackets = false;

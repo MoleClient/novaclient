@@ -10,11 +10,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
-/**
- * Achievement-style popup for NovaClient module alerts: the vanilla
- * advancement toast frame, an item icon on the left, a colored title and a
- * plain description line.
- */
+/** Module alert popup drawn on the vanilla advancement toast frame. */
 public final class NovaToast implements Toast {
 	private static final Identifier TEXTURE = Identifier.ofVanilla("toast/advancement");
 	private static final long DISPLAY_MS = 5000L;
@@ -31,8 +27,7 @@ public final class NovaToast implements Toast {
 		this.title = title;
 		this.description = description;
 		this.titleColor = titleColor;
-		// Widen the toast to fit the longest line (text starts at x=30) so a long
-		// title like "Amethyst Finder Triggered" no longer runs off the bar.
+		// Text starts at x=30, so widen the frame to fit the longest line.
 		TextRenderer tr = MinecraftClient.getInstance().textRenderer;
 		int textWidth = Math.max(tr.getWidth(title), tr.getWidth(description));
 		this.width = Math.max(Toast.BASE_WIDTH, 30 + textWidth + 8);

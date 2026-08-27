@@ -35,58 +35,20 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Stash Pinger — decides what is actually a BASE, then points you at it.
+ * Classifies loaded chunks as player bases and renders tracers to them.
  *
- * <p>The classifier is deliberately opinionated, because "player was here" is
- * not "player lives here":
- *
- * <ul>
- *   <li><b>Furniture makes a base.</b> Crafting/smelting/enchanting stations,
- *       containers, redstone machinery (pistons, observers, comparators,
- *       hoppers) and craft-only mineral blocks are what a stash is FOR.
- *       Each family scores separately, so a farm full of redstone and a vault
- *       full of diamond blocks both classify without needing the other.</li>
- *   <li><b>A player-placed spawner IS a base, alone.</b> Natural spawners are
- *       recognisable by their context — dungeon mossy cobblestone, mineshaft
- *       cobwebs, trial-chamber spawner/vault types — and are ignored. A mob
- *       spawner with none of that context did not generate there; somebody
- *       paid for it, placed it, and farms it. Unconditional flag.</li>
- *   <li><b>Carved rooms count.</b> Natural caves have irregular floors; player
- *       rooms are boxes. Columns are sampled through each underground section,
- *       and when most of the found floor surfaces share one Y level, that is a
- *       dug room with a flat floor — a farm chamber or storage hall — even
- *       before furniture goes in.</li>
- *   <li><b>Crystal-fight debris is NOT a base.</b> Obsidian, crying obsidian,
- *       respawn anchors and scattered glowstone are what anchor fights leave
- *       behind. Debris scores negatively: a site that is mostly debris is
- *       suppressed outright unless a player spawner proves otherwise.</li>
- *   <li><b>Underground or sky, never ground level.</b> Evidence only counts
- *       well below the local surface — except on floating platforms (a solid
- *       deck with a long air drop beneath), which are classified with the same
- *       furniture rules. Surface builds never flag.</li>
- * </ul>
- *
- * <p>Adjacent evidence chunks merge into sites with a DIMINISHING sum — the
- * strongest chunk at full volume, the rest fading — so a base that concentrates
- * evidence scores while a thin natural smear (a render-clipped geode shell, a
- * mineshaft corridor) cannot creep over the line by width alone. The
- * Temperature slider (0.0–1.0) moves the site threshold from paranoid to
- * eager. Confirmed sites drive a live action-bar readout in the Nova font
- * ("Base Found x2 — 214m away", nearest first) and a yellow tracer through
- * the shared {@link NovaTracers} system. It composes with the rest of the kit:
- * chunks already flagged by {@link PrimeChunkFinder} get a corroboration
- * bonus, so the prime-chunk → dig → Storage ESP → Stash Pinger chain converges
- * on the same coordinates.
+ * <p>Per-chunk evidence is scored by block family, adjacent evidence chunks merge into
+ * sites, and sites above the temperature-derived threshold are announced.
  */
 public final class StashPinger {
-	// ── Family weights ────────────────────────────────────────────────────────
+	// Family weights.
 	private static final double W_FUNCTIONAL = 1.1;   // per distinct hit, capped
 	private static final double CAP_FUNCTIONAL = 4.4;
 	private static final double W_CONTAINER = 1.0;
 	private static final double CAP_CONTAINER = 4.0;
 	private static final double W_REDSTONE = 0.8;
 	private static final double CAP_REDSTONE = 3.2;
-	private static final double W_RESOURCE = 1.2;     // mineral blocks are deliberate wealth
+	private static final double W_RESOURCE = 1.2;     // craft-only mineral blocks
 	private static final double CAP_RESOURCE = 3.6;
 	private static final double W_CARVED = 1.6;       // per boxed-out section, capped
 	private static final double CAP_CARVED = 3.2;
@@ -95,14 +57,14 @@ public final class StashPinger {
 	private static final double W_DEBRIS = 1.0;       // anti-signal accumulator
 	private static final double PRIME_CORROBORATION = 1.0;
 
-	/** Site threshold line: temperature 0 → 8.0, temperature 1 → 1.5. */
+	// Site threshold: temperature 0 maps to 8.0, temperature 1 to 1.5.
 	private static final double THRESHOLD_STRICT = 8.0;
 	private static final double THRESHOLD_LOOSE = 1.5;
-	/** Mostly-debris sites are suppressed: debris must exceed this × furniture. */
+	// Debris must exceed this multiple of furniture to suppress a site.
 	private static final double DEBRIS_DOMINANCE = 2.0;
 
-	private static final int BURIED_MARGIN = 10;      // "well below the surface"
-	private static final int SKY_MIN_Y = 100;         // floating platforms live up here
+	private static final int BURIED_MARGIN = 10;      // blocks below local surface before evidence counts
+	private static final int SKY_MIN_Y = 100;         // minimum Y for a floating platform
 	private static final int SKY_AIR_GAP = 16;        // required drop under a platform
 	private static final int RESCAN_INTERVAL_TICKS = 240;
 	private static final int ACTIONBAR_INTERVAL_TICKS = 10;
@@ -120,20 +82,19 @@ public final class StashPinger {
 			Blocks.LOOM, Blocks.CARTOGRAPHY_TABLE, Blocks.FLETCHING_TABLE, Blocks.LECTERN,
 			Blocks.BEACON, Blocks.ENDER_CHEST, Blocks.CAMPFIRE, Blocks.SOUL_CAMPFIRE,
 			Blocks.BELL, Blocks.COMPOSTER, Blocks.CAULDRON, Blocks.WATER_CAULDRON);
-	// Rails are deliberately absent: mineshafts lay them below zero for free.
+	// Rails are excluded: mineshafts generate them below zero.
 	private static final Set<Block> REDSTONE = Set.of(
 			Blocks.PISTON, Blocks.STICKY_PISTON, Blocks.OBSERVER, Blocks.REPEATER,
 			Blocks.COMPARATOR, Blocks.REDSTONE_WIRE, Blocks.REDSTONE_BLOCK, Blocks.REDSTONE_LAMP,
 			Blocks.HOPPER, Blocks.DROPPER, Blocks.DISPENSER, Blocks.NOTE_BLOCK, Blocks.TARGET,
 			Blocks.LEVER, Blocks.DAYLIGHT_DETECTOR, Blocks.CRAFTER);
-	// No amethyst (geodes), no bone (fossils), no copper (trial chambers):
-	// every entry here is craft-only, so it cannot generate under the ground.
+	// Craft-only blocks. Amethyst, bone and copper are excluded because worldgen produces them.
 	private static final Set<Block> RESOURCE = Set.of(
 			Blocks.IRON_BLOCK, Blocks.GOLD_BLOCK, Blocks.DIAMOND_BLOCK, Blocks.EMERALD_BLOCK,
 			Blocks.NETHERITE_BLOCK, Blocks.COAL_BLOCK, Blocks.REDSTONE_BLOCK,
 			Blocks.LAPIS_BLOCK, Blocks.SLIME_BLOCK, Blocks.HONEY_BLOCK,
 			Blocks.HAY_BLOCK, Blocks.DRIED_KELP_BLOCK);
-	/** Ancient-city signature: presence zeroes carved scoring and halves furniture. */
+	// Ancient-city signature; presence zeroes carved scoring and halves furniture.
 	private static final Set<Block> CITY_MARKERS = Set.of(
 			Blocks.SCULK, Blocks.SCULK_SHRIEKER, Blocks.SCULK_CATALYST, Blocks.SCULK_SENSOR,
 			Blocks.SOUL_LANTERN, Blocks.REINFORCED_DEEPSLATE);
@@ -141,8 +102,7 @@ public final class StashPinger {
 			Blocks.OBSIDIAN, Blocks.CRYING_OBSIDIAN, Blocks.RESPAWN_ANCHOR, Blocks.GLOWSTONE);
 	private static final Set<Block> CONTAINERS = Set.of(
 			Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.BARREL);
-	// None of these generate under the ground (kelp/seagrass excluded exactly
-	// because oceans do): below the hidden line they are a player's farm.
+	// None of these generate underground; kelp and seagrass are excluded because oceans do.
 	private static final Set<Block> CROPS = Set.of(
 			Blocks.BAMBOO, Blocks.SUGAR_CANE, Blocks.CACTUS, Blocks.MELON, Blocks.PUMPKIN,
 			Blocks.MELON_STEM, Blocks.PUMPKIN_STEM, Blocks.WHEAT, Blocks.CARROTS,
@@ -182,8 +142,6 @@ public final class StashPinger {
 		instance = this;
 	}
 
-	// ── Tick ──────────────────────────────────────────────────────────────────
-
 	public void tick(MinecraftClient client) {
 		if (failedClosed || !config.enabled || !config.donutStashPinger) {
 			if (!evidence.isEmpty()) reset();
@@ -214,7 +172,7 @@ public final class StashPinger {
 			ProFPS.LOGGER.error("Stash Pinger failed; disabling it to protect the client.", exception);
 			reset();
 			config.donutStashPinger = false;
-			// Not saved: a transient failure must not persist as an off switch.
+			// Intentionally not saved, so a transient failure does not persist.
 			failedClosed = true;
 		}
 	}
@@ -261,8 +219,6 @@ public final class StashPinger {
 		return any;
 	}
 
-	// ── Per-chunk classification ──────────────────────────────────────────────
-
 	private void scanChunk(MinecraftClient client, int chunkX, int chunkZ) {
 		ClientWorld world = client.world;
 		WorldChunk chunk = world.getChunkManager().getWorldChunk(chunkX, chunkZ);
@@ -270,8 +226,7 @@ public final class StashPinger {
 		long key = ChunkPos.toLong(chunkX, chunkZ);
 		ChunkEvidence cell = new ChunkEvidence();
 
-		// The surface line for this chunk: evidence must sit well below it —
-		// unless the chunk holds a floating platform, whose deck band counts.
+		// Evidence counts only below the surface line, or inside a floating platform's deck band.
 		int surfaceMin = Integer.MAX_VALUE;
 		for (int corner = 0; corner < 4; corner++) {
 			int x = (chunkX << 4) + ((corner & 1) == 0 ? 2 : 13);
@@ -281,7 +236,6 @@ public final class StashPinger {
 		int hiddenBelow = surfaceMin - BURIED_MARGIN;
 		int[] skyBand = skyPlatformBand(world, chunk, chunkX, chunkZ, surfaceMin);
 
-		// Block entities: cheap, precise, and where spawner judgement happens.
 		boolean cityContext = false;
 		int containers = 0;
 		for (Map.Entry<BlockPos, BlockEntity> entry : chunk.getBlockEntities().entrySet()) {
@@ -290,7 +244,6 @@ public final class StashPinger {
 			BlockEntityType<?> type = entry.getValue().getType();
 			if (type == BlockEntityType.MOB_SPAWNER) {
 				if (!isNaturalSpawnerContext(world, pos)) cell.playerSpawner = true;
-				// Natural dungeon spawners contribute nothing either way.
 			} else if (type == BlockEntityType.CHEST || type == BlockEntityType.TRAPPED_CHEST
 					|| type == BlockEntityType.BARREL || type == BlockEntityType.SHULKER_BOX
 					|| type == BlockEntityType.HOPPER || type == BlockEntityType.FURNACE
@@ -323,8 +276,7 @@ public final class StashPinger {
 			if (section.hasAny(state -> CITY_MARKERS.contains(state.getBlock()))) {
 				cityContext = true;
 			}
-			// No carving credit in the ancient-city band: their platforms are
-			// the flattest floors worldgen makes.
+			// No carving credit below Y -48, where ancient-city platforms generate flat floors.
 			if (sectionBottom < hiddenBelow && sectionBottom >= -48) {
 				cell.carved += carvedRoomScore(world, chunkX, chunkZ, sectionBottom);
 			}
@@ -349,7 +301,7 @@ public final class StashPinger {
 		}
 	}
 
-	/** Strided category count through one 16-block section. */
+	/** Counts category hits on a stride-2 lattice through one 16-block section. */
 	private void countSection(ClientWorld world, WorldChunk chunk, ChunkEvidence cell,
 			int chunkX, int chunkZ, int sectionBottom) {
 		BlockPos.Mutable pos = new BlockPos.Mutable();
@@ -372,18 +324,14 @@ public final class StashPinger {
 						cell.crops += W_CROP;
 						touchY(cell, y);
 					} else if (DEBRIS.contains(block)) {
-						cell.debris += W_DEBRIS * 0.25; // strided; scale to actual density
+						cell.debris += W_DEBRIS * 0.25; // scaled for the stride-2 sampling
 					}
 				}
 			}
 		}
 	}
 
-	/**
-	 * Natural spawners advertise their origin: dungeon mossy cobblestone or
-	 * mineshaft cobwebs within a few blocks. A spawner with sterile
-	 * surroundings was placed by a player.
-	 */
+	/** True when mossy cobblestone or cobwebs sit within 4 blocks, marking a dungeon or mineshaft. */
 	private static boolean isNaturalSpawnerContext(ClientWorld world, BlockPos spawner) {
 		BlockPos.Mutable pos = new BlockPos.Mutable();
 		for (int dx = -4; dx <= 4; dx++) {
@@ -398,11 +346,7 @@ public final class StashPinger {
 		return false;
 	}
 
-	/**
-	 * Boxed-room heuristic: sample columns through the section, find the floor
-	 * under each standing-height air pocket, and score when one Y level
-	 * dominates. Caves do not dig themselves flat.
-	 */
+	/** Scores a section when the floors under its air pockets concentrate on one Y level. */
 	private static double carvedRoomScore(ClientWorld world, int chunkX, int chunkZ, int sectionBottom) {
 		BlockPos.Mutable pos = new BlockPos.Mutable();
 		int baseX = chunkX << 4, baseZ = chunkZ << 4;
@@ -417,8 +361,7 @@ public final class StashPinger {
 					if (!world.getBlockState(pos).isAir()) break;
 					pos.setY(y - 1);
 					BlockState floor = world.getBlockState(pos);
-					// Farmland is 15/16 tall and farm channels are water; both
-					// are floors a player laid, so both count toward flatness.
+					// Farmland is 15/16 tall and farm channels are fluid, so both count as floors.
 					if (floor.isOpaqueFullCube() || floor.getBlock() == Blocks.FARMLAND
 							|| floor.getBlock() == Blocks.DIRT_PATH
 							|| !floor.getFluidState().isEmpty()) {
@@ -432,7 +375,7 @@ public final class StashPinger {
 		if (floorsFound < 24) return 0.0;
 		int dominant = 0;
 		for (int count : floorHistogram) dominant = Math.max(dominant, count);
-		// 64 sampled columns; a flat floor across most found pockets is a room.
+		// 64 columns sampled; require 60% of found floors on one level, minimum 24.
 		return dominant >= floorsFound * 0.6 && dominant >= 24 ? W_CARVED : 0.0;
 	}
 
@@ -448,7 +391,7 @@ public final class StashPinger {
 			int top = world.getTopY(Heightmap.Type.MOTION_BLOCKING, x, z) - 1;
 			if (top < SKY_MIN_Y) continue;
 			samples++;
-			// Walk down through the deck (≤12 thick), then demand a long drop.
+			// Walk down through the deck, at most 12 blocks, then require SKY_AIR_GAP of air.
 			int y = top;
 			int walked = 0;
 			pos.set(x, y, z);
@@ -483,8 +426,6 @@ public final class StashPinger {
 		cell.ySum += y;
 		cell.ySamples++;
 	}
-
-	// ── Site merge, threshold, announcements ──────────────────────────────────
 
 	private double threshold() {
 		double temperature = MathHelper.clamp(config.donutStashTemperature, 0, 100) / 100.0;
@@ -546,28 +487,20 @@ public final class StashPinger {
 			maxZ = Math.max(maxZ, cz);
 			primeCorroborated |= PrimeChunkFinder.isFlagged(key);
 		}
-		// Diminishing sum: the strongest chunk speaks at full volume, the second
-		// at half, the tail at a quarter. A real base concentrates evidence, so
-		// it still scores; a natural smear spread thin across many chunks (a
-		// render-clipped geode shell, a mineshaft corridor) cannot creep over
-		// the line by width alone.
+		// Diminishing sum: strongest chunk at full weight, the rest at half, so evidence
+		// spread thinly across many chunks cannot cross the threshold on width alone.
 		perChunk.sort(Comparator.reverseOrder());
 		double furniture = 0.0;
 		for (int i = 0; i < perChunk.size(); i++) {
-			// Strongest chunk at full volume, everything else at half. Sprawling
-			// farms keep their breadth; naturally-generated smears stay near
-			// zero because their blocks are no longer in any evidence set.
 			furniture += perChunk.get(i) * (i == 0 ? 1.0 : 0.5);
 		}
 		double score = furniture + (primeCorroborated ? PRIME_CORROBORATION : 0.0);
-		// A debris-dominated crater is an anchor fight, not a stash — but a
-		// RAIDED base is furniture plus debris, and the furniture still counts.
-		// Debris only suppresses sites that were never furnished to begin with.
+		// Debris only suppresses sites with little furniture, so raided bases still score.
 		if (!spawnerSite && furniture < 3.0 && debris > furniture * DEBRIS_DOMINANCE) return null;
 		if (!spawnerSite && score < line) return null;
 		double centreY = ySamples > 0 ? ySum / ySamples : 0.0;
 		Vec3d centre = new Vec3d(((minX + maxX + 1) / 2.0) * 16.0, centreY, ((minZ + maxZ + 1) / 2.0) * 16.0);
-		// Site identity survives rescans: anchored to the bounding box corner.
+		// Anchored to the bounding-box corner so identity survives rescans.
 		long id = ChunkPos.toLong(minX, minZ);
 		return new Site(minX, minZ, maxX, maxZ, centre, score, spawnerSite, id);
 	}
@@ -581,8 +514,6 @@ public final class StashPinger {
 				.append(Text.literal("  —  " + distance + "m away").setStyle(NOVA_FONT.withColor(0xD8D8D8)));
 		client.player.sendMessage(bar, true);
 	}
-
-	// ── Tracers ───────────────────────────────────────────────────────────────
 
 	public void renderWorld(WorldRenderContext ctx) {
 		if (failedClosed || !config.enabled || !config.donutStashPinger || sites.isEmpty()) return;

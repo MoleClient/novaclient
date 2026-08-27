@@ -19,13 +19,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Expanded Hitbox turns a near-miss click into a real, server-valid player ray.
- *
- * <p>Acquisition uses the player's current view against a configurable expansion
- * around each player box. It never attacks that expanded geometry. Instead it
- * chooses a point inside the real box, visibly advances a bounded mouse-grid
- * rotation, and attacks only after the player's real camera ray intersects the real
- * box with clear terrain line of sight. There is no silent/server-only rotation.
+ * Converts a near-miss click into a real attack by rotating the camera onto the target.
+ * Candidates are found against an expanded box, but the attack fires only once the live ray
+ * intersects the real box with clear line of sight.
  */
 public final class ExpandedHitboxController {
 	private static final long MAX_AIM_NANOS = 1_500_000_000L;
@@ -58,27 +54,26 @@ public final class ExpandedHitboxController {
 		return instance;
 	}
 
-	/** True while a captured manual click owns the server-facing rotation path. */
+	/** True while a captured click is still being aimed and completed. */
 	public boolean isBusy() {
 		return phase != Phase.IDLE;
 	}
 
 	/**
-	 * Called at MinecraftClient#doAttack HEAD. Returns true only when vanilla's
-	 * miss/block click should be consumed and completed through this controller.
+	 * Called at MinecraftClient#doAttack HEAD.
+	 *
+	 * @return true when the click should be consumed and completed by this controller
 	 */
 	public boolean interceptAttack(MinecraftClient client) {
 		if (!allowed(client) || !config.expandedHitbox) return false;
 
-		// A real entity under the crosshair belongs to vanilla. In particular, do not
-		// turn a deliberate mob/entity click into a silent player-selection click.
+		// A real entity under the crosshair belongs to vanilla.
 		if (client.crosshairTarget instanceof EntityHitResult entityHit
 				&& entityHit.getType() == HitResult.Type.ENTITY) {
 			return false;
 		}
 
-		// Repeated clicks while a captured hit is already travelling should not emit
-		// vanilla misses or restart the humanized path.
+		// Repeated clicks during an in-flight capture must not restart it.
 		if (phase == Phase.AIMING) return true;
 
 		Candidate candidate = findCandidate(client);
@@ -100,11 +95,7 @@ public final class ExpandedHitboxController {
 		return true;
 	}
 
-	/**
-	 * Runs at vanilla's click phase, before the current tick's movement update.
-	 * Therefore an attack is sent only after a previous movement update has already
-	 * delivered the spoofed real-box rotation to the server.
-	 */
+	/** Runs at vanilla's click phase, before the current tick's movement update. */
 	public void tickPreMovement(MinecraftClient client) {
 		if (phase == Phase.IDLE) return;
 		if (client == null || client.player == null || client.world == null || client.interactionManager == null) {
@@ -133,14 +124,14 @@ public final class ExpandedHitboxController {
 		reset();
 	}
 
-	/** Retained as no-ops for mixin compatibility; silent packet rotation is retired. */
+	/** No-op retained for mixin compatibility. */
 	public static void beforeMovementPacket(ClientPlayerEntity player) {
 	}
 
 	public static void afterMovementPacket(ClientPlayerEntity player) {
 	}
 
-	/** Advance the real camera frame-by-frame; called from the world-render coordinator. */
+	/** Advances the camera toward the aim point; called once per rendered frame. */
 	public void frame(MinecraftClient client) {
 		if (phase != Phase.AIMING || !allowed(client)) return;
 		PlayerEntity target = target(client);
@@ -230,7 +221,7 @@ public final class ExpandedHitboxController {
 		Optional<Vec3d> targetHit = target.getBoundingBox().expand(BOX_MOTION_MARGIN).raycast(eye, end);
 		if (targetHit.isEmpty() || !clearTerrainRay(client, eye, targetHit.get(), self)) return false;
 
-		// Do not silently attack through another player standing on the same ray.
+		// Do not attack through another player standing on the same ray.
 		double targetDistance = targetHit.get().squaredDistanceTo(eye);
 		for (PlayerEntity other : client.world.getPlayers()) {
 			if (other == self || other == target || !other.isAlive() || other.isSpectator()) continue;

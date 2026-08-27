@@ -3,11 +3,8 @@ package com.profps.client.ui.nova;
 import net.minecraft.util.math.MathHelper;
 
 /**
- * The eight accent presets, shared by everything that paints in the user's theme — the control
- * panel, the module-list HUD and the packet overlay all resolve their colours from here so a
- * change on the Theme page reaches every surface at once.
- *
- * <p>Order is persisted as {@code ProFPSConfig.guiAccent}, so keep it stable.
+ * Accent colour presets shared by every Nova surface.
+ * Order is persisted as {@code ProFPSConfig.guiAccent}, so keep it stable.
  */
 public final class NovaTheme {
 	/** {soft, base, deep} RGB per preset. */
@@ -26,7 +23,7 @@ public final class NovaTheme {
 			"Ice Blue", "Violet", "Teal", "Mint", "Rose", "Amber", "Crimson", "Frost"
 	};
 
-	/** Index of the default accent — the ice blue the wordmark opens on. */
+	/** Index of the default accent. */
 	public static final int DEFAULT = 0;
 
 	private NovaTheme() {}

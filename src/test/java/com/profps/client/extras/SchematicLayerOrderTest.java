@@ -46,8 +46,7 @@ class SchematicLayerOrderTest {
 
 	@Test
 	void aHollowRoomLeavesItsWallsOnTheShell() {
-		// A 9x9 wall ring: every wall cell touches either the outside or the
-		// room, so nothing is ever treated as buried.
+		// A 9x9 wall ring: every cell touches either the outside or the room.
 		Set<Long> footprint = new HashSet<>();
 		for (int x = 0; x < 9; x++) {
 			for (int z = 0; z < 9; z++) {
@@ -80,12 +79,6 @@ class SchematicLayerOrderTest {
 				() -> assertNotEquals(key, SchematicLayerOrder.key(-5678, -1234)));
 	}
 
-	/**
-	 * The property the whole ordering exists for. A builder has to stand in an
-	 * empty cell beside the one it is filling, and has to be able to walk there
-	 * through cells that are still empty. Placing strictly deepest-first keeps
-	 * that true for every cell of a 16x16 solid layer.
-	 */
 	@Test
 	void descendingDepthBuildsAWideLayerWithoutStranding() {
 		Set<Long> footprint = solidSquare(-3, -3, 16);
@@ -100,8 +93,7 @@ class SchematicLayerOrderTest {
 
 	@Test
 	void descendingDepthHandlesAThickWallAndABigSlab() {
-		// The two shapes that were failing in game: something long and several
-		// blocks thick, and something wide enough to walk around inside.
+		// A long thick wall, then a slab wide enough to walk around inside.
 		Set<Long> wall = new HashSet<>();
 		for (int x = 0; x < 40; x++) {
 			for (int z = 0; z < 5; z++) wall.add(SchematicLayerOrder.key(x, z));
@@ -112,11 +104,6 @@ class SchematicLayerOrderTest {
 		assertNull(strandedBy(descending(slab), slab, SchematicLayerOrder.key(112, -48)));
 	}
 
-	/**
-	 * The ordering rule the builder leans on: a cell is always placed before any
-	 * shallower neighbour that could wall it off. Nearest-first offers no such
-	 * guarantee, which is how interiors were being closed in.
-	 */
 	@Test
 	void deeperCellsAlwaysPrecedeTheirShallowerNeighbours() {
 		Set<Long> footprint = solidSquare(-3, -3, 16);
@@ -145,11 +132,7 @@ class SchematicLayerOrderTest {
 		return order;
 	}
 
-	/**
-	 * Replays a placement order as a builder walks it. Returns the first cell it
-	 * could not reach an empty neighbouring stand for, or null if it built the
-	 * whole layer.
-	 */
+	/** Replays a placement order and returns the first unreachable cell, or null. */
 	private static Long strandedBy(List<Long> order, Set<Long> footprint, long start) {
 		Set<Long> placed = new HashSet<>();
 		long builder = start;

@@ -28,13 +28,9 @@ import java.security.SecureRandom;
 public final class AnchorMacroController {
 	private static final long SEQUENCE_TIMEOUT_NS = 4_000_000_000L;
 	private static final long CONFIRM_GRACE_NS = 150_000_000L;
-	/**
-	 * Placement gets a longer grace than charge/detonate. Those two only need the client's own
-	 * predicted block state to flip, but a placement can be rejected by the server after the client
-	 * already drew it, and re-clicking too early is what stacks a second anchor.
-	 */
+	/** Longer than {@link #CONFIRM_GRACE_NS}: the server can reject a placement the client already drew. */
 	private static final long PLACE_GRACE_NS = 400_000_000L;
-	/** Hard cap on macro placement attempts per sequence. Physical On Place clicks can start over. */
+	/** Hard cap on macro placement attempts per sequence. */
 	private static final int MAX_PLACE_ATTEMPTS = 3;
 	/** Bound on phase hand-offs collapsed into a single tick. */
 	private static final int MAX_STEPS_PER_TICK = 4;
@@ -59,7 +55,7 @@ public final class AnchorMacroController {
 	private boolean bindStarted;
 	private boolean shieldDone;
 	private int placeAttempts;
-	/** Client age of the last real or macro block-use; keep uses in separate flying intervals. */
+	/** Client age of the last real or macro block-use; uses stay in separate ticks. */
 	private int lastUseAge = Integer.MIN_VALUE;
 	private String status = "Idle";
 
@@ -75,18 +71,13 @@ public final class AnchorMacroController {
 		boolean holdingAnchor = player.getStackInHand(hand).isOf(Items.RESPAWN_ANCHOR);
 		BlockState clicked = world.getBlockState(hit.getBlockPos());
 
-		// A real placement click must always win in On Place mode. Previously every
-		// click was returned as FAIL while an older sequence was still confirming,
-		// charging, or waiting to time out. That produced the repeatable 3–4 second
-		// period where right-click simply could not place another anchor. Re-arm from
-		// this click and let vanilla send it, even if it replaces a stale sequence.
+		// A real placement click re-arms the sequence even if one is already running.
 		if (config.anchorMode == 1 && holdingAnchor && !clicked.isOf(Blocks.RESPAWN_ANCHOR)) {
 			beginPhysicalPlacement(player, world, hit);
 			return ActionResult.PASS;
 		}
 
-		// Once a live anchor sequence owns charge/detonation, suppress additional
-		// physical interactions. The explicit placement path above is the exception.
+		// A live sequence owns charge and detonation, so suppress other physical interactions.
 		if (phase != Phase.IDLE) return ActionResult.FAIL;
 		if (!holdingAnchor) return ActionResult.PASS;
 		if (config.anchorMode != 1) return ActionResult.PASS;
@@ -112,8 +103,7 @@ public final class AnchorMacroController {
 		phase = Phase.WAIT_ANCHOR;
 		armDeadline();
 		anchorConfirmStartedNanos = System.nanoTime();
-		// This callback runs before vanilla sends the player's placement. Reserve the
-		// rest of the tick so confirmation cannot append a second use behind it.
+		// Runs before vanilla sends the placement, so reserve the rest of the tick.
 		lastUseAge = player.age;
 		placeAttempts = 1;
 		schedule();
@@ -138,9 +128,7 @@ public final class AnchorMacroController {
 		if (phase == Phase.IDLE) { status = config.anchorMode == 0 ? "Aim and press bind" : "Waiting for anchor"; return; }
 		if (System.nanoTime() > deadlineNanos) { finish(client, "Timed out", true); return; }
 
-		// Collapse state-only hand-offs, but never two physical uses: claim(client) also gates on
-		// lastUseAge. This lets a confirmation become the next ready phase without producing an
-		// impossible place/charge/detonate burst inside one client tick.
+		// Collapses state-only hand-offs; claim() still gates physical uses to one per tick.
 		for (int step = 0; step < MAX_STEPS_PER_TICK; step++) {
 			long now = System.nanoTime();
 			if (phase == Phase.IDLE || now < nextActionNanos) return;
@@ -158,7 +146,7 @@ public final class AnchorMacroController {
 				case RESTORE -> finish(client, "Idle", true);
 				case IDLE -> { }
 			}
-			if (phase == before) return;   // same phase = it is waiting on something real
+			if (phase == before) return;   // unchanged phase means it is still waiting
 		}
 	}
 
@@ -182,12 +170,7 @@ public final class AnchorMacroController {
 
 	private void placeAnchor(MinecraftClient client) {
 		if (anchorPos == null) { finish(client, "No anchor space", true); return; }
-		// Support is resolved lazily and re-resolved every tick until the deadline. The second
-		// anchor of a Double goes back into the cell the first one just vacated, and the blocks
-		// around that cell are still settling as the explosion's updates arrive — a single lookup
-		// the instant the anchor disappears usually finds nothing and used to abandon the combo.
-		// Re-placing in the same cell against a real adjacent face is the whole point: it is an
-		// ordinary legal placement, not a fabricated one.
+		// Support is re-resolved every tick until the deadline; blocks near a fresh explosion settle late.
 		if (supportPos == null || supportFace == null) {
 			Placement resolved = placementFor(client, anchorPos, false);
 			if (resolved == null) {
@@ -198,8 +181,7 @@ public final class AnchorMacroController {
 			supportPos = resolved.support();
 			supportFace = resolved.face();
 		}
-		// An anchor already standing where we were going to build one means the previous click DID
-		// land and we simply mis-predicted the cell. Adopt it rather than placing a second.
+		// An anchor already in the target cell means the previous click landed; adopt it.
 		BlockPos existing = findPlacedAnchor(client);
 		if (existing != null) {
 			anchorPos = existing;
@@ -216,9 +198,7 @@ public final class AnchorMacroController {
 		}
 		BlockHitResult hit = exactPlacementHit(client, anchorPos);
 		if (hit == null) return;
-		// The player may still be aiming into the same placement cell through a
-		// different legal face than the one that began the sequence. Keep the live
-		// face authoritative so a tiny crosshair movement cannot strand a retry.
+		// Keep the live face authoritative; several faces can lead to the same placement cell.
 		supportPos = hit.getBlockPos().toImmutable();
 		supportFace = hit.getSide();
 		int slot = findHotbarSlot(client, Items.RESPAWN_ANCHOR);
@@ -233,16 +213,13 @@ public final class AnchorMacroController {
 	}
 
 	private void waitAnchor(MinecraftClient client) {
-		// The click may have landed one cell from where we predicted. Adopting it here is what
-		// stops the retry below from stacking a second anchor on the first.
+		// The click may have landed one cell off; adopt it so the retry does not stack a second anchor.
 		if (!anchorPresent(client)) {
 			BlockPos placed = findPlacedAnchor(client);
 			if (placed != null) anchorPos = placed;
 		}
 		if (anchorPresent(client)) {
-			// Leave the anchor stack immediately after confirmation. Besides removing a
-			// needless delayed swap, this closes the window in which held right-click can
-			// stack another anchor before the charge phase begins.
+			// Leave the anchor stack immediately so held right-click cannot stack another.
 			int glowstone = findHotbarSlot(client, Items.GLOWSTONE);
 			if (glowstone < 0) { finish(client, "No glowstone", true); return; }
 			selectHotbarSlot(client, glowstone);
@@ -255,8 +232,6 @@ public final class AnchorMacroController {
 		long now = System.nanoTime();
 		if (anchorConfirmStartedNanos == 0L) anchorConfirmStartedNanos = now;
 		if (now - anchorConfirmStartedNanos >= PLACE_GRACE_NS) {
-			// Nothing appeared anywhere our click could have put it. Re-run the placement, but
-			// placeAnchor re-checks for an existing anchor and caps the attempts.
 			phase = Phase.PLACE_ANCHOR;
 			nextActionNanos = now;
 			status = "Retrying anchor";
@@ -277,10 +252,7 @@ public final class AnchorMacroController {
 		if (!anchorPresent(client)) { finish(client, "Anchor gone", true); return; }
 		if (shieldPos == null) shieldPos = findShieldPosition(client);
 		if (shieldPos == null) {
-			// Safe Anchor is best-effort: with no legal cover, go straight on to
-			// the charge in this tick rather than scheduling another one. The
-			// scheduled hop is what put a visible pause in front of every blast
-			// that could not be shielded.
+			// Cover is best-effort: with no legal cell, charge in this same tick.
 			shieldDone = true;
 			phase = Phase.CHARGE;
 			charge(client);
@@ -295,8 +267,7 @@ public final class AnchorMacroController {
 		}
 		BlockHitResult hit = exactPlacementHit(client, shieldPos);
 		if (hit == null) {
-			// Cover is strictly opportunistic now. Never rotate or replace the player's
-			// crosshair to reach it; if their real crosshair is elsewhere, continue.
+			// The crosshair is never moved to reach cover.
 			shieldDone = true;
 			phase = Phase.CHARGE;
 			charge(client);
@@ -304,7 +275,7 @@ public final class AnchorMacroController {
 		}
 		int slot = findHotbarSlot(client, Items.GLOWSTONE);
 		if (slot < 0 || countHotbarItem(client, Items.GLOWSTONE) < 2) {
-			// One glowstone can charge, but Safe Anchor needs a second one for cover.
+			// Cover needs a second glowstone beyond the one the charge consumes.
 			shieldDone = true;
 			phase = Phase.CHARGE;
 			schedule();
@@ -342,8 +313,7 @@ public final class AnchorMacroController {
 	private void charge(MinecraftClient client) {
 		if (!anchorPresent(client)) { finish(client, "Anchor gone", true); return; }
 		if (!needsCharge(client)) {
-			// Hand off through the state machine rather than calling detonate() inline: a
-			// re-entrant call left the phase reading CHARGE while detonation was already running.
+			// Hand off through the state machine; calling detonate() inline is re-entrant.
 			phase = config.anchorDetonate ? Phase.DETONATE : Phase.FINISH_CHARGED;
 			nextActionNanos = System.nanoTime();
 			status = phase.label;
@@ -355,14 +325,10 @@ public final class AnchorMacroController {
 		boolean offhandGlowstone = client.player.getOffHandStack().isOf(Items.GLOWSTONE);
 		if (slot < 0 && !offhandGlowstone) { finish(client, "No glowstone", true); return; }
 		if (!claim(client)) return;
-		// Hotbar glowstone can run out while topping the anchor up for the offhand rule. Charging
-		// from the offhand then drains the very stack that was blocking detonation, so the sequence
-		// resolves itself instead of dead-ending on "No glowstone".
+		// Falling back to the offhand drains the stack that blocks detonation under the offhand rule.
 		Hand chargeHand = slot >= 0 ? Hand.MAIN_HAND : Hand.OFF_HAND;
 		if (chargeHand == Hand.MAIN_HAND) selectHotbarSlot(client, slot);
 		if (!useBlock(client, hit)) { retry("Charge refused"); return; }
-		// Charge and detonation use the same anchor face. Preserve the already-stable
-		// crosshair state so confirmation can proceed on the next eligible tick.
 		chargeConfirmStartedNanos = System.nanoTime();
 		phase = Phase.WAIT_CHARGE;
 		schedule();
@@ -377,8 +343,7 @@ public final class AnchorMacroController {
 			status = phase.label;
 			return;
 		}
-		// Still charging because the offhand rule demands a full anchor — say so, because from the
-		// outside this looks identical to a stuck sequence.
+		// Charged but still topping up: the offhand rule requires a full anchor before detonation.
 		if (anchorCharged(client)) {
 			chargeConfirmStartedNanos = 0L;
 			phase = Phase.CHARGE;
@@ -415,9 +380,7 @@ public final class AnchorMacroController {
 		}
 		if (needsCharge(client)) { phase = Phase.CHARGE; schedule(); return; }
 		float damage = ExplosionDamageService.anchorDamage(client.world, client.player, Vec3d.ofCenter(anchorPos));
-		// Safe Anchor is cover, not a veto. It used to refuse a blast it judged lethal, which meant
-		// standing too close to fit glowstone between you and the anchor silently cancelled the
-		// whole macro. It now always detonates; the damage estimate only colours the status.
+		// A lethal estimate only changes the status; detonation always proceeds.
 		if (damage >= client.player.getHealth() + client.player.getAbsorptionAmount() && !hasTotem(client)) {
 			status = "Detonating uncovered";
 		}
@@ -467,12 +430,7 @@ public final class AnchorMacroController {
 		return hit;
 	}
 
-	/**
-	 * Returns the player's current, real block ray when clicking it would place in
-	 * {@code placeAt}. Checking the resulting cell is intentionally more robust
-	 * than pinning a support block and face from an earlier tick: several visible
-	 * faces can legally lead to the same placement cell.
-	 */
+	/** The player's live block ray, but only if clicking it would place in {@code placeAt}. */
 	private BlockHitResult exactPlacementHit(MinecraftClient client, BlockPos placeAt) {
 		HitResult fresh = freshHit(client);
 		if (!(fresh instanceof BlockHitResult hit)
@@ -491,18 +449,8 @@ public final class AnchorMacroController {
 	}
 
 	/**
-	 * A cell to put cover in, between the player and the anchor.
-	 *
-	 * <p>The old search gave up outright whenever the anchor was closer than 1.5
-	 * blocks, and then swept a line starting 0.8 blocks out. In an actual anchor
-	 * fight the anchor is placed right beside you, so the distance test alone
-	 * rejected essentially every real use — Safe Anchor looked enabled and never
-	 * placed a single glowstone. Cover at that range is not "somewhere along a
-	 * long ray" either; it is the cell you would slap a block into, right next to
-	 * your own body on the side the blast is coming from.
-	 *
-	 * <p>So the cells beside the player are tried first, at feet and head height,
-	 * and only then the line out toward the anchor for the longer-range case.
+	 * A cell to place cover in, between the player and the anchor.
+	 * Cells beside the player are tried first, then the line out toward the anchor.
 	 */
 	private BlockPos findShieldPosition(MinecraftClient client) {
 		Vec3d from = new Vec3d(client.player.getX(), client.player.getY() + 0.5D, client.player.getZ());
@@ -513,9 +461,7 @@ public final class AnchorMacroController {
 		Vec3d direction = delta.normalize();
 		java.util.Set<BlockPos> checked = new java.util.HashSet<>();
 
-		// Point-blank cover: the cell adjacent to the body facing the blast, at
-		// both the feet and the head, which is the only cover that exists when
-		// the anchor is a block or two away.
+		// Point-blank cover: cells adjacent to the body facing the blast, at feet and head height.
 		BlockPos feet = client.player.getBlockPos();
 		Direction toward = Direction.getFacing(direction.x, 0.0D, direction.z);
 		for (BlockPos pos : new BlockPos[]{feet.offset(toward), feet.offset(toward).up(),
@@ -528,18 +474,14 @@ public final class AnchorMacroController {
 
 		for (double offset = 0.6D; offset < Math.max(0.9D, distance - 0.35D); offset += 0.25D) {
 			BlockPos base = BlockPos.ofFloored(from.add(direction.multiply(offset)));
-			// Try the direct blast line first, then nearby supported cells. Head-height
-			// anchors often have no legal support at the exact sampled block even though
-			// an adjacent glowstone position still provides useful cover.
+			// Direct blast line first, then nearby cells that may still have legal support.
 			for (BlockPos pos : new BlockPos[]{base, base.down(), base.north(), base.south(),
 					base.west(), base.east(), base.north().down(), base.south().down(),
 					base.west().down(), base.east().down()}) {
 				if (!checked.add(pos) || pos.equals(anchorPos)
 						|| !client.world.getBlockState(pos).isReplaceable()) continue;
 				if (new net.minecraft.util.math.Box(pos).intersects(client.player.getBoundingBox())) continue;
-				// Deliberately only a reach/support test. The real crosshair is
-				// checked only after a candidate is chosen; the search itself never
-				// changes or substitutes the player's view.
+				// Reach and support test only; the crosshair is checked after a candidate is chosen.
 				if (placementFor(client, pos, true) != null) return pos.toImmutable();
 			}
 		}
@@ -559,13 +501,8 @@ public final class AnchorMacroController {
 	}
 
 	/**
-	 * Where the anchor will actually land, mirroring {@code ItemPlacementContext.getBlockPos()}:
-	 * a replaceable clicked block is REPLACED, anything else is built against.
-	 *
-	 * <p>Assuming the offset unconditionally is what broke this module. Clicking grass, a snow
-	 * layer or water made the sequence watch an empty cell, so it never saw its own anchor, and the
-	 * confirmation retry then placed a second one — which is exactly the "anchors on top of
-	 * anchors" and "it just misses" behaviour.
+	 * Where the placement will land, mirroring {@code ItemPlacementContext.getBlockPos()}:
+	 * a replaceable clicked block is replaced, anything else is built against.
 	 */
 	private BlockPos placementTarget(World world, BlockHitResult hit) {
 		BlockPos clicked = hit.getBlockPos();
@@ -574,10 +511,7 @@ public final class AnchorMacroController {
 				: clicked.offset(hit.getSide()).toImmutable();
 	}
 
-	/**
-	 * An anchor the sequence can adopt after a placement whose landing cell we guessed wrong, or
-	 * that the server nudged. Only looks where our own click could plausibly have put one.
-	 */
+	/** An anchor in one of the cells this sequence's own click could have placed it in, or null. */
 	private BlockPos findPlacedAnchor(MinecraftClient client) {
 		if (anchorPos == null) return null;
 		BlockPos[] candidates = supportPos == null
@@ -611,18 +545,8 @@ public final class AnchorMacroController {
 
 	/**
 	 * Whether the anchor still needs glowstone before a click can detonate it.
-	 *
-	 * <p>Vanilla {@code RespawnAnchorBlock.onUseWithItem} reads:
-	 * <pre>
-	 *   if (isChargeItem(main) &amp;&amp; canCharge(state))                       -> charge
-	 *   if (hand == MAIN_HAND &amp;&amp; isChargeItem(offhand) &amp;&amp; canCharge(state)) -> PASS
-	 *   else                                                            -> explode
-	 * </pre>
-	 * so with glowstone in the OFFHAND a main-hand click never explodes — it defers to the offhand,
-	 * which quietly adds another charge. That is the "it doesn't explode" report, and no amount of
-	 * retrying fixes it. The way out is to make {@code canCharge} false by filling the anchor to
-	 * {@link #MAX_CHARGES}; once it is full (or the glowstone runs out and the offhand empties) the
-	 * very next click detonates.
+	 * With glowstone in the offhand, {@code RespawnAnchorBlock.onUseWithItem} charges instead of
+	 * exploding while {@code canCharge} holds, so the anchor must be filled to {@link #MAX_CHARGES}.
 	 */
 	private boolean needsCharge(MinecraftClient client) {
 		if (!anchorPresent(client)) return false;
@@ -630,7 +554,7 @@ public final class AnchorMacroController {
 				client.player.getOffHandStack().isOf(Items.GLOWSTONE));
 	}
 
-	/** The rule above, in primitives, so it can be pinned by a test. */
+	/** The {@link #needsCharge} rule expressed over primitives. */
 	static boolean needsChargeFor(int charges, boolean offhandIsGlowstone) {
 		if (charges <= 0) return true;
 		if (charges >= MAX_CHARGES) return false;
@@ -652,11 +576,8 @@ public final class AnchorMacroController {
 	private boolean useBlock(MinecraftClient client, BlockHitResult hit) {
 		MinecraftClientInvoker vanilla = (MinecraftClientInvoker) client;
 		if (client.interactionManager.isBreakingBlock()) return false;
-		// The sequence owns block use at this point, so bypass only the local repeat-key
-		// cooldown for this scheduled action. Use the exact fresh ray that passed the
-		// checks above; client.crosshairTarget can otherwise still describe the previous
-		// render frame and make vanilla silently click the wrong block. doItemUse restores
-		// vanilla's cooldown afterward; held physical input remains suppressed by onUseBlock.
+		// Clear the repeat-key cooldown and pin the fresh ray: client.crosshairTarget can be
+		// one render frame behind, which would make vanilla click the wrong block.
 		vanilla.profps$setItemUseCooldown(0);
 		client.crosshairTarget = hit;
 		selfInteracting = true;
@@ -670,8 +591,7 @@ public final class AnchorMacroController {
 	}
 
 	private boolean claim(MinecraftClient client) {
-		// A physical interaction can happen at most once in a client tick. Timing above
-		// that floor is randomized by schedule() and controlled by Anchor Speed.
+		// At most one physical interaction per client tick.
 		return useSeparatedByTick(lastUseAge, client.player.age)
 				&& CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_ANCHOR);
 	}
@@ -693,8 +613,7 @@ public final class AnchorMacroController {
 			}
 			return -1;
 		}
-		// Prefer items that cannot place against the anchor. The caller considers the
-		// offhand next and uses an anchor stack only as the final confirmed-charge fallback.
+		// Prefer items that cannot place a block against the anchor.
 		if (previousSlot >= 0 && previousSlot < 9 && safeExplosionStack(client, previousSlot)) return previousSlot;
 		int totem = findHotbarSlot(client, Items.TOTEM_OF_UNDYING);
 		if (totem >= 0) return totem;
@@ -768,7 +687,7 @@ public final class AnchorMacroController {
 		status = phase.label;
 	}
 
-	/** Randomized action gaps; the one-use-per-tick gate remains authoritative at every level. */
+	/** Minimum action gap in milliseconds for a speed setting. */
 	static int actionDelayMinMsForSpeed(int speed) {
 		return switch (MathHelper.clamp(speed, 1, 10)) {
 			case 10 -> 0;
@@ -784,7 +703,7 @@ public final class AnchorMacroController {
 		};
 	}
 
-	/** A small bounded jitter keeps repeated sequences from landing on one exact interval. */
+	/** Maximum action gap in milliseconds for a speed setting. */
 	static int actionDelayMaxMsForSpeed(int speed) {
 		return switch (MathHelper.clamp(speed, 1, 10)) {
 			case 10 -> 52;
@@ -852,24 +771,14 @@ public final class AnchorMacroController {
 		return status;
 	}
 
-	/**
-	 * Deliberately does not refuse while an item is being used.
-	 *
-	 * <p>It used to, and that is why spamming right-click could stop the anchor
-	 * being placed at all: any held use — a shield, a totem, food, a spear charge,
-	 * or just the tail of your own click — made the whole macro stand down for as
-	 * long as it lasted. The macro places through {@code interactionManager}
-	 * directly, so an in-progress use never actually blocked the placement; it
-	 * only blocked us from trying. Any real use is ended once at the start of a
-	 * sequence instead, which is what a player does by letting go.
-	 */
+	/** Does not check for an in-progress item use; that is released once at sequence start. */
 	private boolean allowed(MinecraftClient client) {
 		return client != null && client.player != null && client.world != null && client.interactionManager != null
 				&& client.currentScreen == null && client.isWindowFocused() && client.player.isAlive()
 				&& client.interactionManager.getCurrentGameMode() != GameMode.SPECTATOR;
 	}
 
-	/** Lets go of whatever the player is holding down so the first click is not swallowed. */
+	/** Stops any in-progress item use so the first click is not swallowed. */
 	private void releaseHeldUse(MinecraftClient client) {
 		if (client.player != null && client.player.isUsingItem()) {
 			client.interactionManager.stopUsingItem(client.player);

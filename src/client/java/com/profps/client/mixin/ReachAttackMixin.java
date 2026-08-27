@@ -12,14 +12,9 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Reach — part 2 of 2: passes the attack-range gate. In 1.21 the weapon carries an
- * {@link AttackRangeComponent} whose {@code isWithinRange} (called from {@code doAttack}) caps
- * attack reach at the item's max range (~3.0) independent of the player's interaction-range
- * attribute. So even after {@link ReachRangeMixin} lets the crosshair lock a further target,
- * {@code doAttack} would reject the swing without this.
- *
- * <p>We only force it true for the local player while Reach is on. The crosshair
- * raycast remains capped at the configured reach ({@link ReachRangeMixin}).
+ * Passes the weapon attack-range gate for the local player while Reach is on.
+ * {@link AttackRangeComponent} caps attack reach at the item's max range independent of
+ * the interaction-range attribute raised by {@link ReachRangeMixin}.
  */
 @Mixin(AttackRangeComponent.class)
 public abstract class ReachAttackMixin {

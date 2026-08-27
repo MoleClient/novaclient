@@ -24,19 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * The on-screen enabled-modules list: a stack of small boxes hugging the screen
- * edge, one per active module, so you can see what's running without opening the
- * panel. Widest name first (ties alphabetical), so the stack tapers as it goes
- * down. Each box carries a thin theme-accent bar on its outer edge; the bar colour
- * grades soft → deep down the list.
- *
- * <p>Built to be effectively free per frame: enabled state is folded into one hash
- * and the visible list is only re-sorted when that hash changes; name Texts and
- * pixel widths are cached; steady-state rendering allocates nothing and draws a
- * handful of quads per row. Rows slide in/out horizontally and glide vertically on
- * reorder (both snap when GUI animations are off).
- */
+/** HUD list of enabled modules, one row per module, sorted widest name first with ties alphabetical. */
 public final class NovaModuleListHud implements HudRenderCallback {
 	private static final Style FONT_BOLD = Style.EMPTY.withFont(new StyleSpriteSource.Font(Identifier.of(ProFPS.MOD_ID, "nova_bold")));
 
@@ -50,13 +38,13 @@ public final class NovaModuleListHud implements HudRenderCallback {
 	private static final int ROW_BG = 0xB40A0C10;
 	private static final int TEXT_COLOR = 0xF0F4F9;
 
-	/** One tracked row. Lives while its module is on, then slides out and is dropped. */
+	/** One tracked row, kept until its module is off and the slide-out completes. */
 	private static final class Entry {
 		final NovaModules.Module module;
-		float slide;    // 0..1 in/out progress (drives the horizontal offset + fade)
+		float slide;    // 0..1 in/out progress, drives horizontal offset and fade
 		float y;        // animated top position
 		float targetY;
-		int rank;       // position in the sorted list (drives the accent gradient)
+		int rank;       // index in the sorted list, drives the accent gradient
 		boolean active;
 		boolean positioned;
 
@@ -93,7 +81,7 @@ public final class NovaModuleListHud implements HudRenderCallback {
 		lastFrameNanos = now;
 
 		if (client.options.hudHidden || !config.enabled || !config.hudModuleList) {
-			// Drop all state while hidden so re-enabling slides the list in fresh.
+			// Drop state while hidden so re-enabling slides in fresh.
 			if (!entries.isEmpty()) {
 				entries.clear();
 				visible.clear();
@@ -104,8 +92,7 @@ public final class NovaModuleListHud implements HudRenderCallback {
 
 		TextRenderer tr = client.textRenderer;
 
-		// Cheap change detection: fold every module's enabled bit into one hash and
-		// only re-sort when it moves.
+		// Hash of every module's enabled bit; re-sort only when it changes.
 		int signature = 1;
 		for (NovaModules.Module mod : modules) {
 			signature = signature * 31 + (listed(mod) ? 1 : 0);
@@ -144,7 +131,7 @@ public final class NovaModuleListHud implements HudRenderCallback {
 
 			NovaRender.setAlpha(p);
 			NovaRender.roundRect(ctx, x, e.y, rowW, ROW_H, 2.0F, ROW_BG);
-			// Accent bar on the outer (screen-side) edge, in front of the name.
+			// Accent bar sits on the outer screen-side edge.
 			float barX = right ? x + rowW - BAR_W : x;
 			NovaRender.roundRect(ctx, barX, e.y, BAR_W, ROW_H, 1.0F, barColor);
 			float textX = right ? x + PAD_END : x + BAR_W + PAD_TEXT;
@@ -153,7 +140,7 @@ public final class NovaModuleListHud implements HudRenderCallback {
 		NovaRender.setAlpha(1.0F);
 	}
 
-	/** Re-sorts the active rows (widest name first, ties A→Z) and reassigns stack slots. */
+	/** Re-sorts the active rows and reassigns stack positions. */
 	private void rebuildVisible(TextRenderer tr) {
 		visible.clear();
 		for (NovaModules.Module mod : modules) {
@@ -184,10 +171,7 @@ public final class NovaModuleListHud implements HudRenderCallback {
 		}
 	}
 
-	/**
-	 * Whether this module gets its own row. A combat mode hides the standalone modules it has taken
-	 * over, so the list reads "Mace Mode" rather than spelling out everything that mode is running.
-	 */
+	/** Whether the module gets its own row; modules managed by an active combat mode are hidden. */
 	private boolean listed(NovaModules.Module mod) {
 		return mod.get.get() && NovaModules.managedState(config, mod.id) == null;
 	}
@@ -207,7 +191,7 @@ public final class NovaModuleListHud implements HudRenderCallback {
 	private void drawName(DrawContext ctx, TextRenderer tr, Text text, float x, float y, float alpha) {
 		int a = (int) (alpha * 255.0F);
 		if (a < 8) return;
-		// Float translate keeps the name moving sub-pixel smooth with its box while sliding.
+		// Float translate keeps the name sub-pixel aligned with its box while sliding.
 		Matrix3x2fStack m = ctx.getMatrices();
 		m.pushMatrix();
 		m.translate(x, y);

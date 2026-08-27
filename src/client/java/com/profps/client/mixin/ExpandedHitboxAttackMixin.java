@@ -7,10 +7,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/**
- * Captures only vanilla miss/block attacks that fall inside Expanded Hitbox's
- * configured acquisition margin. Normal entity attacks remain untouched.
- */
+/** Captures vanilla miss/block attacks that fall inside the Expanded Hitbox margin. */
 @Mixin(MinecraftClient.class)
 public abstract class ExpandedHitboxAttackMixin {
 

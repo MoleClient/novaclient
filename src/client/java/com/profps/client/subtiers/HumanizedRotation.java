@@ -7,11 +7,7 @@ import net.minecraft.util.math.Vec3d;
 
 import java.security.SecureRandom;
 
-/**
- * Visible, mouse-grid-aligned camera spring shared by the SubTiers sequences.
- * Every engagement rolls a different response curve, speed cap, bias and pair
- * of low-frequency tremors; it never writes a silent/server-only rotation.
- */
+/** Mouse-grid-aligned camera spring shared by the SubTiers sequences. */
 final class HumanizedRotation {
 	private final MouseGcd mouse = new MouseGcd();
 
@@ -85,8 +81,7 @@ final class HumanizedRotation {
 		double yawError = MathHelper.wrapDegrees(wantedYaw - player.getYaw());
 		double pitchError = MathHelper.wrapDegrees(wantedPitch - player.getPitch());
 
-		// Critically damped spring: acceleration depends on both remaining error and
-		// current momentum, so it eases/settles like a hand rather than an exponential snap.
+		// Critically damped spring on remaining error and current velocity.
 		yawVelocity += (omega * omega * yawError - 2.0D * omega * yawVelocity) * dt;
 		pitchVelocity += (omega * omega * pitchError - 2.0D * omega * pitchVelocity) * dt;
 		double maxStep = maxDegreesPerSecond * dt;

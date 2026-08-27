@@ -7,13 +7,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/**
- * Strips sneak and sprint from the local player at the top of every movement
- * tick while the freecam flies. Input is already zeroed at the KeyboardInput
- * layer, but these are latched STATE flags, not inputs — whatever was held at
- * the moment of toggling would otherwise stay latched on the frozen body
- * (a permanent crouch pose, or sprint FOV stuck on the detached camera).
- */
+/** Clears the latched sneak and sprint state flags each movement tick while freecam is active. */
 @Mixin(ClientPlayerEntity.class)
 public abstract class FreecamPlayerMixin {
 	@Inject(method = "tickMovement", at = @At("HEAD"))

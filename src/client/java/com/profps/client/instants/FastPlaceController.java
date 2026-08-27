@@ -8,11 +8,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.world.GameMode;
 
-/**
- * Vape-style Fast Place: lower only vanilla's right-click reuse timer, and only
- * for the selected held-item family. It never synthesizes clicks or bypasses the
- * server's own placement/use validation.
- */
+/** Lowers vanilla's right-click reuse timer for the selected held-item family. */
 public final class FastPlaceController {
 	private final ProFPSConfig config;
 

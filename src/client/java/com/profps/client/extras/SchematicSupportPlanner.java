@@ -11,15 +11,8 @@ import java.util.PriorityQueue;
 import java.util.Set;
 
 /**
- * Pure temporary-support planner used by Auto Schematic Build.
- *
- * <p>The search runs backwards from each legal cell beside the desired block
- * until it finds a replaceable cell touching a confirmed solid anchor. It may
- * travel horizontally or descend one block per horizontal step. Reversing that
- * route produces a walkable bridge/staircase; every rise is expanded into a
- * horizontal connector followed by the upper block, so every emitted placement
- * has a real face on an earlier block. A small staging pad is appended beside
- * the target when space and materials allow.
+ * Plans temporary support placements for Auto Schematic Build by searching backwards
+ * from cells beside the target to a replaceable cell touching a solid anchor.
  */
 final class SchematicSupportPlanner {
 	private static final int[][] CARDINAL = {
@@ -43,10 +36,10 @@ final class SchematicSupportPlanner {
 	}
 
 	interface Space {
-		/** True only for an empty, fluid-free, loaded cell Auto Build may occupy. */
+		/** True for an empty, fluid-free, loaded cell Auto Build may occupy. */
 		boolean available(Cell cell);
 
-		/** True when this empty cell touches a confirmed solid placement face. */
+		/** True when this empty cell touches a solid placement face. */
 		boolean anchored(Cell cell);
 	}
 
@@ -91,8 +84,7 @@ final class SchematicSupportPlanner {
 				relax(target, current, current.add(direction[0], 0, direction[1]), null,
 						1.0D, horizontalHorizon, downwardHorizon, space, cost, parentTowardTarget, open);
 
-				// Reverse-search one step down. Forward construction becomes:
-				// lower cell -> horizontal connector -> upper cell.
+				// One step down; forward construction is lower cell, connector, upper cell.
 				Cell lower = current.add(direction[0], -1, direction[1]);
 				Cell connector = current.add(0, -1, 0);
 				relax(target, current, lower, connector, 0.82D,
@@ -119,8 +111,7 @@ final class SchematicSupportPlanner {
 			placements.add(next);
 		}
 
-		// Up to four extra cells around the final support produce a small, reusable
-		// staging platform instead of balancing the player on a one-wide pillar.
+		// Up to four extra cells around the final support form a staging platform.
 		Cell support = surface.getLast();
 		int stagingLimit = Math.min(maxBlocks, placements.size() + 4);
 		for (int[] direction : CARDINAL) {
@@ -146,9 +137,7 @@ final class SchematicSupportPlanner {
 		cost.put(next, tentative);
 		parentTowardTarget.put(next, from);
 
-		// Once none of the requested support cells is already anchored, strongly
-		// prefer descending toward terrain so tall floating builds do not flood
-		// every same-height cell before discovering a usable foundation.
+		// Bias the search downward toward terrain rather than flooding same-height cells.
 		double heightBias = Math.max(0, next.y() - (target.y() - downwardHorizon)) * 0.85D;
 		open.add(new Open(next, tentative, tentative + heightBias));
 	}

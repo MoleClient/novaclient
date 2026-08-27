@@ -33,14 +33,9 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Mace-mode pearl catch: visibly aims and throws one player wind charge onto the swept path of
- * the local player's own ender pearl. The older pearl can collide with the redirectable charge,
- * causing the pearl to resolve at the mid-air catch point.
- *
- * <p>All actions are server-valid: the real camera moves on the mouse GCD, the normal selected-slot
- * packet precedes one normal interact-item packet, the camera must have remained on the solution
- * across movement ticks, and the original slot is restored on the following tick. A solution is
- * abandoned when either projected path is obstructed; there is no blind throw or retry spam.
+ * Aims and throws one wind charge onto the swept path of the local player's own ender pearl, so
+ * the pearl collides with the charge and resolves mid-air. The selected-slot packet precedes the
+ * interact-item packet, and the original slot is restored on the following tick.
  */
 public final class PearlCatchController {
 	private static final int MAX_HANDLED_PEARLS = 32;
@@ -74,7 +69,7 @@ public final class PearlCatchController {
 	private boolean havePreviousAim;
 	private boolean preferAlternateSolution;
 
-	// A short visible return after the throw; it never emits an extra look packet.
+	// Short camera return after the throw.
 	private float recoveryFromYaw, recoveryFromPitch, recoveryToYaw, recoveryToPitch;
 	private long recoveryStartNanos, recoveryUntilNanos;
 
@@ -83,9 +78,8 @@ public final class PearlCatchController {
 	}
 
 	/**
-	 * Call at the vanilla click phase (the existing firePreMovement hook), before the player's
-	 * normal movement packet. Requiring two aligned ticks means the server already saw the aimed
-	 * rotation before the use packet is sent.
+	 * Called at the vanilla click phase, before the movement packet. Two aligned ticks are
+	 * required so the server sees the aimed rotation before the use packet.
 	 */
 	public void tick(MinecraftClient client) {
 		ClientPlayerEntity player = client == null ? null : client.player;
@@ -141,7 +135,7 @@ public final class PearlCatchController {
 			abort(player, true);
 			return;
 		}
-		// Respect a manual scroll/use/attack instead of fighting the player's intent.
+		// A manual scroll, use, or attack cancels the attempt.
 		if (player.getInventory().getSelectedSlot() != originalSlot
 				|| player.isUsingItem() || client.options.attackKey.isPressed()) {
 			abort(player, true);
@@ -175,11 +169,11 @@ public final class PearlCatchController {
 		else alignedTicks = 0;
 
 		if (player.age < earliestFireAge || alignedTicks < 2) return;
-		if (client.options.useKey.isPressed()) return; // wait for the physical pearl click to release
+		if (client.options.useKey.isPressed()) return; // wait for the pearl click to release
 		fire(client, player, now);
 	}
 
-	/** Smooth visible camera work; register beside AutoMace/AutoAim in WorldRenderEvents. */
+	/** Per-frame camera interpolation. Registered alongside AutoMace and AutoAim. */
 	public void frame(MinecraftClient client) {
 		long now = System.nanoTime();
 		float dt = lastFrameNanos == 0L ? 1.0F
@@ -219,12 +213,12 @@ public final class PearlCatchController {
 		return phase != Phase.IDLE;
 	}
 
-	/** True while this controller owns the visible camera, including its short return motion. */
+	/** True while this controller owns the camera, including the return motion. */
 	public boolean ownsRotation() {
 		return phase == Phase.AIMING || System.nanoTime() < recoveryUntilNanos;
 	}
 
-	/** Clear session-only trajectory and recovery state after a disconnect. */
+	/** Clears session-only trajectory and recovery state after a disconnect. */
 	public void reset() {
 		clearState();
 		handledPearls.clear();
@@ -238,8 +232,6 @@ public final class PearlCatchController {
 		Vec3d inheritedMovement = player.getMovement();
 		if (player.isOnGround()) inheritedMovement = new Vec3d(inheritedMovement.x, 0.0D, inheritedMovement.z);
 		Vec3d origin = new Vec3d(player.getX(), player.getEyePos().y, player.getZ());
-		// Keep every enabled tier capable of solving long throws. Tiers alter how quickly the
-		// visible aim settles, not whether the physical pearl/charge intersection is considered.
 		CombatModeProfile.PearlCatch tuning = tuning();
 		int horizon = MathHelper.clamp(50 + tuning.simulationTicks(), 120, 160);
 		PearlInterceptSolver.Request request = new PearlInterceptSolver.Request(
@@ -247,8 +239,7 @@ public final class PearlCatchController {
 				latencyTicks, horizon, 128.0D);
 		List<PearlInterceptSolver.Solution> candidates = PearlInterceptSolver.solveCandidates(
 				request, Math.max(4, tuning.solveSubsteps() * 2));
-		// Human variance chooses a different still-valid interception occasionally. This is
-		// deliberately not a miss chance: every selected route must pass the same world checks.
+		// Occasionally pick the second-best route; every candidate passes the same world checks.
 		int start = candidates.size() > 1 && preferAlternateSolution ? 1 : 0;
 		for (int i = 0; i < candidates.size(); i++) {
 			PearlInterceptSolver.Solution candidate = candidates.get((start + i) % candidates.size());
@@ -261,7 +252,7 @@ public final class PearlCatchController {
 			EnderPearlEntity pearl, Vec3d origin, PearlInterceptSolver.Solution candidate) {
 		if (!physicalPathClear(client, player, origin, candidate.windPosition())) return false;
 
-		// Reject a currently visible entity that would consume/explode the wind charge first.
+		// Reject an entity that would consume or detonate the wind charge first.
 		Box windPath = new Box(origin, candidate.windPosition()).expand(0.42D);
 		for (Entity entity : client.world.getOtherEntities(player, windPath, Entity::canBeHitByProjectile)) {
 			if (entity == pearl || entity instanceof AbstractWindChargeEntity) continue;
@@ -270,9 +261,8 @@ public final class PearlCatchController {
 			}
 		}
 
-		// The pearl also has to survive its own physical path until the planned catch step.
-		// We intentionally fail closed through fluids because their drag differs from this air
-		// solver, and reject any entity that would consume the pearl before the charge can.
+		// The pearl must also survive its own path to the catch step. Fluids fail closed because
+		// their drag differs from this air-only solver.
 		Vec3d pos = pearl.getEntityPos();
 		Vec3d velocity = pearl.getVelocity();
 		for (int i = 0; i < candidate.pearlSteps(); i++) {
@@ -377,8 +367,8 @@ public final class PearlCatchController {
 	private void restoreOriginalSlot(ClientPlayerEntity player) {
 		if (originalSlot >= 0 && originalSlot < 9
 				&& player.getInventory().getSelectedSlot() == windSlot) {
-			// Restoration is an actual ordered slot change in this input phase. Relying on a
-			// later vanilla inventory poll could leave the server holding the charge for a tick.
+			// Must be an ordered slot change in this input phase; a later vanilla poll would
+			// leave the server holding the charge for a tick.
 			MinecraftClient client = MinecraftClient.getInstance();
 			if (client.interactionManager != null) selectForUse(client, player, originalSlot);
 			else player.getInventory().setSelectedSlot(originalSlot);

@@ -11,16 +11,9 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Reach — part 1 of 2: extends the entity-interaction range the client raycasts with, so the
- * crosshair (and thus an attack/use target) can lock onto players a little further out.
- *
- * <p>{@code ClientPlayerEntity.getCrosshairTarget} raycasts entities out to
- * {@link PlayerEntity#getEntityInteractionRange()}. We raise that for the LOCAL player only when
- * the Reach module is on. The attack-range gate in {@code MinecraftClient.doAttack} is governed
- * separately by the weapon's AttackRangeComponent — {@link ReachAttackMixin} handles that half.
- *
- * <p>Default reach is 3.0 (vanilla). Extending that gate has no legitimate
- * survival-server equivalent and can be directly flagged in multiplayer.
+ * Raises {@link PlayerEntity#getEntityInteractionRange()} for the local player while Reach
+ * is on, which is the range the crosshair raycast uses. Vanilla default is 3.0.
+ * The separate weapon attack-range gate is handled by {@link ReachAttackMixin}.
  */
 @Mixin(PlayerEntity.class)
 public abstract class ReachRangeMixin {

@@ -10,18 +10,7 @@ import net.minecraft.util.math.Vec3d;
 
 import java.security.SecureRandom;
 
-/**
- * Water Walker — lets you walk on the surface of water.
- *
- * <p>Each tick, while you're at a water surface (and not sneaking — sneak to dive),
- * it holds you at the top of the water instead of letting you sink. The trick to
- * stay <b>wetted</b>: it keeps your feet just in the surface block rather than
- * hovering cleanly above it. A small per-tick bob keeps the surface height from
- * being a rigid pin.
- *
- * <p>Sneak to sink/dive, and it yields to real flight/elytra. Like all movement
- * mods it changes physics, so multiplayer movement checks can directly flag it.
- */
+/** Holds the player at a water surface instead of sinking; sneaking dives. */
 public final class WaterWalkController {
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
@@ -36,7 +25,6 @@ public final class WaterWalkController {
 				|| !player.isAlive() || player.isSpectator()) {
 			return;
 		}
-		// Sneak to dive, and never fight real flight / gliding.
 		if (player.isSneaking() || player.getAbilities().flying || player.isGliding()) {
 			return;
 		}
@@ -45,10 +33,9 @@ public final class WaterWalkController {
 		boolean inWater    = client.world.getFluidState(feet).isIn(FluidTags.WATER);
 		boolean waterBelow = client.world.getFluidState(feet.down()).isIn(FluidTags.WATER);
 		if (!inWater && !waterBelow) {
-			return; // not over water
+			return;
 		}
-		// If your head is underwater you went under on purpose — let normal
-		// swimming take over.
+		// Head submerged: leave it to normal swimming.
 		if (client.world.getFluidState(feet.up()).isIn(FluidTags.WATER)) {
 			return;
 		}
@@ -56,16 +43,12 @@ public final class WaterWalkController {
 		Vec3d v = player.getVelocity();
 		double vy;
 		if (inWater) {
-			// Feet are in the surface block — rise gently toward the top, capped so
-			// you don't pop clean out of the water (staying wetted is what keeps a
-			// vanilla server from falsely flagging the float as flight).
+			// Rise toward the top, capped so the player stays touching water.
 			vy = MathHelper.clamp(v.y + 0.045, -0.02, 0.07);
 		} else {
-			// Just above the surface with water under you — settle back down to touch
-			// it rather than hover above it.
+			// Above the surface: settle back down onto it.
 			vy = Math.min(v.y, -0.012);
 		}
-		// Humanized bob — small variance so the surface height isn't a rigid pin.
 		vy += (rng.nextDouble() - 0.5) * 0.012;
 
 		player.setVelocity(v.x, vy, v.z);

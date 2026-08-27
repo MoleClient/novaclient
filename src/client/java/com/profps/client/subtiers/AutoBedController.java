@@ -21,7 +21,7 @@ import java.security.SecureRandom;
 import java.util.HashSet;
 import java.util.Set;
 
-/** A second, humanized right-click after the player's own bed placement. */
+/** Sends a delayed second right-click on a bed the player just placed. */
 public final class AutoBedController {
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
@@ -44,8 +44,7 @@ public final class AutoBedController {
 		if (player == null || !(player.getStackInHand(hand).getItem() instanceof BedItem)) {
 			return ActionResult.PASS;
 		}
-		// Our automatic second click can still have a bed in hand. Do not mistake
-		// clicking the existing bed for another placement sequence.
+		// Clicking an existing bed is the automatic second click, not a new placement.
 		if (world.getBlockState(hit.getBlockPos()).getBlock() instanceof BedBlock) {
 			return ActionResult.PASS;
 		}
@@ -57,7 +56,7 @@ public final class AutoBedController {
 		scanAtNanos = now + ns(12D + rng.nextDouble() * 32D);
 		detonateAtNanos = 0L;
 		expireAtNanos = now + ns(1250D);
-		return ActionResult.PASS; // the player's original placement proceeds normally
+		return ActionResult.PASS;
 	}
 
 	public void tick(MinecraftClient client) {

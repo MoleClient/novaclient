@@ -1,11 +1,6 @@
 package com.profps.client.config;
 
-/**
- * One "Nick Other" mapping: replace everyone shown as {@link #target} with
- * {@link #nick} (everywhere — chat, tab, nametags, scoreboards), and optionally
- * pull {@link #nick}'s skin too. Plain mutable fields with a no-arg constructor so
- * Gson round-trips it inside the config list.
- */
+/** One "Nick Other" mapping. Mutable fields with a no-arg constructor for Gson. */
 public final class NickEntry {
 	public String target = "";
 	public String nick = "";

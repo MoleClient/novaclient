@@ -25,18 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import java.util.zip.GZIPOutputStream;
 
-/**
- * Batches recorded rows, compresses them and posts them to the collector.
- *
- * <p>Threading is deliberately one-way. The client thread only ever appends to the batch it owns
- * and hands the sealed batch to a queue; every expensive step — gzip, TLS, disk — happens on a
- * daemon worker. Nothing the collector does can stall a tick: the queue is bounded and overflow is
- * dropped and counted rather than waited on. Losing rows is an acceptable failure for a training
- * corpus; a stuttering client is not.
- *
- * <p>Batches that fail to send spool to disk and are retried later, so a contributor playing
- * through a network drop still lands their session once they are back.
- */
+/** Batches recorded rows, compresses them and posts them to the collector. */
 final class ContributionUploader {
 	private static final int BATCH_ROWS = 400;        // ~20s of ticks
 	private static final long BATCH_MS = 10_000L;
@@ -45,11 +34,7 @@ final class ContributionUploader {
 	private static final long SPOOL_CAP_BYTES = 256L * 1024L * 1024L;
 	private static final String SPOOL_DIR = "profps_data_spool";
 
-	/**
-	 * Ships in the jar, so it is a filter and not a secret — it keeps drive-by scanners that find
-	 * the hostname from filling the collector, nothing more. Real protection is the tunnel, the
-	 * edge rate limit and the collector only ever appending bytes.
-	 */
+	/** Ships in the jar, so it is a filter and not a secret. */
 	private static final String CLIENT_TOKEN = "nova-Kxq9lQRPaHosMEl9uWf85wBF3vyprjws";
 
 	private final ProFPSConfig config;
@@ -59,8 +44,7 @@ final class ContributionUploader {
 			.followRedirects(HttpClient.Redirect.NEVER)
 			.build();
 
-	// Client-thread state only. The dictionary is per batch and travels with it, so the worker
-	// never reads a map the client thread is still writing.
+	// Client-thread state only. The dictionary is per batch and travels with it.
 	private final List<String> pending = new ArrayList<>(BATCH_ROWS);
 	private final Map<String, Integer> dictionary = new LinkedHashMap<>();
 	private long batchOpenedMs;
@@ -70,9 +54,7 @@ final class ContributionUploader {
 	private int sequence;
 	private int dropped;
 
-	// Observability. Telemetry that fails quietly is worse than none: without these the only
-	// symptom of a wrong endpoint is that nothing ever arrives, which looks identical to
-	// "nobody has played yet". Read out by /nova data.
+	// Counters read out by /nova data.
 	private volatile int batchesSent;
 	private volatile int batchesFailed;
 	private volatile int rowsSent;
@@ -102,7 +84,7 @@ final class ContributionUploader {
 		return lastStatus;
 	}
 
-	/** How many batches are sitting on disk waiting for the collector to come back. */
+	/** How many batches are sitting on disk waiting to be retried. */
 	static int spooled() {
 		Path dir = spoolDir();
 		if (!Files.isDirectory(dir)) return 0;
@@ -118,9 +100,7 @@ final class ContributionUploader {
 
 	ContributionUploader(ProFPSConfig config) {
 		this.config = config;
-		// Quitting the game kills the daemon worker wherever it happens to be, so the exit path
-		// writes anything still in hand straight to the spool instead of trying to send it. The
-		// next launch picks it up. Without this, every session loses its tail.
+		// Exit kills the daemon worker, so write anything still in hand to the spool instead of sending.
 		Runtime.getRuntime().addShutdownHook(new Thread(this::spoolRemaining, "profps-data-exit"));
 	}
 
@@ -133,7 +113,7 @@ final class ContributionUploader {
 				spool(compress(batch));
 			}
 		} catch (Exception ignored) {
-			// Nothing useful to do on the way out; the rows are already lost either way.
+			// Nothing useful to do on the way out.
 		}
 	}
 
@@ -173,9 +153,7 @@ final class ContributionUploader {
 		resetBatch();
 		ensureWorker();
 		if (!outbound.offer(batch)) {
-			// The worker is behind — most likely the collector is down and every send is
-			// timing out. Drop this batch rather than let the queue become back-pressure
-			// on the render loop.
+			// Worker is behind; drop rather than back-pressure the render loop.
 			dropped++;
 			if (dropped % 20 == 1) {
 				ProFPS.LOGGER.warn("Data contribution backlogged; dropped {} batches so far.", dropped);
@@ -183,15 +161,12 @@ final class ContributionUploader {
 		}
 	}
 
-	/** Throws away buffered rows without sending them — the mid-session opt-out path. */
+	/** Throws away buffered rows without sending them. */
 	void discard() {
 		resetBatch();
 	}
 
-	/**
-	 * Seals the session's last batch and leaves the worker running to send it. Disconnecting is
-	 * not shutting down — the player is usually about to join somewhere else.
-	 */
+	/** Seals the session's last batch and leaves the worker running to send it. */
 	void endSession() {
 		flush();
 	}
@@ -202,10 +177,7 @@ final class ContributionUploader {
 		batchOpenedMs = System.currentTimeMillis();
 	}
 
-	/**
-	 * The first line of every batch. It carries the schema so a reader never has to guess at
-	 * column order, and states plainly whether the location columns mean anything.
-	 */
+	/** The first line of every batch, carrying the schema, column names and dictionary. */
 	String header() {
 		StringBuilder out = new StringBuilder(1024);
 		out.append("{\"t\":\"header\"");
@@ -247,8 +219,7 @@ final class ContributionUploader {
 					.map(container -> container.getMetadata().getVersion().getFriendlyString())
 					.orElse("unknown");
 		} catch (Throwable ignored) {
-			// No Fabric runtime — a unit test exercising the encoder. The version is a label on
-			// the batch, not something the format depends on.
+			// No Fabric runtime, e.g. a unit test exercising the encoder.
 			return "unknown";
 		}
 	}
@@ -260,8 +231,7 @@ final class ContributionUploader {
 		running = true;
 		worker = new Thread(this::run, "profps-data-contribution");
 		worker.setDaemon(true);
-		// Below the render and tick threads: shipping telemetry never competes for a core
-		// with the thing being measured.
+		// Below the render and tick threads.
 		worker.setPriority(Thread.MIN_PRIORITY);
 		worker.start();
 	}
@@ -318,8 +288,7 @@ final class ContributionUploader {
 			lastStatus = "HTTP " + response.statusCode();
 			return ok;
 		} catch (Exception exception) {
-			// The message, not the stack: this is read out in chat by /nova data, and
-			// "ConnectException: Connection refused" is exactly the useful part.
+			// Message, not stack: this string is read out in chat by /nova data.
 			lastStatus = exception.getClass().getSimpleName()
 					+ (exception.getMessage() == null ? "" : ": " + exception.getMessage());
 			return false;
@@ -376,7 +345,7 @@ final class ContributionUploader {
 		}
 	}
 
-	/** Oldest-first eviction: a long offline stretch keeps the most recent play, not the stalest. */
+	/** Oldest-first eviction. */
 	private static void evictOldest(Path dir, long needed) throws IOException {
 		try (Stream<Path> files = Files.list(dir)) {
 			long freed = 0L;
@@ -392,7 +361,7 @@ final class ContributionUploader {
 
 	// ── Encoding helpers ─────────────────────────────────────────────────────────
 
-	/** Compact fixed-precision numbers: millimetre and millidegree resolution is plenty. */
+	/** Formats a number at millimetre and millidegree resolution. */
 	static String num(double value) {
 		if (!Double.isFinite(value)) return "0";
 		double rounded = Math.round(value * 1000.0D) / 1000.0D;

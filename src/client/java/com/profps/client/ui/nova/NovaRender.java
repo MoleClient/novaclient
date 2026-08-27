@@ -6,17 +6,12 @@ import net.minecraft.util.math.MathHelper;
 import org.joml.Matrix3x2fStack;
 
 /**
- * Shape renderer for the Nova GUI.
- *
- * <p>Circles, glows and rounded-rect corners are single textured quads sampled
- * from the pre-baked antialiased atlas in {@link NovaSprites}; only thin
- * borders and the two tiny ring icons still rasterise per row. Everything is
- * positioned inside a 2x supersampled matrix (half-GUI-pixel granularity). A
- * global alpha multiplier drives the open/close fade of the whole panel.
+ * Shape renderer for the Nova GUI, drawing from the {@link NovaSprites} atlas.
+ * All geometry is positioned in a 2x supersampled matrix and tinted by a global alpha multiplier.
  */
 public final class NovaRender {
 	private static final int S = 2;
-	/** Maps a target on-screen radius to the atlas cell size (disc fills 60/64 of its cell). */
+	/** Maps an on-screen radius to atlas cell size; the disc fills 60/64 of its cell. */
 	private static final float DISC_CELL_SCALE = NovaSprites.CELL / (2.0F * NovaSprites.DISC_RADIUS);
 	private static float alphaMul = 1.0F;
 
@@ -51,7 +46,7 @@ public final class NovaRender {
 
 	/** One tinted quad from the shape atlas, in S-scaled coordinates. */
 	private static void sprite(DrawContext ctx, int x, int y, int w, int h, int u, int argb) {
-		// Half-texel inset so bilinear sampling never bleeds the neighbouring cell.
+		// Half-texel inset so bilinear sampling does not bleed the neighbouring cell.
 		ctx.drawTexture(RenderPipelines.GUI_TEXTURED, NovaSprites.ATLAS_ID, x, y,
 				u + 0.5F, 0.5F, w, h, NovaSprites.CELL - 1, NovaSprites.CELL - 1,
 				NovaSprites.ATLAS_W, NovaSprites.ATLAS_H, argb);
@@ -61,7 +56,7 @@ public final class NovaRender {
 		roundRectGradient(ctx, x, y, w, h, r, argb, argb);
 	}
 
-	/** Rounded rectangle with a vertical colour gradient: 4 corner sprites + 3 fills. */
+	/** Rounded rectangle with a vertical colour gradient. */
 	public static void roundRectGradient(DrawContext ctx, float x, float y, float w, float h, float r, int top, int bottom) {
 		top = alpha(top);
 		bottom = alpha(bottom);
@@ -80,8 +75,7 @@ public final class NovaRender {
 		if (br <= 0) {
 			band(ctx, bx, by, bx + bw, by + bh, top, bottom, bh, 0, bh);
 		} else {
-			// Corners are flat-tinted with the gradient colour at their band centre;
-			// at these sizes the deviation from a true gradient is imperceptible.
+			// Corners are flat-tinted with the gradient colour at their band centre.
 			int cTop = lerpColor(br * 0.5F / bh, top, bottom);
 			int cBottom = lerpColor((bh - br * 0.5F) / bh, top, bottom);
 			sprite(ctx, bx, by, br, br, NovaSprites.CORNER_TL_U, cTop);
@@ -99,7 +93,7 @@ public final class NovaRender {
 		m.popMatrix();
 	}
 
-	/** One horizontal slice of a vertical gradient (plain fill when both stops match). */
+	/** One horizontal slice of a vertical gradient. */
 	private static void band(DrawContext ctx, int x1, int y1, int x2, int y2,
 			int top, int bottom, int totalH, int bandY1, int bandY2) {
 		if (x2 <= x1 || y2 <= y1) return;
@@ -112,10 +106,7 @@ public final class NovaRender {
 		}
 	}
 
-	/**
-	 * One-pixel rounded outline. Straight edges are 4 single fills; only the
-	 * corner arcs go row-by-row — keeps the per-frame draw-call count low.
-	 */
+	/** One-pixel rounded outline. */
 	public static void roundRectBorder(DrawContext ctx, float x, float y, float w, float h, float r, int argb) {
 		argb = alpha(argb);
 		if ((argb >>> 24) == 0) return;
@@ -150,7 +141,7 @@ public final class NovaRender {
 		m.popMatrix();
 	}
 
-	/** Filled antialiased circle — a single tinted quad. */
+	/** Filled antialiased circle. */
 	public static void fillCircle(DrawContext ctx, float cx, float cy, float r, int argb) {
 		argb = alpha(argb);
 		if ((argb >>> 24) == 0) return;
@@ -165,7 +156,7 @@ public final class NovaRender {
 		m.popMatrix();
 	}
 
-	/** Circle outline (e.g. the search magnifier and power icon). */
+	/** Circle outline. */
 	public static void ring(DrawContext ctx, float cx, float cy, float r, float thickness, int argb) {
 		argb = alpha(argb);
 		if ((argb >>> 24) == 0) return;
@@ -201,7 +192,7 @@ public final class NovaRender {
 		roundRect(ctx, x - 1, y - 1, w + 2, h + 2, r + 1, withAlpha(rgb, strength / 2));
 	}
 
-	/** Radial halo behind small widgets — a single tinted quad of the glow sprite. */
+	/** Radial halo behind small widgets. */
 	public static void glowCircle(DrawContext ctx, float cx, float cy, float r, int rgb, int strength) {
 		int argb = alpha(withAlpha(rgb, strength));
 		if ((argb >>> 24) == 0) return;

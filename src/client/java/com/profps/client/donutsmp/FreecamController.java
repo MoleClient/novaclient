@@ -8,33 +8,10 @@ import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
 /**
- * Detached flying camera; the body stays exactly where it was toggled on.
- *
- * <p>Mechanics are a faithful port of Xenon Client's freecam, which is what the
- * previous implementation was rebuilt against:
- * <ul>
- *   <li>The camera advances on the RENDER clock, not the tick clock: movement is
- *       integrated per frame from wall-clock delta time inside the camera-update
- *       hook, then the drawn transform interpolates the last frame step by
- *       tickProgress. That is what makes it glassy at any fps.</li>
- *   <li>Velocity eases toward the input direction with an exponential smoothing
- *       factor of {@code 1 - 0.001^dt}, and snaps dead the moment no movement key
- *       is held — no drift, no coast.</li>
- *   <li>The scroll wheel is a live speed trim (±0.25 per notch, total speed
- *       clamped to 0.1..50); releasing all keys also drops the trim back to the
- *       configured base speed.</li>
- *   <li>The body is left standing: its input is zeroed at the KeyboardInput
- *       layer, its yaw/pitch/head/body rotation is re-pinned every tick to the
- *       values saved at activation, and sneak/sprint flags are stripped so the
- *       pose cannot change under the camera.</li>
- *   <li>Chunk culling is disabled while flying (the camera leaves the body's
- *       frustum) and the camera reports third-person so your own body renders.
- *       No sound-listener games, no body repositioning — the two things that
- *       made the old version glitch.</li>
- * </ul>
+ * Detached flying camera. The camera integrates on the render clock; the body stays put
+ * with its input zeroed and its rotation re-pinned each tick.
  */
 public final class FreecamController {
-	// Tuning lifted from the reference client, kept verbatim so it flies identically.
 	private static final float MIN_TOTAL_SPEED = 0.1f;
 	private static final float MAX_CONFIG_SPEED = 10.0f;
 	private static final float SCROLL_STEP = 0.25f;
@@ -50,8 +27,7 @@ public final class FreecamController {
 
 	private boolean active;
 
-	// Camera transform. previous/current pairs exist for the per-frame
-	// interpolation the camera hook reads.
+	// Camera transform; prev/current pairs feed the per-frame interpolation in the camera hook.
 	private double x, y, z;
 	private double prevX, prevY, prevZ;
 	private double velX, velY, velZ;
@@ -62,15 +38,14 @@ public final class FreecamController {
 	private float scrollBoost;
 	private long lastFrameMs;
 
-	// World state to put back when the camera comes home.
+	// World state restored on deactivate.
 	private float savedYaw, savedPitch;
 	private Perspective savedPerspective;
 	private boolean savedChunkCulling;
 
 	public FreecamController(ProFPSConfig config) {
 		this.config = config;
-		// Camera state must never survive a restart: booting into a frozen body
-		// with the camera somewhere else would read as a broken game.
+		// Never restore this across a restart.
 		config.donutFreecam = false;
 		instance = this;
 	}
@@ -87,8 +62,6 @@ public final class FreecamController {
 	public void tick(MinecraftClient client) {
 		boolean worldReady = client.player != null && client.world != null;
 		if (config.donutFreecam && !worldReady) {
-			// Toggled on from a menu (or the world unloaded under us): refuse the
-			// toggle rather than activating into nothing.
 			config.donutFreecam = false;
 		}
 		boolean wanted = config.enabled && config.donutFreecam && worldReady;
@@ -98,9 +71,7 @@ public final class FreecamController {
 			deactivate(client);
 		}
 		if (active) {
-			// Re-pin every tick. Movement packets keep reporting the rotation the
-			// player had when the camera detached, so nothing the mouse does while
-			// flying is visible server-side — and the rendered body doesn't twitch.
+			// Re-pin each tick so movement packets keep reporting the rotation at detach time.
 			ClientPlayerEntity player = client.player;
 			player.setYaw(savedYaw);
 			player.setPitch(savedPitch);
@@ -113,7 +84,7 @@ public final class FreecamController {
 		ClientPlayerEntity player = client.player;
 		savedPerspective = client.options.getPerspective();
 		savedChunkCulling = client.chunkCullingEnabled;
-		// The camera routinely looks back at terrain the body's frustum culled.
+		// The camera leaves the body's frustum, so culled chunks would be missing.
 		client.chunkCullingEnabled = false;
 		savedYaw = player.getYaw();
 		savedPitch = player.getPitch();
@@ -129,8 +100,7 @@ public final class FreecamController {
 		velX = velY = velZ = 0.0;
 		currentSpeed = configuredSpeed();
 		scrollBoost = 0.0f;
-		// Kill horizontal momentum so the body doesn't slide off a ledge the
-		// moment its input goes dead; gravity keeps working on purpose.
+		// Clear horizontal momentum only; vertical is left alone so gravity still applies.
 		player.setVelocity(0.0, player.getVelocity().y, 0.0);
 		active = true;
 	}
@@ -151,7 +121,7 @@ public final class FreecamController {
 		active = false;
 	}
 
-	// ── Per-frame camera drive (called from the Camera.update hook) ───────────
+	// Per-frame camera drive, called from the Camera.update hook.
 
 	public static void frame() {
 		if (instance != null && instance.active) instance.updateCameraMovement();
@@ -170,13 +140,11 @@ public final class FreecamController {
 		long now = System.currentTimeMillis();
 		float dt = (now - lastFrameMs) / 1000.0f;
 		lastFrameMs = now;
-		// A hitch must not teleport the camera; a sub-millisecond frame gets the
-		// nominal 60fps step instead of a degenerate zero.
+		// Clamp dt so a hitch cannot teleport the camera; sub-millisecond frames use a 60fps step.
 		dt = Math.min(dt, 0.1f);
 		if (dt < 0.001f) dt = 0.016f;
 
-		// Direction comes from yaw alone — pitch never bleeds into travel, so
-		// looking down doesn't dive the camera. Vertical is jump/sneak only.
+		// Travel direction is yaw-only; vertical comes from jump/sneak.
 		float yawRad = (float) Math.toRadians(yaw);
 		double forwardX = -Math.sin(yawRad);
 		double forwardZ = Math.cos(yawRad);
@@ -221,15 +189,13 @@ public final class FreecamController {
 			moving = true;
 		}
 		if (!moving) {
-			// Hard stop, and the scroll trim resets so the next take-off starts
-			// from the configured base speed.
+			// Hard stop; the scroll trim resets to the configured base speed.
 			scrollBoost = 0.0f;
 			velX = velY = velZ = 0.0;
 			return;
 		}
 
-		// Ease velocity toward the input direction. The 0.001 base means ~99.9%
-		// of the gap closes per second — snappy but never stepped.
+		// Exponential ease toward the input direction; the 0.001 base closes ~99.9% of the gap per second.
 		double t = 1.0 - Math.pow(0.001, dt);
 		velX = MathHelper.lerp(t, velX, inX * VELOCITY_SCALE);
 		velY = MathHelper.lerp(t, velY, inY * VELOCITY_SCALE);
@@ -240,7 +206,7 @@ public final class FreecamController {
 		z += velZ * dt;
 	}
 
-	// ── Input redirects (called from mixins) ──────────────────────────────────
+	// Input redirects, called from mixins.
 
 	/** Raw cursor deltas; vanilla's 0.15 scale and the freecam sensitivity are applied here. */
 	public static void onMouseLook(double cursorDeltaX, double cursorDeltaY) {
@@ -254,15 +220,14 @@ public final class FreecamController {
 		if (instance == null || !instance.active) return;
 		FreecamController self = instance;
 		self.scrollBoost += (float) amount * SCROLL_STEP;
-		// The trim may slow below base but never below the global floor, and the
-		// combined speed is capped well above the config slider's own ceiling.
+		// Clamp total speed to MIN_TOTAL_SPEED..MAX_TOTAL_SPEED.
 		self.scrollBoost = Math.max(self.scrollBoost, -self.currentSpeed + MIN_TOTAL_SPEED);
 		if (self.currentSpeed + self.scrollBoost > MAX_TOTAL_SPEED) {
 			self.scrollBoost = MAX_TOTAL_SPEED - self.currentSpeed;
 		}
 	}
 
-	// ── Camera transform readback (called from the Camera.update hook) ────────
+	// Camera transform readback, called from the Camera.update hook.
 
 	public static double cameraX(float tickProgress) {
 		return MathHelper.lerp(tickProgress, instance.prevX, instance.x);

@@ -17,20 +17,9 @@ import net.minecraft.util.math.Box;
 import java.security.SecureRandom;
 
 /**
- * Strafe Assist — on every hit you land it makes you actually STRAFE: a short
- * humanized side-step (with a touch of back) so you slip off your opponent's
- * crosshair, then control returns to you and you press forward to re-close the
- * gap. Repeat on the next hit. This is the juke a good PvPer does by hand.
- *
- * <p>The movement is driven through the real input system — the burst is published
- * as a {@link PlayerInput} and applied at the tail of the keyboard tick (see
- * {@code InputMixin}), exactly as if you'd tapped A/D + S yourself. The server
- * sees ordinary input-driven motion, so there's nothing to flag (unlike the old
- * velocity-injection backstep, which diverged from the server's movement
- * prediction and tripped Grim/Vulcan — that path is gone).
- *
- * <p>A smooth, GCD-quantized yaw pivot is layered on top so the head turns with
- * the body instead of staying robotically locked forward.
+ * Side-steps after a landed hit by publishing a {@link PlayerInput} burst that
+ * {@code InputMixin} applies at the tail of the keyboard tick. An optional
+ * GCD-quantized yaw pivot turns the head with the body.
  */
 public final class StrafeImprovementsController {
 	private static StrafeImprovementsController instance;
@@ -38,65 +27,54 @@ public final class StrafeImprovementsController {
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
 
-	/**
-	 * Simulated mouse-sensitivity GCD. The pivot rotation is sent to the server
-	 * in the rotation packet, so — exactly like the aim assist — every emitted
-	 * yaw delta must be a whole multiple of a sensitivity base unit or Grim/Intave
-	 * reject it outright. Raw float pivot steps were a hard rotation flag.
-	 */
+	/** Remainder carried between frames so emitted yaw deltas stay on the mouse GCD. */
 	private float yawCarry;
 
-	// ── Strafe burst state (input-driven movement) ───────────────────────────
-	// Two independent time windows: the primary juke and an optional opposite
-	// follow-up ("double tap"). InputMixin reads these every keyboard tick.
+	// Two burst windows: the primary step and an optional opposite follow-up.
 	private long b1Start, b1End, b2Start, b2End;
 	private int  dir1, dir2;          // -1 = step left, +1 = step right
 	private boolean back1, back2;     // include a backward component in the step
-	private int lastDir = 1;          // so consecutive jukes tend to alternate sides
-	private long lastJukeNanos;       // throttle: a human gap between jukes
+	private int lastDir = 1;          // consecutive steps tend to alternate sides
+	private long lastJukeNanos;       // throttle between steps
 	private long sprintForwardSinceNanos;
 	private long sprintReadyNanos;
 	private long sprintPauseUntilNanos;
 
 	private double yawOffsetDeg;
 
-	// ── Pivot (smooth yaw rotation) state ────────────────────────────────
-	// Scheduled independently from the strafe burst; applied per-frame.
-	private float pivotTotalDeg;     // total angle to pivot (signed: +right, -left)
+	// Pivot state, scheduled independently of the burst and applied per frame.
+	private float pivotTotalDeg;     // signed total angle: +right, -left
 	private float pivotAppliedDeg;   // cumulative amount applied so far
-	private long  pivotStartNanos;   // when the pivot begins
-	private long  pivotDurationNanos; // how long the full pivot takes
+	private long  pivotStartNanos;
+	private long  pivotDurationNanos;
 
 	public StrafeImprovementsController(ProFPSConfig config) {
 		this.config = config;
 		instance = this;
 	}
 
-	// ── Movement hook (called from InputMixin, main thread) ──────────────────
-
-	/** True while a juke step should be overriding the player's movement input. */
+	/** True while a step should be overriding the player's movement input. */
 	public static boolean isStrafing() {
 		StrafeImprovementsController s = instance;
 		return s != null && s.allowedForMovement() && s.burstActiveNow();
 	}
 
 	/**
-	 * The movement input to apply during a juke: forward dropped, a side-step (and
-	 * optional back) added, their jump/sneak preserved. Returns {@code null} when no
-	 * burst is live so the real input passes through untouched.
+	 * The movement input to apply during a step: forward dropped, side-step and optional
+	 * back added, jump and sneak preserved.
+	 *
+	 * @return null when no burst is live, so the real input passes through
 	 */
 	public static PlayerInput strafeOverride(PlayerInput current) {
 		StrafeImprovementsController s = instance;
 		if (s == null || !s.allowedForMovement() || !s.burstActiveNow()) return null;
-		// A physical jump or sneak is higher-priority manual intent. Do not turn either
-		// into an automated retreat/strafe combination.
+		// A physical jump or sneak is higher-priority manual intent.
 		if (current.jump() || current.sneak()) return null;
 		MinecraftClient client = MinecraftClient.getInstance();
 		int dir = s.activeDir();
 		boolean back = s.activeBack();
 		if (!s.safeInputStep(client, dir, back)) {
-			// If backward clearance disappeared after the hit, try the planned lateral
-			// slip only. If that is unsafe too, yield completely to the player's keys.
+			// Without backward clearance, try the lateral step alone, else yield to the player.
 			back = false;
 			if (dir == 0 || !s.safeInputStep(client, dir, false)) return null;
 		}
@@ -104,9 +82,8 @@ public final class StrafeImprovementsController {
 	}
 
 	/**
-	 * Sword-mode sprint layer. It never supplies forward movement: it only adds the
-	 * vanilla sprint-key bit after the player has genuinely held forward for a short,
-	 * tiered human cadence. Manual retreat/sneak, unsafe terrain and crit movement win.
+	 * Sword-mode sprint layer. Adds only the sprint bit after forward has been held
+	 * for a short tiered delay; it never supplies forward movement itself.
 	 */
 	public static PlayerInput swordSprintOverride(PlayerInput current) {
 		StrafeImprovementsController s = instance;
@@ -166,9 +143,7 @@ public final class StrafeImprovementsController {
 		return true;
 	}
 
-	// ── Frame callback — smooth pivot rotation ───────────────────────────
-	// Called from WorldRenderEvents.END_MAIN every rendered frame for sub-tick precision.
-
+	/** Advances the pivot rotation; called from WorldRenderEvents.END_MAIN each frame. */
 	public void frame(MinecraftClient client) {
 		if (!CombatModePolicy.enabled(config, CombatFeature.STRAFE)) return;
 		if (client == null || client.player == null) return;
@@ -180,16 +155,14 @@ public final class StrafeImprovementsController {
 		long elapsed = now - pivotStartNanos;
 		double t = Math.min(1.0D, elapsed / (double) pivotDurationNanos);
 
-		// Sine ease-in-out: smooth start and smooth finish, natural deceleration
+		// Sine ease-in-out.
 		double eased = 0.5D - 0.5D * Math.cos(Math.PI * t);
 		float targetApplied = (float) (pivotTotalDeg * eased);
 		float step = targetApplied - pivotAppliedDeg;
 
-		// Tiny Gaussian micro-tremor on each frame — breaks up the perfectly smooth curve
 		step += (float) (rng.nextGaussian() * 0.18D);
 
-		// Track the INTENDED progress so the ease curve still completes, but only
-		// ever emit GCD-quantized deltas (carry the remainder, like a real mouse).
+		// Track intended progress so the ease curve completes; emit only quantized deltas.
 		pivotAppliedDeg += step;
 		float wanted = step + yawCarry;
 		float applied = quantize(wanted);
@@ -206,10 +179,8 @@ public final class StrafeImprovementsController {
 	}
 
 	private float quantize(float delta) {
-		return MouseGcd.quantize(delta); // snap to the player's real live mouse grid
+		return MouseGcd.quantize(delta);
 	}
-
-	// ── Tick callback ────────────────────────────────────────────────────
 
 	public void tick(MinecraftClient client) {
 		if (!isAllowed(client)) {
@@ -218,8 +189,7 @@ public final class StrafeImprovementsController {
 		if (!allowedForSwordSprint()) resetSprintCadence();
 	}
 
-	// ── markAttack — schedule juke + pivot ───────────────────────────────
-
+	/** Schedules a strafe burst and optional pivot after a landed hit on a player. */
 	public void markAttack(MinecraftClient client, Entity entity) {
 		if (!isAllowed(client) || !(entity instanceof PlayerEntity) || entity == client.player) {
 			return;
@@ -230,8 +200,7 @@ public final class StrafeImprovementsController {
 		if (rng.nextDouble() < tuning.skipChancePct() / 100.0D) return;
 
 		long now = System.nanoTime();
-		// Don't force a fresh juke on every rapid trigger hit — that's erratic, machine-
-		// gun movement. Leave a human gap between repositions.
+		// Throttle repositions so rapid hits do not each trigger a step.
 		if (now - lastJukeNanos < tuning.intervalMs() * 1_000_000L) return;
 		lastJukeNanos = now;
 		double strength = tuning.strengthPct() / 100.0D;
@@ -242,8 +211,7 @@ public final class StrafeImprovementsController {
 		reactionMs = Math.max(tuning.reactionMinMs(), reactionMs);
 		boolean swordMode = CombatModePolicy.mode(config) == CombatMode.SWORD;
 		if (swordMode) {
-			// A post-hit S-tap must begin on the next plausible keyboard tick, not after
-			// the opponent's trade window has already elapsed.
+			// The post-hit tap must land inside the trade window.
 			reactionMs = Math.min(reactionMs, 14D + Math.abs(rng.nextGaussian()) * 13D);
 		}
 		if (tuning.randomAngle()) {
@@ -252,11 +220,7 @@ public final class StrafeImprovementsController {
 			yawOffsetDeg = rng.nextGaussian() * 4.0D;
 		}
 
-		// ── Strafe burst (real input-driven juke) ────────────────────────
-		// Step length scales with Reach/Strength but stays SLIGHT — a couple of
-		// ticks of side-step, not a retreat — so you slip the crosshair and keep
-		// the target in front of you. Direction tends to alternate so it reads
-		// like real footwork, not a metronome.
+		// Step length scales with reach and strength; direction tends to alternate.
 		int dir = (rng.nextDouble() < 0.72D) ? -lastDir : (rng.nextBoolean() ? 1 : -1);
 		if (dir == 0) dir = rng.nextBoolean() ? 1 : -1;
 		lastDir = dir;
@@ -264,9 +228,7 @@ public final class StrafeImprovementsController {
 		double durMs = tuning.reachMs() * (0.22D + rng.nextDouble() * 0.26D) * (0.85D + 0.4D * strength);
 		durMs = Math.max(80D, Math.min(tuning.maxBurstMs(), durMs));
 
-		// The retreat begins through KeyboardInput on the next movement tick. Vanilla
-		// naturally stops sprint when that real backward input arrives; no sprint state,
-		// velocity, or movement packet is forged.
+		// Vanilla drops sprint on its own when the backward input arrives.
 		boolean canBack = tuning.backwardStep();
 
 		long start = now + ns(reactionMs);
@@ -276,7 +238,7 @@ public final class StrafeImprovementsController {
 		back1   = canBack;
 
 		if (rng.nextDouble() < tuning.doubleTapChance()) {
-			// Opposite-side counter-step a beat later — the classic juke/counter-juke.
+			// Opposite-side counter-step a beat later.
 			long s2 = b1End + ns(60D + rng.nextDouble() * 170D);
 			double d2 = durMs * (0.55D + rng.nextDouble() * 0.45D);
 			b2Start = s2;
@@ -292,31 +254,25 @@ public final class StrafeImprovementsController {
 		sprintPauseUntilNanos = movementEnd + ns(resumeMs);
 		resetSprintCadence();
 
-		// ── Pivot rotation ───────────────────────────────────────────────
-		// 70% chance when random-angle is on, 30% when subtle mode. The head turns
-		// toward the step so body and view move together. BUT if Aim Assist is on it
-		// already owns the head — a second module turning the yaw in the same tick is
-		// the "weird movement", and two rotation sources fighting is asking for
-		// trouble — so we leave the head entirely to Aim and only juke the body.
+		// Suppressed entirely when melee aim is on, so only one module owns the yaw.
 		double pivotOdds = CombatModePolicy.enabled(config, CombatFeature.MELEE_AIM)
 				? 0.0D : tuning.pivotChance();
 		if (dir1 != 0 && rng.nextDouble() < pivotOdds) {
-			// Mostly turn the head the way we're stepping; occasionally the other way.
 			double direction = rng.nextDouble() < 0.75D ? dir : -dir;
 
 			double roll = rng.nextDouble();
 			double angleDeg;
 			if (roll < 0.15D) {
-				angleDeg = 4D + rng.nextDouble() * 6D;        // subtle
+				angleDeg = 4D + rng.nextDouble() * 6D;
 			} else if (roll < 0.75D) {
-				angleDeg = 10D + rng.nextDouble() * 12D;      // moderate
+				angleDeg = 10D + rng.nextDouble() * 12D;
 			} else {
-				angleDeg = 18D + rng.nextDouble() * 12D;      // larger sidestep
+				angleDeg = 18D + rng.nextDouble() * 12D;
 			}
 
 			pivotTotalDeg    = (float) (angleDeg * direction);
 			pivotAppliedDeg  = 0F;
-			// Pivot starts slightly after the step begins — body leads, head follows.
+			// Pivot starts slightly after the step so the body leads.
 			double pivotDelayMs = reactionMs * 0.55D + rng.nextDouble() * 55D;
 			pivotStartNanos    = now + ns(pivotDelayMs);
 			pivotDurationNanos = ns(130D + rng.nextDouble() * 200D
@@ -325,8 +281,6 @@ public final class StrafeImprovementsController {
 			clearPivot();
 		}
 	}
-
-	// ── Helpers ──────────────────────────────────────────────────────────
 
 	public String status(MinecraftClient client) {
 		if (!CombatModePolicy.enabled(config, CombatFeature.STRAFE)) return "Off";
@@ -360,8 +314,7 @@ public final class StrafeImprovementsController {
 				|| player.isTouchingWater() || player.isInLava() || player.isGliding()
 				|| player.getAbilities().flying || player.horizontalCollision
 				|| !player.getHungerManager().canSprint()) return false;
-		// Preserve an already-real sprint through an ordinary jump, but do not initiate
-		// sprint in the air where it would interfere with a deliberate crit attempt.
+		// Keep an existing sprint through a jump, but never start one mid-air; that breaks crits.
 		if (!player.isOnGround() && !player.isSprinting()) return false;
 		return !player.isOnGround() || safeInputStep(client,
 				input.left() == input.right() ? 0 : input.left() ? -1 : 1, false, true);

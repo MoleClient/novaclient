@@ -46,9 +46,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/** Scans loaded chunks for bases, tunnels, shafts and pockets, and renders them as boxes. */
 public final class AdvancedEspRenderer {
 	private static final int SCAN_INTERVAL_TICKS = 60;
-	/** Fat per-tick time budget right after activation, so findings appear instantly. */
+	// Raised per-tick budget right after activation so findings appear quickly.
 	private static final long BURST_BUDGET_NANOS = 12_000_000L;
 	private static final int MIN_CHUNK_RADIUS = 2;
 	private static final int MAX_CHUNK_RADIUS = 12;
@@ -57,9 +58,8 @@ public final class AdvancedEspRenderer {
 	private static final int FADE_IN_TICKS = 6;
 	private static final int FADE_OUT_TICKS = 26;
 	private static final int STALE_TICKS = SCAN_INTERVAL_TICKS + FADE_OUT_TICKS;
-	// Referencing the shared layers here forces their registered pipelines to be
-	// created during client initialization, before Minecraft compiles pipelines
-	// in the first resource reload.
+	// Referencing the shared layers here registers their pipelines during client init,
+	// before the first resource reload compiles pipelines.
 	private static final RenderLayer ADVANCED_LINES = DonutWorldRenderer.LINES;
 	private static final RenderLayer ADVANCED_FILLS = createFillLayer();
 
@@ -70,7 +70,7 @@ public final class AdvancedEspRenderer {
 	private boolean wasActive;
 	private ClientWorld lastWorld;
 
-	// ── Incremental scan state (one cycle is spread across many ticks) ─────────
+	// Incremental scan state; one cycle spans many ticks.
 	private final List<long[]> scanQueue = new ArrayList<>();
 	private int scanCentreChunkX = Integer.MIN_VALUE;
 	private int scanCentreChunkZ = Integer.MIN_VALUE;
@@ -79,14 +79,14 @@ public final class AdvancedEspRenderer {
 	private int scanMaxY;
 	private int scanCycleStartTick;
 	private int lastCycleTicks = SCAN_INTERVAL_TICKS;
-	/** Loaded chunks actually walked this cycle; a trivial cycle must not define the display window. */
+	/** Loaded chunks actually walked this cycle; feeds the display window. */
 	private int scannedLoadedChunks;
 	private boolean scanNether;
 	private int burstTicks;
 	private boolean wasChunkStreamBusy;
 	private int failureCount;
 	private int lastFailureTick = Integer.MIN_VALUE;
-	private int lastCompletedTick; // age the last full cycle finished — feeds the stall watchdog
+	private int lastCompletedTick; // player age when the last full cycle finished; drives the stall watchdog
 
 	public AdvancedEspRenderer(ProFPSConfig config) {
 		this.config = config;
@@ -103,9 +103,8 @@ public final class AdvancedEspRenderer {
 		if (failedClosed) return;
 		if (client.world == null || client.player == null) return;
 
-		// Start scanning IMMEDIATELY when the module is switched on, and forget
-		// everything from a previous world — player.age resets across worlds, so
-		// a stale nextScanTick could otherwise postpone the first scan by minutes.
+		// Scan at once on activation and drop state from a previous world; player.age
+		// resets across worlds, so a stale nextScanTick would postpone the first scan.
 		if (!wasActive || client.world != lastWorld) {
 			if (client.world != lastWorld) findings.clear();
 			scanQueue.clear();
@@ -120,8 +119,7 @@ public final class AdvancedEspRenderer {
 			nextScanTick = 0;
 		}
 
-		// Manual "Reload" button (Advanced ESP settings) — wipe and re-scan the area
-		// around you right now, at full burst budget.
+		// Manual reload from the settings screen: wipe and re-scan at full burst budget.
 		if (config.donutAdvancedEspReloadRequested) {
 			config.donutAdvancedEspReloadRequested = false;
 			findings.clear();
@@ -131,32 +129,19 @@ public final class AdvancedEspRenderer {
 			lastCompletedTick = client.player.age;
 		}
 
-		// Stall watchdog. This is what keeps the overlay alive when you stay put in
-		// terrain that is already loaded: no chunk packets arrive, so the
-		// stream-edge burst below can never fire again, and without this the
-		// module runs only on the slow path until its findings age out and the
-		// screen goes quietly blank until an RTP.
-		//
-		// It deliberately does NOT require an empty queue. The stall it exists for
-		// is a cycle crawling on a starved budget, which by definition still has
-		// entries in it — the old queue-empty condition could never be true at the
-		// same time as the fault, and it also reset its own clock, so it never
-		// fired at all. The clock now advances only on a genuinely completed
-		// cycle, so "no full coverage in a while" is what triggers it.
+		// Stall watchdog: standing still in already-loaded terrain produces no chunk
+		// packets, so the stream-edge burst below never fires. lastCompletedTick only
+		// advances on a genuinely completed cycle, and is deliberately not stamped here,
+		// so the watchdog keeps firing until coverage actually completes.
 		if (client.player.age - lastCompletedTick > SCAN_INTERVAL_TICKS * 4) {
 			scanQueue.clear();
 			nextScanTick = 0;
 			burstTicks = Math.max(burstTicks, 5);
-			// Do not stamp lastCompletedTick here: nothing completed. Stamping it
-			// was what made the old watchdog fire once and then believe it had
-			// fixed the problem.
 			lastCompletedTick = client.player.age - SCAN_INTERVAL_TICKS * 2;
 		}
 
-		// A chunk-stream wave just ended (login, teleport, walking into fresh
-		// terrain): burst-rescan immediately. The activation burst alone kept
-		// firing BEFORE the server had streamed the terrain in — it scanned
-		// air and the area then trickled in on the reduced budget.
+		// A chunk-stream wave just ended: burst-rescan, since the activation burst may
+		// have run before the server streamed the terrain in.
 		boolean streaming = ScanBudget.isChunkLoadBusy(client);
 		if (wasChunkStreamBusy && !streaming) {
 			burstTicks = Math.max(burstTicks, 5);
@@ -165,18 +150,12 @@ public final class AdvancedEspRenderer {
 		wasChunkStreamBusy = streaming;
 
 
-		// Flying outruns the cycle. A sweep is planned around one point and takes
-		// hundreds of ticks; at 40 blocks a second the player is two and a half
-		// chunks further on every second, so by the end the queue is grinding
-		// terrain far behind and nothing ahead was ever queued. Re-plan around
-		// the new position instead. The queue is ordered nearest-first, so what
-		// is closest always gets scanned first no matter how often this fires.
+		// A cycle spans hundreds of ticks, so re-plan once the player leaves its centre.
 		if (!scanQueue.isEmpty()
 				&& ScanBudget.leftScanArea(client, scanCentreChunkX, scanCentreChunkZ, 3)) {
 			scanQueue.clear();
 			burstTicks = Math.max(burstTicks, 3);
-			// Movement re-centres prove the scanner is alive, so they satisfy the
-			// stall watchdog; standing still produces none, which is the case it guards.
+			// A re-centre proves the scanner is running, so it satisfies the stall watchdog.
 			lastCompletedTick = client.player.age;
 			nextScanTick = 0;
 		}
@@ -186,18 +165,16 @@ public final class AdvancedEspRenderer {
 				if (burstTicks <= 0 && !ScanBudget.tryClaim(client.player.age)) return;
 				nextScanTick = client.player.age + SCAN_INTERVAL_TICKS;
 				beginScan(client);
-				stepScan(client); // start chewing the queue this very tick
+				stepScan(client); // begin draining the queue on this same tick
 			} else {
 				stepScan(client);
 			}
 		} catch (RuntimeException exception) {
-			// Consecutive failures, not lifetime ones — see Chunk Activity.
+			// Count consecutive failures only; a quiet minute resets the counter.
 			if (client.player.age - lastFailureTick > 1200) failureCount = 0;
 			lastFailureTick = client.player.age;
 			failureCount++;
 			if (failureCount < 3) {
-				// Transient hiccup: drop this cycle and retry shortly instead of
-				// silently turning the module off mid-session.
 				ProFPS.LOGGER.warn("Advanced ESP scan failed (attempt {}); retrying.", failureCount, exception);
 				scanQueue.clear();
 				nextScanTick = client.player.age + 100;
@@ -207,14 +184,13 @@ public final class AdvancedEspRenderer {
 			findings.clear();
 			scanQueue.clear();
 			config.donutAdvancedEsp = false;
-			// Not saved on purpose; a transient failure must not persist as an
-			// off switch the player never chose.
+			// Intentionally not saved, so a transient failure does not persist.
 			failedClosed = true;
 			announceDisabled(client, "Advanced ESP");
 		}
 	}
 
-	/** Tell the player a scan failed hard, so the silent off-switch isn't a mystery. */
+	/** Posts a chat message when a module disables itself after a failure. */
 	private static void announceDisabled(MinecraftClient client, String module) {
 		if (client == null || client.inGameHud == null) return;
 		client.inGameHud.getChatHud().addMessage(Text.literal("[ProFPS] ").formatted(Formatting.DARK_GRAY)
@@ -234,10 +210,9 @@ public final class AdvancedEspRenderer {
 			MatrixStack.Entry entry = matrices.peek();
 			Matrix4fc position = entry.getPositionMatrix();
 			float renderTick = mc.player.age + mc.getRenderTickCounter().getTickProgress(false);
-			// The context's immediate provider has exactly one active buffer. Render requests
-			// are collected first, then submitted in layer-wide passes: fills, lines, labels.
-			// Requesting a new layer flushes the previous one, so retaining both consumers and
-			// interleaving writes causes IllegalStateException: "Not building!".
+			// The immediate provider holds one active buffer, so requests are collected first
+			// and submitted in layer-wide passes: fills, then lines, then labels. Interleaving
+			// writes across layers throws IllegalStateException: "Not building!".
 			List<BaseLabelReq> baseLabels = new ArrayList<>();
 			List<WorldLabelReq> worldLabels = new ArrayList<>();
 			List<BaseRenderReq> visibleBases = new ArrayList<>();
@@ -246,12 +221,8 @@ public final class AdvancedEspRenderer {
 			double range = MathHelper.clamp(config.donutAdvancedEspRange, 48, 1024);
 			int stale = staleWindowTicks();
 
-			// ── Base region ──────────────────────────────────────────────────
-			// Container-confirmed Base chunks SEED a region; adjacent player-built
-			// (PLACED) chunks are flood-pulled into it — a built room with no
-			// visible chest still belongs to the base. The region renders as one
-			// merged shape of full-chunk tiles, so the WHOLE irregular base is
-			// covered instead of only the chunks that happen to hold a container.
+			// Base region: container-confirmed BASE chunks seed the region, and adjacent
+			// PLACED chunks are flood-filled into it. Renders as merged full-chunk tiles.
 			Map<Long, BaseTile> baseRegion = new HashMap<>();
 			for (Finding finding : findings) {
 				if (finding.type() == FindingType.BASE) {
@@ -283,14 +254,12 @@ public final class AdvancedEspRenderer {
 				}
 			}
 
-			// Flatten each connected region to a shared Y span so the merged
-			// shape has a clean even top/bottom instead of a jagged one.
+			// Flatten each connected region to a shared Y span so the merged shape has an
+			// even top and bottom.
 			unifyRegionY(baseRegion);
 
-			// Pockets that swallow PLACED markers. The base region is handled by
-			// CHUNK membership below (so every red marker in a base chunk is
-			// hidden, not just those whose box overlaps a tile) — that's what
-			// kills the red-boxes-inside-yellow-boxes nesting.
+			// Pockets suppress PLACED markers inside them; base-region suppression is by
+			// chunk membership below.
 			List<Box> pocketBoxes = new ArrayList<>();
 			for (Finding finding : findings) {
 				if (finding.type() == FindingType.POCKET) pocketBoxes.add(finding.box());
@@ -311,7 +280,7 @@ public final class AdvancedEspRenderer {
 				}
 			}
 
-			// ── Everything else (tunnels, shafts, pockets, spawners, stray placed) ──
+			// Tunnels, shafts, pockets, spawners and stray placed markers.
 			int rendered = 0;
 			for (Finding finding : findings) {
 				if (rendered >= MAX_FINDINGS) break;
@@ -353,7 +322,7 @@ public final class AdvancedEspRenderer {
 						(0.76F + 0.20F * render.pulse()) * render.fade());
 			}
 
-			// All geometry submitted — text is the final layer transition.
+			// All geometry submitted; text is the final layer transition.
 			for (BaseLabelReq label : baseLabels) {
 				drawBaseLabel(ctx, matrices, camera, mc, label.box(), label.fade());
 			}
@@ -370,7 +339,7 @@ public final class AdvancedEspRenderer {
 		}
 	}
 
-	/** True when a marker centre sits within any area (Base/Pocket) box — it's nested. */
+	/** True when a marker centre sits inside any area box, meaning it is nested. */
 	private static boolean isInsideArea(Vec3d center, List<Box> areaBoxes) {
 		for (Box box : areaBoxes) {
 			if (box.contains(center)) return true;
@@ -381,7 +350,7 @@ public final class AdvancedEspRenderer {
 	/** A base-region tile: a full-chunk box plus its current fade. */
 	private record BaseTile(Box box, float fade) {}
 
-	/** Deferred text labels, drawn after all geometry so they can't strand a half-built buffer. */
+	/** Deferred text label, drawn after all geometry to avoid stranding a half-built buffer. */
 	private record BaseLabelReq(Box box, float fade) {}
 
 	private record WorldLabelReq(Finding finding, float fade) {}
@@ -464,7 +433,7 @@ public final class AdvancedEspRenderer {
 		return anchors;
 	}
 
-	/** Outline only the region's outer perimeter — a side face is skipped if the chunk across it is in the region. */
+	/** Outlines only the region's outer perimeter, skipping faces shared with another region chunk. */
 	private void drawBaseRegionFaces(VertexConsumer lines, Matrix4fc pos, MatrixStack.Entry entry,
 			Box box, Vec3d cam, AreaColor color, float alpha, Set<Long> regionKeys) {
 		int cx = MathHelper.floor(box.minX) >> 4;
@@ -503,7 +472,7 @@ public final class AdvancedEspRenderer {
 		line(lines, pos, entry, cam, hx1, y0, hz1, hx1, y1, hz1, color, alpha); // post B
 	}
 
-	/** Open a scan cycle: enqueue every in-range chunk, nearest first. */
+	/** Opens a scan cycle: snapshots bounds and enqueues every in-range chunk. */
 	private void beginScan(MinecraftClient client) {
 		ClientWorld world = client.world;
 		Vec3d center = client.player.getEntityPos();
@@ -524,7 +493,7 @@ public final class AdvancedEspRenderer {
 				scanQueue.add(new long[]{chunkX, chunkZ});
 			}
 		}
-		// Farthest first in the list — chunks pop off the tail, so nearest resolve soonest.
+		// Farthest first: chunks pop off the tail, so the nearest resolve soonest.
 		scanQueue.sort(Comparator.comparingInt(c -> {
 			int dx = (int) c[0] - centerChunkX;
 			int dz = (int) c[1] - centerChunkZ;
@@ -532,11 +501,7 @@ public final class AdvancedEspRenderer {
 		}));
 	}
 
-	/**
-	 * Process queued chunks until this tick's shared budget runs out.
-	 * Findings commit IMMEDIATELY per chunk (nearest chunks were queued last,
-	 * so what's around the player shows up within a tick or two of cycle start).
-	 */
+	/** Processes queued chunks until this tick's budget runs out; findings commit per chunk. */
 	private void stepScan(MinecraftClient client) {
 		int tick = client.player.age;
 		long pool;
@@ -565,9 +530,8 @@ public final class AdvancedEspRenderer {
 			scanChunk(chunk, scanMinY, scanMaxY, chunkBuffer);
 			if (!chunkBuffer.isEmpty()) {
 				chunkBuffer.sort(Comparator.comparingDouble(Finding::score).reversed());
-				// Neighbouring same-type findings get ABSORBED (boxes unioned),
-				// not dropped — dropping them is why a long tunnel or a wide
-				// excavated room used to keep only one small fragment of outline.
+				// Neighbouring same-type findings are absorbed by unioning boxes rather
+				// than dropped, so a long tunnel keeps its full outline.
 				List<Finding> deduped = new ArrayList<>();
 				for (Finding finding : chunkBuffer) {
 					Finding match = duplicateOf(finding, deduped);
@@ -584,14 +548,7 @@ public final class AdvancedEspRenderer {
 		}
 	}
 
-	/** All per-chunk detectors, sharing one section classification. */
-	/**
-	 * Terrain only. Containers, spawners and player-placed clusters used to be
-	 * found here too, which meant anybody who wanted a stash overlay also had to
-	 * carry this cavity scan and read its markers on top of theirs. That work now
-	 * belongs to Storage ESP, which stands on its own; this module answers only
-	 * "has the ground been dug into, and how".
-	 */
+	/** Runs the terrain-cavity detectors for one chunk, sharing a single section classification. */
 	private void scanChunk(WorldChunk chunk, int minY, int maxY, List<Finding> out) {
 		SectionFlags flags = classifySections(chunk);
 		if (config.donutAdvancedShowShafts) scanVerticalShafts(chunk, flags, minY, maxY, out);
@@ -601,24 +558,16 @@ public final class AdvancedEspRenderer {
 	}
 
 	/**
-	 * Staircase mines: the descending diagonal corridor players dig to walk down
-	 * to their base. It is the one cavity shape the shaft and tunnel tests can
-	 * both miss — a shaft slice needs a near-enclosed vertical column, and a
-	 * tunnel run needs a level floor, so a flight of steps registers as neither.
-	 *
-	 * <p>A step is one 2-high air cell whose floor sits exactly one block below
-	 * its neighbour's along a fixed horizontal heading. Requiring the same
-	 * heading and a consistent descent for the whole run is what separates a dug
-	 * staircase from a cave that happens to slope.
+	 * Detects staircase mines: runs of 2-high air cells descending one block per step
+	 * along a fixed heading. Shaft and tunnel detection both miss this shape.
 	 */
 	private void scanStaircases(WorldChunk chunk, SectionFlags flags, int minY, int maxY, List<Finding> out) {
 		BlockPos.Mutable pos = new BlockPos.Mutable();
 		int originX = chunk.getPos().getStartX();
 		int originZ = chunk.getPos().getStartZ();
-		// Stops short of the top so the ceiling probe reads a real block: out of
-		// bounds resolves to bedrock, which would pass as a roof at world height.
+		// Stop short of the top: out-of-bounds resolves to bedrock, which would read as a roof.
 		for (int y = minY + 1; y <= maxY - 3; y++) {
-			// Sections that are solid through, or entirely air, cannot hold a flight.
+			// Sections that are fully solid or fully air cannot hold a flight.
 			if (flagAt(chunk, flags.empty, y, true) || flagAt(chunk, flags.noAir, y, true)) {
 				y = sectionTop(y);
 				continue;
@@ -627,17 +576,14 @@ public final class AdvancedEspRenderer {
 				for (int x = 1; x < 15; x++) {
 					int worldX = originX + x;
 					int worldZ = originZ + z;
-					// Cheap rejects first: without two-high air under a solid
-					// ceiling there is no corridor here at all, and that alone
-					// discards the entire open surface of the world.
+					// Cheap reject: no two-high air under a solid ceiling means no corridor.
 					if (!isTwoHighAir(chunk, pos, worldX, y, worldZ)) continue;
 					pos.set(worldX, y + 2, worldZ);
 					if (!isNaturalSolid(blockAt(chunk, pos))) continue;
 					for (int[] heading : STAIR_HEADINGS) {
 						int dx = heading[0];
 						int dz = heading[1];
-						// Only start at the top of a flight: if the step above and
-						// behind is also a step, this run was already emitted.
+						// Start only at the top of a flight, so a run is emitted once.
 						if (isStairStep(chunk, pos, worldX - dx, y + 1, worldZ - dz, dx, dz)) continue;
 						int run = staircaseRun(chunk, worldX, y, worldZ, dx, dz);
 						if (run < 6) continue;
@@ -675,28 +621,14 @@ public final class AdvancedEspRenderer {
 	}
 
 	/**
-	 * One step of a <em>dug</em> flight: a roofed, two-high, walled corridor cell.
-	 *
-	 * <p>Descending one block per step is not evidence of anything on its own —
-	 * that is what a hillside is, and what most cave floors are, which is why a
-	 * looser version of this test lit up every biome on the map. What actually
-	 * separates a staircase mine from terrain is that it is an enclosed tunnel:
-	 * <ul>
-	 *   <li><b>A ceiling.</b> Open ground has sky above it. This single check
-	 *       discards the entire outdoor surface of the world.</li>
-	 *   <li><b>Walls on both flanks</b>, perpendicular to the descent — a
-	 *       staircase is one block wide; a cave floor is not.</li>
-	 *   <li><b>Little surrounding air.</b> Caverns hold large open volumes even
-	 *       where a single slice looks corridor-shaped.</li>
-	 * </ul>
-	 * These are the same predicates the horizontal tunnel detector uses, which is
-	 * why that one never had this problem.
+	 * True for one step of a dug flight: a two-high air cell with a solid ceiling, solid
+	 * walls on both flanks perpendicular to the descent, and little surrounding air.
 	 */
 	private boolean isStairStep(WorldChunk chunk, BlockPos.Mutable pos, int x, int y, int z, int dx, int dz) {
 		if (!isTwoHighAir(chunk, pos, x, y, z)) return false;
 		pos.set(x, y + 2, z);
 		if (!isNaturalSolid(blockAt(chunk, pos))) return false;
-		// Perpendicular to the heading: for a run along X the flanks are ±Z.
+		// Flanks are perpendicular to the heading: a run along X is flanked on Z.
 		int flankX = dz;
 		int flankZ = dx;
 		if (!sideWallSolid(chunk, pos, x + flankX, y, z + flankZ)) return false;
@@ -705,9 +637,8 @@ public final class AdvancedEspRenderer {
 	}
 
 	/**
-	 * Mask-resistant container/spawner scan. A lone chest is shown only as a
-	 * placed marker; a yellow Base region still requires a conservative
-	 * multi-container pattern, so a single stray chest never paints a base.
+	 * Scans block entities for containers and spawners. A lone container yields a PLACED
+	 * marker only; a BASE finding requires the multi-container pattern below.
 	 */
 	private void scanBlockEntitiesOfInterest(WorldChunk chunk, int minY, int maxY, List<Finding> out,
 			boolean wantSpawners, boolean wantPlaced) {
@@ -766,7 +697,7 @@ public final class AdvancedEspRenderer {
 				x0 + 16.0, maxEvidenceY + 2.0, z0 + 16.0), "Base", FindingType.BASE, score));
 	}
 
-	/** Merge one chunk's findings into the live list right away (no prune — that happens at cycle end). */
+	/** Merges one chunk's findings into the live list; pruning happens at cycle end. */
 	private void mergeChunk(List<Finding> detected, int tick) {
 		for (Finding raw : detected) {
 			Finding existing = findMatching(raw);
@@ -777,7 +708,7 @@ public final class AdvancedEspRenderer {
 				existing.updateFrom(raw, tick);
 			}
 		}
-		// Soft cap during a cycle; the hard cap + sort happens in finishCycle.
+		// Soft cap during a cycle; the hard cap and sort happen in finishCycle.
 		while (findings.size() > MAX_FINDINGS * 2) {
 			findings.remove(findings.size() - 1);
 		}
@@ -786,10 +717,8 @@ public final class AdvancedEspRenderer {
 	private void finishCycle(int tick) {
 		failureCount = 0;
 		lastCompletedTick = tick;
-		// Only a cycle that actually walked loaded chunks describes how long a
-		// real sweep takes. A cycle that skipped almost everything as unloaded
-		// finishes in a tick, and letting that define the display window is what
-		// starved the next real cycle's findings out of view.
+		// Only a cycle that walked a meaningful number of loaded chunks describes how long
+		// a real sweep takes, so trivial cycles must not define the display window.
 		if (scannedLoadedChunks >= 16) {
 			lastCycleTicks = Math.max(1, tick - scanCycleStartTick);
 		}
@@ -803,16 +732,8 @@ public final class AdvancedEspRenderer {
 	}
 
 	/**
-	 * How long a finding stays drawable — at least two scan cycles, so a slow
-	 * incremental cycle never blinks the overlay out between refreshes.
-	 *
-	 * <p>The window has to account for the cycle that is running <em>now</em>, not
-	 * just the last one that finished. A cycle where most queued chunks were
-	 * unloaded drains almost instantly and reports a length of one tick, which
-	 * used to collapse this to the 86-tick floor. The next real cycle then takes
-	 * hundreds of ticks, so every finding aged past the window and rendered at
-	 * zero alpha — the overlay went completely blank while the list was still
-	 * full of valid findings.
+	 * How long a finding stays drawable: at least two scan cycles. Measured against the
+	 * longer of the last completed cycle and the one currently running.
 	 */
 	private int staleWindowTicks() {
 		int elapsed = 0;
@@ -862,8 +783,7 @@ public final class AdvancedEspRenderer {
 				continue;
 			}
 			if (raw.type() == FindingType.BASE) {
-				// Bases merge only on genuine overlap — distance-merging let
-				// neighbouring detections union into one giant runaway box.
+				// Bases merge only on genuine overlap; distance merging unions boxes without bound.
 				if (raw.box().intersects(existing.box()) && distance < bestDistance) {
 					best = existing;
 					bestDistance = distance;
@@ -877,8 +797,6 @@ public final class AdvancedEspRenderer {
 		}
 		return best;
 	}
-
-	// ── Per-section classification ──────────────────────────────────────────────
 
 	/** Per-section facts used to skip work 16 Y levels at a time. */
 	private static final class SectionFlags {
@@ -902,7 +820,7 @@ public final class AdvancedEspRenderer {
 				flags.empty[i] = true;
 				continue;
 			}
-			// Palette-level checks: near-free, conservative (stale palette entries report as present).
+			// Palette-level checks are conservative: stale palette entries report as present.
 			flags.noAir[i] = !section.hasAny(BlockState::isAir);
 			flags.hasTarget[i] = section.hasAny(state -> isSpawnerBlock(state) || isArtificialBlock(state));
 		}
@@ -921,7 +839,7 @@ public final class AdvancedEspRenderer {
 		return flags[index];
 	}
 
-	/** Single pass for spawners + player-placed blocks, restricted to sections whose palette can contain them. */
+	/** Single pass for spawners and player-placed blocks, limited to sections whose palette matches. */
 	private void scanBlocksOfInterest(WorldChunk chunk, SectionFlags flags, int minY, int maxY, List<Finding> out,
 			boolean wantSpawners, boolean wantPlaced) {
 		Map<CellKey, Cluster> clusters = wantPlaced ? new HashMap<>() : null;
@@ -964,10 +882,8 @@ public final class AdvancedEspRenderer {
 		}
 
 		if (clusters == null) return;
-		// Generated structures (dungeons, mineshafts, strongholds, ruined
-		// portals, ancient cities, trail ruins...) are full of blocks that read
-		// as "player-placed". When the chunk carries a structure fingerprint,
-		// none of its clusters are trusted — only spawner findings survive.
+		// Generated structures contain many blocks that read as player-placed, so a chunk
+		// with a structure fingerprint keeps only its spawner findings.
 		if (structures.isGeneratedStructure(scanNether)) return;
 
 		int baseBlocks = 0;
@@ -978,9 +894,8 @@ public final class AdvancedEspRenderer {
 			if (cluster.count < 2) continue;
 			Box box = cluster.box().expand(1.5, 1.0, 1.5);
 			if (hasGeneratedStructureSignature(chunk, pos, box)) continue;
-			// Cobble/planks/stone-brick-only clusters are too common in natural
-			// generation to flag alone; demand a strong player block (chest,
-			// torch, glass...) or a genuinely substantial pile of material.
+			// Cobble, planks and stone bricks are common in worldgen, so require either a
+			// strong player block or at least 8 blocks of material.
 			if (cluster.strong == 0 && cluster.count < 8) continue;
 			if (cluster.count <= 6) {
 				for (BlockPos block : cluster.blocks) {
@@ -990,8 +905,8 @@ public final class AdvancedEspRenderer {
 			} else {
 				out.add(new Finding(cluster.box().expand(0.12, 0.12, 0.12), "Blocks", FindingType.PLACED, 58.0 + cluster.count * 2.0));
 			}
-			// Underground clusters feed the chunk-level Base detector. (Capped at
-			// y<=48 so surface villages don't paint Base boxes everywhere.)
+			// Only clusters at or below y=48 feed the chunk-level Base detector, so surface
+			// villages do not produce Base boxes.
 			if (cluster.maxY <= 48) {
 				baseBlocks += cluster.count;
 				baseStrong += cluster.strong;
@@ -1000,19 +915,11 @@ public final class AdvancedEspRenderer {
 			}
 		}
 
-		// Lots of player-placed material in one chunk = a built area. A Base
-		// headline needs real evidence though: plenty of material, several blocks
-		// worldgen never arranges this way, AND at least one actual container.
-		// The container requirement is what stops crystal/anchor PvP craters
-		// (obsidian + crying obsidian everywhere, no chests) from being boxed
-		// yellow as "bases".
+		// A Base needs bulk material, several strong player blocks and at least one
+		// container. The container requirement excludes crystal-PvP obsidian craters.
 		if (baseBox != null && baseBlocks >= 14 && baseStrong >= 4 && baseContainers >= 1) {
-			// Box the FULL chunk footprint (Y from the clusters), not the tight
-			// cluster AABB. A base is rarely a neat rectangle — the tight box kept
-			// flagging only the cluster cores and left the rest of the build
-			// uncovered. Full-chunk boxes also tile seamlessly across chunks, and
-			// the renderer merges touching base chunks into one region, so a
-			// multi-chunk irregular base is covered whole instead of in parts.
+			// Box the full chunk footprint, taking Y from the clusters. Full-chunk boxes
+			// tile seamlessly, so the renderer can merge touching base chunks into one region.
 			int x0 = chunk.getPos().getStartX();
 			int z0 = chunk.getPos().getStartZ();
 			Box fullChunk = new Box(x0, baseBox.minY - 1.0, z0, x0 + 16.0, baseBox.maxY + 1.0, z0 + 16.0);
@@ -1020,7 +927,7 @@ public final class AdvancedEspRenderer {
 		}
 	}
 
-	/** Real storage / utility containers — the load-bearing evidence for a Base. */
+	/** True for storage and utility containers, the required evidence for a Base finding. */
 	private boolean isContainerBlock(BlockState state) {
 		return state.isOf(Blocks.CHEST) || state.isOf(Blocks.TRAPPED_CHEST) || state.isOf(Blocks.BARREL)
 				|| state.isOf(Blocks.ENDER_CHEST) || state.getBlock() instanceof net.minecraft.block.ShulkerBoxBlock
@@ -1029,12 +936,7 @@ public final class AdvancedEspRenderer {
 				|| state.isOf(Blocks.BREWING_STAND);
 	}
 
-	/**
-	 * Whole-chunk tally of blocks that fingerprint world-generated structures.
-	 * The old per-cluster check kept missing dungeons/mineshafts whose mossy
-	 * cobble or spawner sat just outside one cluster's small search box; this
-	 * sees the fingerprint anywhere in the chunk's scanned sections.
-	 */
+	/** Whole-chunk tally of blocks that fingerprint world-generated structures. */
 	private static final class StructureTally {
 		int spawners, mossy, cobwebs, rails, suspicious, cryingObsidian, netherrack,
 				crackedStoneBricks, infested, sculk, reinforced, tnt, stoneBricks;
@@ -1081,8 +983,8 @@ public final class AdvancedEspRenderer {
 				int runStart = Integer.MIN_VALUE;
 				int runScore = 0;
 				for (int y = minY; y <= maxY; y++) {
-					// All-air sections have no walls; all-solid sections have no air —
-					// neither can hold a shaft slice. Close any run and jump past.
+					// All-air sections have no walls and all-solid sections have no air, so
+					// neither can hold a shaft slice. Close any open run and skip the section.
 					int index = sectionIndexAt(chunk, y);
 					if (index < 0 || index >= flags.empty.length || flags.empty[index] || flags.noAir[index]) {
 						if (runStart != Integer.MIN_VALUE) {
@@ -1141,8 +1043,8 @@ public final class AdvancedEspRenderer {
 		int startZ = chunk.getPos().getStartZ();
 
 		for (int y = minY; y <= maxY - 2; y++) {
-			// A tunnel slice needs 2-high air at y..y+1 and solid floor/walls —
-			// skip Y rows where either is impossible at the section level.
+			// A tunnel slice needs 2-high air at y..y+1 plus a solid floor and walls, so
+			// skip Y rows where the section flags make either impossible.
 			boolean airImpossible = flagAt(chunk, flags.noAir, y, false) && flagAt(chunk, flags.noAir, y + 1, false);
 			boolean solidImpossible = flagAt(chunk, flags.empty, y - 1, true) && flagAt(chunk, flags.empty, y, true)
 					&& flagAt(chunk, flags.empty, y + 1, true) && flagAt(chunk, flags.empty, y + 2, true);
@@ -1245,8 +1147,7 @@ public final class AdvancedEspRenderer {
 		int yStart = Math.max(minY, chunk.getBottomY() + 2);
 
 		for (int y = yStart; y <= maxY - 3; y += 3) {
-			// A pocket needs both air (the room) and solids (floor/ceiling/walls);
-			// skip windows that are entirely air sections or entirely solid sections.
+			// A pocket needs both air and solids, so skip all-air and all-solid windows.
 			boolean allEmpty = true;
 			for (int dy = -1; dy <= 4 && allEmpty; dy++) {
 				if (!flagAt(chunk, flags.empty, y + dy, true)) allEmpty = false;
@@ -1397,8 +1298,9 @@ public final class AdvancedEspRenderer {
 		return state.isOf(Blocks.SPAWNER) || state.isOf(Blocks.TRIAL_SPAWNER);
 	}
 
-	// Set lookups instead of isOf chains — these run for every block in MIXED
-	// sections, so a single hash probe beats up to 26 reference compares.
+	// Set lookups rather than isOf chains: these run per block in mixed sections, so one
+	// hash probe beats up to 26 reference compares.
+
 	/** The four cardinal headings a dug staircase can descend along. */
 	private static final int[][] STAIR_HEADINGS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 
@@ -1450,9 +1352,8 @@ public final class AdvancedEspRenderer {
 		return STRUCTURE_STONE_BLOCKS.contains(state.getBlock());
 	}
 
-	// Decor blocks that worldgen also uses (ruined portals, strongholds, trail
-	// ruins, ancient cities, bastions) — they still count as placed material,
-	// but they can't CONFIRM a base on their own.
+	// Decor blocks worldgen also places. They count as placed material but never as
+	// strong evidence for a base.
 	private static final Set<Block> STRUCTURE_PRONE_DECOR = Set.of(
 			Blocks.SMOOTH_STONE, Blocks.BRICKS, Blocks.IRON_BARS, Blocks.IRON_CHAIN,
 			Blocks.CRYING_OBSIDIAN, Blocks.GOLD_BLOCK, Blocks.TNT, Blocks.DECORATED_POT,
@@ -1470,7 +1371,7 @@ public final class AdvancedEspRenderer {
 				|| PlayerPlacedBlocks.isBuildDecor(state, scanNether);
 	}
 
-	/** Blocks that essentially only a player places underground — these CONFIRM a base. */
+	/** True for blocks only a player places underground; these count as strong base evidence. */
 	private boolean isStrongPlayerBlock(BlockState state) {
 		Block block = state.getBlock();
 		if (STRUCTURE_PRONE_DECOR.contains(block)) return false;
@@ -1662,18 +1563,15 @@ public final class AdvancedEspRenderer {
 
 		void updateFrom(Finding raw, int tick) {
 			if (type == FindingType.BASE) {
-				// Overlapping base areas union so one box covers the built area,
-				// but capped — unbounded unions were the giant yellow boxes. Past
-				// the cap, the freshest evidence box wins outright.
+				// Overlapping base areas union, capped at 36 blocks per horizontal axis;
+				// past the cap the freshest box wins.
 				Box merged = box.union(raw.box);
 				box = merged.getLengthX() <= 36.0 && merged.getLengthZ() <= 36.0 ? merged : raw.box;
 			} else if (type == FindingType.PLACED) {
 				box = blend(box, raw.box, 0.35);
 			} else {
-				// Tunnel/shaft/pocket re-detections EXTEND the outline — blending
-				// pulled the box toward each new segment and left most of the
-				// area uncovered. Only ballooning merges (e.g. perpendicular
-				// crossings) fall back to tracking the freshest box.
+				// Tunnel, shaft and pocket re-detections extend the outline; only unions
+				// that would balloon fall back to blending.
 				Box merged = tryUnion(type, box, raw.box);
 				box = merged != null ? merged : blend(box, raw.box, 0.35);
 			}
@@ -1681,7 +1579,7 @@ public final class AdvancedEspRenderer {
 			lastSeenTick = tick;
 		}
 
-		/** Merge a same-area detection from the same scan pass into this one. */
+		/** Merges a same-area detection from the same scan pass into this one. */
 		void absorb(Finding other) {
 			if (type != FindingType.PLACED) {
 				Box merged = tryUnion(type, box, other.box);
@@ -1690,17 +1588,12 @@ public final class AdvancedEspRenderer {
 			score = Math.max(score, other.score);
 		}
 
-		/**
-		 * Union two boxes when the result still tightly describes them (roughly
-		 * collinear/adjacent areas); null when the union would mostly be empty
-		 * space, so callers can fall back instead of painting air.
-		 */
+		/** Unions two boxes, or returns null when the result would be mostly empty space. */
 		private static Box tryUnion(FindingType type, Box a, Box b) {
 			Box union = a.union(b);
 			double combined = volume(a) + volume(b);
 			if (volume(union) > combined * 2.5 + 16.0) return null;
-			// A tunnel is a thin line by definition — merging two PARALLEL
-			// tunnels into one fat slab looked goofy. Keep unions tunnel-shaped.
+			// Keep tunnel unions thin so two parallel tunnels do not merge into a slab.
 			if (type == FindingType.TUNNEL && Math.min(union.getLengthX(), union.getLengthZ()) > 3.4) return null;
 			return union;
 		}

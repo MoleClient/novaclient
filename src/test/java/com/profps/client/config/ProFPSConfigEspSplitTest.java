@@ -20,14 +20,10 @@ final class ProFPSConfigEspSplitTest {
 
 		assertAll(
 				() -> assertEquals(112, config.configVersion),
-				// The overlay draws through terrain, so it may not switch itself
-				// on for somebody who never asked for it.
 				() -> assertFalse(config.donutStorageEsp),
 				() -> assertTrue(config.donutStorageShowChests),
 				() -> assertTrue(config.donutStorageShowShulkers),
 				() -> assertTrue(config.donutStorageShowRedstone),
-				// The module is named Hole/Tunnel/Stairs ESP, so stairs have to
-				// actually be on by default for the name to be honest.
 				() -> assertTrue(config.donutAdvancedShowStairs));
 	}
 

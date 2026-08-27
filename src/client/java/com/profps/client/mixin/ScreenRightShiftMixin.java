@@ -13,10 +13,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Lets Right Shift open the NovaClient Modules UI while on a MENU (no world) — the in-game
- * keybind only fires when no screen is open, so without this you couldn't reach Modules from
- * the title/options/multiplayer screens. In-world is left to the normal keybind. The home
- * Modules screen handles the key itself, so it's skipped here.
+ * Opens the Modules UI on Right Shift from menu screens, where the in-game keybind does
+ * not fire because a screen is open.
  */
 @Mixin(Screen.class)
 public abstract class ScreenRightShiftMixin {

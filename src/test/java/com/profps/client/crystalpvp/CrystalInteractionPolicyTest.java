@@ -41,9 +41,7 @@ class CrystalInteractionPolicyTest {
 
 	@Test
 	void topSpeedIsAtLeastThreeTicksLeanerThanTheOldFloor() {
-		// The old table's best case at 10 was 1 tick of padding after EVERY confirmation, i.e. two
-		// per place/break cycle on top of the round trip. Guard the new floor so a future tweak
-		// cannot quietly put that delay back.
+		// Two intervals per place/break cycle.
 		int worstCycle = CrystalInteractionPolicy.intervalTicks(10, 0) * 2;
 		assertTrue(worstCycle <= 4, "worstCycle=" + worstCycle);
 	}

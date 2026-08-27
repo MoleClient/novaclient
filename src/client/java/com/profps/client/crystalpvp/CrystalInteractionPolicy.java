@@ -6,12 +6,7 @@ import net.minecraft.util.math.MathHelper;
 final class CrystalInteractionPolicy {
 	private CrystalInteractionPolicy() {}
 
-	/**
-	 * Ticks to wait <em>after the world has already confirmed the last action</em> before the next
-	 * one. This is padding on top of the unavoidable server round trip. Even the top
-	 * setting keeps a one-tick floor: acting on the exact confirmation tick creates
-	 * a latency-locked response cadence that physical input cannot reproduce.
-	 */
+	/** Ticks to wait after the last action is confirmed before the next one. Minimum one tick. */
 	static int intervalTicks(int configuredSpeed, int sample) {
 		int speed = MathHelper.clamp(configuredSpeed, 1, 10);
 		int roll = MathHelper.clamp(sample, 0, 99);

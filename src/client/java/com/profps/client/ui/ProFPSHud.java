@@ -14,15 +14,11 @@ import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import org.joml.Matrix3x2fStack;
 
-/**
- * Top-left FPS readout, styled to match the Nova UI: "FPS" in orange and the number
- * in white, in the UI's own rounded font, sitting in a soft grey rounded pill like
- * the rest of the panel chrome.
- */
+/** Top-left FPS readout drawn in the Nova UI style. */
 public final class ProFPSHud implements HudRenderCallback {
-	private static final int ORANGE = 0xFFFF9D2E; // "FPS"
+	private static final int ORANGE = 0xFFFF9D2E; // "FPS" label
 	private static final int WHITE = 0xFFFFFFFF;   // the number
-	private static final int BOX = 0xD22D2D34;     // grayish translucent pill, like the UI
+	private static final int BOX = 0xD22D2D34;     // translucent pill background
 	private static final int BORDER = 0x1AFFFFFF;
 	private static final Style FONT = Style.EMPTY.withFont(new StyleSpriteSource.Font(Identifier.of(ProFPS.MOD_ID, "nova_bold")));
 	private static final float SCALE = 1.4F;
@@ -57,7 +53,7 @@ public final class ProFPSHud implements HudRenderCallback {
 		float radius = h * 0.32F;
 
 		NovaRender.setAlpha(1.0F);
-		NovaRender.glow(context, x, y, w, h, radius, 0x000000, 55); // soft drop shadow
+		NovaRender.glow(context, x, y, w, h, radius, 0x000000, 55); // drop shadow
 		NovaRender.roundRect(context, x, y, w, h, radius, BOX);
 		NovaRender.roundRectBorder(context, x, y, w, h, radius, BORDER);
 

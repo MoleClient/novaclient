@@ -40,89 +40,17 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Prime Chunk Finder — flags chunks whose UNDER-RENDER space (the zone below
- * y=0 that depth-hiding servers never stream to a surface player) is very
- * likely to hold a base, using only what still leaks through the mask.
+ * Flags chunks likely to hold a base below the depth-hiding mask, and renders a wash
+ * over them.
  *
- * <p>No single leak is trusted on its own. Each chunk accumulates evidence from
- * independent channels, and only the combined score crosses the flag line:
- *
- * <ul>
- *   <li><b>Light through the mask.</b> Depth-hiders replace blocks but ship the
- *       server-computed light grid untouched. Block light glowing inside what
- *       renders as solid stone below y=0 is artificial lighting. Sampled on a
- *       stride, and only in the −40..0 band — the lava seas and ancient-city
- *       lanterns further down would drown the signal in natural light.</li>
- *   <li><b>Leaked block entities.</b> Chunk packets carry container/spawner
- *       block-entity data even where the block itself is masked. A chest the
- *       renderer cannot see is furniture, not geology.</li>
- *   <li><b>Palette anomalies.</b> A masked section's palette should only hold
- *       mask blocks. Glass, concrete, wool, beds, enchanters below y=0 mean the
- *       section was streamed with real contents. Mineshaft materials (planks,
- *       fences, rails, cobwebs) are deliberately NOT in this set — mineshafts
- *       generate below zero naturally and were the classic overflag.</li>
- *   <li><b>Improper rotation.</b> World generation lays deepslate, infested
- *       deepslate and basalt on the Y axis and never any other way. Vanilla
- *       orients a placed pillar along the face it was clicked against, so a
- *       player who mines a hole and walls it back up leaves X- or Z-axis
- *       deepslate behind. There is no natural source of one, at any depth, so
- *       this channel alone is scanned across the whole hidden column instead of
- *       the palette channel's shallow window.</li>
- *   <li><b>Cultivated growth.</b> Bamboo thickens, cocoa ripens, glow berries
- *       return, kelp climbs and amethyst matures only on random ticks — which
- *       only fire in a chunk somebody is keeping loaded. Maturity is therefore
- *       an odometer of human time spent in an area rather than evidence of a
- *       build. Cave vines hung bare of every berry, or a geode stripped of
- *       every bud, read as a harvest round in progress.</li>
- *   <li><b>Live traffic.</b> Sounds, block updates, chest-lid/piston events and
- *       particles are broadcast with true coordinates regardless of masking.
- *       Underground traffic decays over ~2 minutes so a survey flight sees
- *       recent activity, not fossils.</li>
- *   <li><b>Entity census.</b> Item frames, armor stands, chest minecarts,
- *       villagers, passive animals and named mobs below the surface got there
- *       in someone's boat. Hostile mobs are ignored — caves make those free.</li>
- * </ul>
- *
- * <p><b>Evidence latches.</b> Static channels are kept at their high-water mark
- * instead of being overwritten each rescan, because the strongest of them are
- * destroyed by the act of looking. Light through the mask works by catching
- * block light glowing inside what renders as solid stone; walk closer, the
- * server sends the real blocks, the fake stone becomes the real room, and the
- * light is no longer inside anything. Recomputing over the top meant a flag
- * evaporated precisely when you approached it while fresh chunks kept flagging
- * at the far edge of the scan — so a base appeared to run away. It never moved;
- * the proof did. A flag now survives the approach.
- *
- * <p>Latched evidence is retired by <b>verdict</b>, not by decay. Inside
- * {@link #VERDICT_RADIUS_CHUNKS} the client certainly holds real blocks, so a
- * scan there is final: evidence that survives confirms the chunk, and evidence
- * that has entirely evaporated clears it permanently. The exception is a chunk
- * whose light channel still fires at point-blank range — that server is masking
- * even here, the real blocks were never delivered, and there is nothing to
- * adjudicate.
- *
- * <p>Natural-structure dampeners keep the precision: a lone spawner with a
- * couple of chests and no light is a dungeon, not a base, so spawner presence
- * halves container weight unless artificial light corroborates. Chunks with no
- * intrinsic evidence can never be flagged by neighbours alone; adjacency only
- * amplifies chunks that already testify (+15% per flagged neighbour, capped),
- * because real bases span several chunks and their evidence should agree.
- *
- * <p>The Weight slider (0.0–1.0) moves the flag line: 0 demands a stacked,
- * multi-channel case; 1 flags on light suspicion. The default (0.40) sits where
- * a leaked container plus any second channel flags, but no single natural
- * feature does. Buried builds above y=0 flag through the same channels — the
- * hidden-space criterion is "well below the surface", not "below zero".
- *
- * <p>Rendering matches the classic flat-wash look: a translucent red sheet at
- * the deepslate boundary drawn through terrain, pale for borderline scores and
- * saturated red for strong ones, with contiguous flags greedily merged into
- * single rectangles so a whole base is one quad, not forty. Tracers use the
- * shared {@link NovaTracers} system. All scanning runs inside a
- * {@link ScanBudget} lane; rectangles rebuild only when the flag set changes.
+ * <p>Evidence accumulates per chunk from independent channels (light through masked
+ * blocks, leaked block entities, palette anomalies, off-axis pillars, growth maturity,
+ * live packet traffic, entity census) and only the combined score crosses the flag line.
+ * Static channels latch at their high-water mark and are retired by a point-blank verdict
+ * rather than by decay; see {@link #VERDICT_RADIUS_CHUNKS}.
  */
 public final class PrimeChunkFinder {
-	// ── Evidence weights (sum vs threshold) ───────────────────────────────────
+	// Evidence weights, summed against the threshold.
 	private static final double W_LIGHT_CELL = 0.5;      // per lit sample, capped
 	private static final double CAP_LIGHT = 2.5;
 	private static final double W_CONTAINER_FIRST = 3.0; // first leaked container BE
@@ -148,62 +76,48 @@ public final class PrimeChunkFinder {
 	private static final double W_NAMED_MOB = 1.5;
 	private static final double W_PLAYER_BELOW = 1.0;    // another player under the mask right now
 	private static final double CAP_CENSUS = 6.0;
-	/** Growth clock: random ticks only run while a player keeps the chunk
-	 * loaded, so grown kelp, thick bamboo, ripe cocoa, returned glow berries and
-	 * matured geodes are odometers of human time spent in an area. Heat NEVER
-	 * flags alone — it is capped well under every threshold and only amplifies
-	 * chunks that have real evidence. That cap is what makes it safe to read
-	 * plants a lush cave or a jungle would have grown by itself. */
+	// Growth maturity is an odometer of loaded time, capped below every threshold so it
+	// can only amplify chunks that already have other evidence.
 	private static final double CAP_GROWTH_HEAT = 1.2;
-	private static final double W_HARVESTED_GEODE = 1.5; // stripped buds = player's farm route
+	private static final double W_HARVESTED_GEODE = 1.5;   // buds stripped from budding amethyst
 	private static final double W_HARVESTED_BERRIES = 1.2; // cave vines picked bare
 	private static final double CAP_HARVEST = 2.4;
-	/**
-	 * Improperly rotated pillar blocks. This is the only static channel with no
-	 * natural explanation whatsoever, so it carries palette-grade weight and,
-	 * unlike the palette channel, it is trusted at every depth: there is no band
-	 * where world generation starts producing sideways deepslate.
-	 */
+	// Off-axis pillars have no natural explanation, so this channel is trusted at every depth.
 	private static final double W_ROTATION = 2.6;
 	private static final double CAP_ROTATION = 3.9;
 
-	/** Per-tick decay for live traffic: half-life ≈ 2 minutes. */
+	// Per-tick decay for live traffic; half-life is roughly 2 minutes.
 	private static final double TRAFFIC_DECAY = 0.99985;
-	/** Threshold line: weight 0 → 5.5, weight 1 → 0.7 (default 0.40 → 3.58). */
+	// Threshold line: weight 0 maps to 5.5, weight 1 to 0.7 (default 0.40 gives 3.58).
 	private static final double THRESHOLD_STRICT = 5.5;
 	private static final double THRESHOLD_LOOSE = 0.7;
-	/** Strong tier (saturated red) begins at this multiple of the threshold. */
+	// Strong tier begins at this multiple of the threshold.
 	private static final double STRONG_TIER = 1.6;
-	/** Adjacency: +15% per flagged neighbour, at most +45%, never from zero. */
+	// Adjacency: +15% per flagged neighbour, at most +45%, and never from a zero score.
 	private static final double NEIGHBOUR_BONUS = 0.15;
 	private static final double NEIGHBOUR_BONUS_CAP = 0.45;
 	private static final double NEIGHBOUR_NEEDS_OWN = 1.0;
 
-	// Light scan geometry: the band where artificial light is meaningful.
+	// Light scan band. Deeper bands are excluded: lava seas and ancient-city lanterns
+	// would drown the signal in natural light.
 	private static final int LIGHT_MIN_Y = -40;
 	private static final int LIGHT_MAX_Y = -1;
 	private static final int LIGHT_STRIDE_XZ = 4;
 	private static final int LIGHT_STRIDE_Y = 4;
-	/** Sub-surface criterion for above-zero evidence: this far under the heightmap. */
+	// Above-zero evidence counts only this far under the heightmap.
 	private static final int BURIED_MARGIN = 12;
 
-	/**
-	 * Chunks within this many chunks of the player are certainly streamed with
-	 * real blocks by any server, masking or not. A scan at that range is
-	 * therefore a verdict, not a sample: evidence that holds up confirms the
-	 * chunk, and evidence that has entirely evaporated clears it for good. This
-	 * is the release valve on latched evidence — without it a flag raised at
-	 * distance could never be retired, and the map would fill with red.
-	 */
+	// Within this range any server streams real blocks, so a scan is a verdict rather than
+	// a sample: surviving evidence confirms the chunk, absent evidence clears it for good.
 	private static final int VERDICT_RADIUS_CHUNKS = 3;
-	/** Standing evidence to keep. Beyond this the quietest far cells are dropped. */
+	// Beyond this many tracked cells the quietest distant ones are evicted.
 	private static final int MAX_TRACKED_CHUNKS = 20_000;
 
 	private static final int RESCAN_INTERVAL_TICKS = 200; // static leaks re-read every 10s
 	private static final int CENSUS_INTERVAL_TICKS = 20;
 	private static final int MAX_RECTS = 192;
 	private static final int MAX_TRACERS = 24;
-	/** The flat wash sits just above the deepslate boundary. */
+	// The flat wash sits just above the deepslate boundary.
 	private static final double SHEET_Y = 0.05;
 
 	private static final int COLOR_STRONG = 0xE03434; // saturated red
@@ -212,18 +126,8 @@ public final class PrimeChunkFinder {
 	/** Blocks that do not occur below zero unless a player brought them. */
 	private static final Set<Block> MAN_MADE = buildManMadeSet();
 
-	/**
-	 * Pillar blocks world generation only ever lays down on the Y axis.
-	 *
-	 * <p>Deepslate is the valuable one: it fills the entire hidden band, and
-	 * vanilla never generates it sideways. Vanilla orients a placed pillar along
-	 * the face it was clicked against, so a player who mines deepslate and walls
-	 * the hole back up leaves X- or Z-axis deepslate behind. One of those under
-	 * the mask is a hand-placed block with no natural explanation at all — a
-	 * cleaner tell than any palette anomaly, because a base builder cannot avoid
-	 * making them and a depth-hider that rewrites blocks to plain deepslate
-	 * cannot fake them back into existence.
-	 */
+	// Pillar blocks worldgen only lays on the Y axis. Vanilla orients a placed pillar
+	// along the clicked face, so an X- or Z-axis one was placed by hand.
 	private static final Set<Block> NATURAL_Y_PILLARS = Set.of(
 			Blocks.DEEPSLATE, Blocks.INFESTED_DEEPSLATE, Blocks.BASALT);
 
@@ -248,22 +152,20 @@ public final class PrimeChunkFinder {
 	private static final class Evidence {
 		boolean cleared;        // inspected point-blank and found empty
 		boolean confirmed;      // inspected point-blank and evidence held up
-		double lightScore;      // static scans — latched at their peak
+		double lightScore;      // static scan, latched at its peak
 		double blockEntityScore;
 		double paletteScore;
 		double rotationScore;   // natural pillars turned off-axis by hand
 		double censusScore;
 		double growthHeat;      // loaded-time odometer, capped sub-threshold
-		double harvestScore;    // stripped geodes and picked vines: direct activity
-		double trafficScore;    // live packets — decays
+		double harvestScore;    // stripped geodes and picked vines
+		double trafficScore;    // live packets, decays
 		int soundCount, updateCount, eventCount, particleCount;
 		boolean spawnerPresent;
 		int lastTouchedTick;
 
 		double total() {
-			// A chunk somebody actually walked into and found nothing in stays
-			// silent for good, which is what keeps latched evidence from turning
-			// the map permanently red.
+			// A cleared verdict is permanent; this is the release valve on latched evidence.
 			if (cleared) return 0.0;
 			double containers = blockEntityScore;
 			if (spawnerPresent && lightScore < 0.5) {
@@ -271,7 +173,7 @@ public final class PrimeChunkFinder {
 			}
 			double core = lightScore + containers + paletteScore + rotationScore + censusScore
 					+ trafficScore + harvestScore + (spawnerPresent ? W_SPAWNER : 0.0);
-			// Heat only speaks when something else already does.
+			// Heat only counts once another channel has scored.
 			return core > 0.5 ? core + Math.min(CAP_GROWTH_HEAT, growthHeat) : core;
 		}
 	}
@@ -293,18 +195,18 @@ public final class PrimeChunkFinder {
 		instance = this;
 	}
 
-	/** Fast gate for the packet mixin: only pay for intake while the module runs. */
+	/** Fast gate for the packet mixin so intake costs nothing while the module is off. */
 	public static boolean listening() {
 		return instance != null && !instance.failedClosed
 				&& instance.config.enabled && instance.config.donutPrimeChunk;
 	}
 
-	/** Cross-module corroboration: is this chunk currently prime-flagged? */
+	/** True when the chunk is currently prime-flagged. */
 	public static boolean isFlagged(long chunkKey) {
 		return instance != null && instance.flagged.contains(chunkKey);
 	}
 
-	// ── Packet intake (called from PrimeSignalMixin on the client thread) ─────
+	// Packet intake, called from PrimeSignalMixin on the client thread.
 
 	public static void recordSound(double x, double y, double z, String soundId) {
 		if (!listening() || instance.aboveGround(x, y, z) || nearSelf(x, y, z)) return;
@@ -344,7 +246,7 @@ public final class PrimeChunkFinder {
 		instance.addTraffic(cell, W_PARTICLE, cell.particleCount * W_PARTICLE > CAP_PARTICLE);
 	}
 
-	/** Your own mining, torching and chest traffic must never flag your own dig. */
+	/** True within 12 blocks of the player, so the player's own activity never flags a chunk. */
 	private static boolean nearSelf(double x, double y, double z) {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client.player == null) return true;
@@ -354,7 +256,7 @@ public final class PrimeChunkFinder {
 	private void addTraffic(Evidence cell, double amount, boolean capped) {
 		if (!capped) {
 			cell.trafficScore += amount;
-			rectsDirty = true; // cheap; rebuild is gated by flag-set comparison anyway
+			rectsDirty = true; // the rebuild itself is gated by a flag-set comparison
 		}
 	}
 
@@ -380,7 +282,7 @@ public final class PrimeChunkFinder {
 		return evidence.computeIfAbsent(ChunkPos.toLong(chunkX, chunkZ), key -> new Evidence());
 	}
 
-	// ── Tick: decay, census, budgeted static scans ────────────────────────────
+	// Tick: decay, census, budgeted static scans.
 
 	public void tick(MinecraftClient client) {
 		if (failedClosed || !config.enabled || !config.donutPrimeChunk) {
@@ -396,7 +298,7 @@ public final class PrimeChunkFinder {
 				reset();
 				trackedWorld = client.world;
 			}
-			// The whole signal model is about the overworld's hidden depths.
+			// The signal model only applies to the overworld's hidden depths.
 			if (client.world.getRegistryKey() != net.minecraft.world.World.OVERWORLD) return;
 
 			int tick = client.player.age;
@@ -417,7 +319,7 @@ public final class PrimeChunkFinder {
 			ProFPS.LOGGER.error("Prime Chunk Finder failed; disabling it to protect the client.", exception);
 			reset();
 			config.donutPrimeChunk = false;
-			// Not saved: a transient failure must not persist as an off switch.
+			// Intentionally not saved, so a transient failure does not persist.
 			failedClosed = true;
 		}
 	}
@@ -434,13 +336,7 @@ public final class PrimeChunkFinder {
 		scanCentreChunkZ = Integer.MIN_VALUE;
 	}
 
-	/**
-	 * Bounds the evidence map. Latched evidence no longer fades on its own, so a
-	 * long survey flight would otherwise accumulate a cell per chunk visited
-	 * forever. Flagged chunks and point-blank verdicts are never dropped — those
-	 * are the results — so only quiet, distant, unjudged cells are evicted, and
-	 * re-entering their area simply re-scans them.
-	 */
+	/** Bounds the evidence map by evicting quiet, distant, unjudged cells. */
 	private void evictDistantQuietChunks(MinecraftClient client) {
 		if (evidence.size() <= MAX_TRACKED_CHUNKS) return;
 		int playerChunkX = client.player.getBlockPos().getX() >> 4;
@@ -469,10 +365,8 @@ public final class PrimeChunkFinder {
 	}
 
 	private void runEntityCensus(MinecraftClient client) {
-		// Sightings LATCH: entity tracking only reaches ~5 chunks, so a survey
-		// flight sees each base's entities for seconds. The flag must outlive
-		// the flyover — scores decay over minutes instead of resetting, and a
-		// fresh sweep can only raise them.
+		// Entity tracking only reaches about 5 chunks, so sightings decay slowly rather
+		// than resetting, and a fresh sweep can only raise a score.
 		for (Evidence cell : evidence.values()) cell.censusScore *= 0.996;
 		Map<Long, Double> sweep = new HashMap<>();
 		ClientWorld world = client.world;
@@ -486,9 +380,7 @@ public final class PrimeChunkFinder {
 			}
 			double weight = weightForEntity(entity);
 			if (weight <= 0.0) continue;
-			// Below the send boundary the census IS the static channel — the
-			// server tracks these entities to us while hiding every block, so
-			// they carry more of the case than they would in rendered space.
+			// Below the send boundary entities are still tracked while blocks are hidden.
 			if (y < 0.0) weight *= 1.6;
 			Evidence cell = cellFor(entity.getX(), entity.getZ());
 			if (cell == null) continue;
@@ -510,15 +402,13 @@ public final class PrimeChunkFinder {
 		if (entity instanceof AbstractMinecartEntity) return W_CHEST_MINECART;
 		if (entity instanceof PlayerEntity) return W_PLAYER_BELOW;
 		if (entity instanceof net.minecraft.entity.passive.VillagerEntity) return W_VILLAGER;
-		// Farm output is entity-tracked even when the blocks are withheld:
-		// drops riding collection streams, and XP that only players, furnaces
-		// and breeding can mint. Natural drops despawn in five minutes, so a
-		// standing population of them below zero is a machine at work.
+		// Farm output stays entity-tracked when blocks are withheld. Natural drops despawn
+		// in five minutes, so a standing population below zero implies a running farm.
 		if (entity instanceof net.minecraft.entity.ItemEntity) return 0.7;
 		if (entity instanceof net.minecraft.entity.ExperienceOrbEntity) return 1.1;
 		if (entity.hasCustomName()) return W_NAMED_MOB;
 		if (entity instanceof PassiveEntity) return W_MOVED_ANIMAL;
-		return 0.0; // hostiles are what caves hand out for free
+		return 0.0; // hostiles spawn naturally in caves
 	}
 
 	private void enqueueScans(MinecraftClient client) {
@@ -551,7 +441,7 @@ public final class PrimeChunkFinder {
 		ScanBudget.reportUsed(tick, ScanBudget.Lane.PRIME_CHUNK, System.nanoTime() - start);
 	}
 
-	/** One chunk's static leak audit: light, block entities, palette. */
+	/** Runs one chunk's static leak audit: light, block entities, palette, rotation, growth. */
 	private void scanChunk(MinecraftClient client, int chunkX, int chunkZ) {
 		ClientWorld world = client.world;
 		WorldChunk chunk = world.getChunkManager().getWorldChunk(chunkX, chunkZ);
@@ -559,7 +449,7 @@ public final class PrimeChunkFinder {
 		long key = ChunkPos.toLong(chunkX, chunkZ);
 		Evidence cell = evidence.computeIfAbsent(key, ignored -> new Evidence());
 
-		// Light through the mask: block light inside render-solid stone below 0.
+		// Block light registered inside render-solid stone below y=0.
 		int litSamples = 0;
 		BlockPos.Mutable pos = new BlockPos.Mutable();
 		int baseX = chunkX << 4, baseZ = chunkZ << 4;
@@ -569,20 +459,14 @@ public final class PrimeChunkFinder {
 					pos.set(baseX + x, y, baseZ + z);
 					if (world.getLightLevel(LightType.BLOCK, pos) <= 0) continue;
 					BlockState visible = world.getBlockState(pos);
-					// Glowing air/cave is natural (lava pockets, geodes); light
-					// registered INSIDE an opaque block is the mask lying.
+					// Glowing air is natural; light inside an opaque block means the block is a mask.
 					if (visible.isOpaqueFullCube()) litSamples++;
 				}
 			}
 		}
-		// Orphan light at the send boundary — the channel that works when the
-		// server WITHHOLDS everything below zero instead of masking it with
-		// stone. A hidden torch at y=-3 still lights the rendered band at
-		// y=0..11, but its emitter block does not exist in our world copy. So:
-		// find lit air low in the rendered band, hill-climb the light gradient
-		// to its peak, and if no rendered block near the peak actually emits,
-		// the source is under the floor. Caves are self-clearing — their lava,
-		// lichen and torches ARE rendered, so the emitter check finds them.
+		// Orphan light: handles servers that withhold everything below zero rather than
+		// masking it. A hidden emitter still lights the rendered y=0..11 band while the
+		// emitter block itself is absent from the client's copy.
 		int orphanSamples = 0;
 		for (int x = 0; x < 16 && orphanSamples < 5; x += LIGHT_STRIDE_XZ) {
 			for (int z = 0; z < 16 && orphanSamples < 5; z += LIGHT_STRIDE_XZ) {
@@ -618,9 +502,8 @@ public final class PrimeChunkFinder {
 		double freshContainers = containers == 0 ? 0.0
 				: Math.min(CAP_CONTAINER, W_CONTAINER_FIRST + (containers - 1) * W_CONTAINER_EXTRA);
 
-		// Palette anomalies in the below-zero sections. The deepest band gets
-		// half weight (ancient cities and aquifers live down there); below −48
-		// is ignored outright.
+		// Palette anomalies in below-zero sections. The -48..-33 band gets half weight for
+		// ancient cities and aquifers; below -48 is ignored.
 		double palette = 0.0;
 		int bottomY = world.getBottomY();
 		for (int sectionY = -48; sectionY < 0; sectionY += 16) {
@@ -633,11 +516,8 @@ public final class PrimeChunkFinder {
 		}
 		double freshPalette = Math.min(W_PALETTE * 2, palette);
 
-		// Improperly rotated pillars. Scanned across the whole hidden column
-		// rather than the palette channel's −48..0 window, because the deep
-		// bands that make palette evidence unreliable — ancient cities,
-		// aquifers, the lava sea — do not generate sideways deepslate either.
-		// Depth costs this channel nothing, so it gets the full range.
+		// Off-axis pillars, scanned across the whole hidden column rather than the
+		// palette channel's window, since no depth band generates sideways deepslate.
 		double rotation = 0.0;
 		boolean deepDark = false;
 		for (int sectionY = bottomY; sectionY < 0; sectionY += 16) {
@@ -647,15 +527,12 @@ public final class PrimeChunkFinder {
 			if (section.hasAny(PrimeChunkFinder::improperlyRotated)) rotation += W_ROTATION;
 			if (!deepDark && section.hasAny(PrimeChunkFinder::ancientCityMarker)) deepDark = true;
 		}
-		// An ancient city is stamped down from templates that are rotated as a
-		// unit, so its deepslate genuinely does lie sideways with nobody's hand
-		// involved — the one natural counterexample this channel has. Reinforced
-		// deepslate generates nowhere else in the game, which makes it a clean
-		// marker to stand the channel down on rather than flag a whole city.
+		// Ancient-city templates are rotated as a unit, so their deepslate does lie
+		// sideways naturally. Stand the channel down when city markers are present.
 		double freshRotation = deepDark ? 0.0 : Math.min(CAP_ROTATION, rotation);
 
-		// Growth clock. Kelp: worldgen stalks are short; stalks that have grown
-		// tall mean the chunk has spent long stretches loaded by players.
+		// Kelp height as a growth clock: worldgen stalks are short, and stalks only grow
+		// on random ticks, which fire while a player keeps the chunk loaded.
 		int kelpStalks = 0, tallStalks = 0;
 		for (int x = 2; x < 16 && kelpStalks < 12; x += 5) {
 			for (int z = 2; z < 16 && kelpStalks < 12; z += 5) {
@@ -684,11 +561,8 @@ public final class PrimeChunkFinder {
 		}
 		double heat = kelpStalks >= 3 ? (tallStalks / (double) kelpStalks) * CAP_GROWTH_HEAT : 0.0;
 
-		// Geodes: budding amethyst with every bud stage stripped is a player's
-		// harvest route; a palette of only fully-grown clusters is long-loaded.
-		// Cultivated plants read the same way, and cost the same: maturity lives
-		// in the block state, so every question below is answered off the
-		// section palette without walking a single column.
+		// Maturity lives in the block state, so these checks all run off the section
+		// palette without walking any columns.
 		boolean budding = false, anyBud = false, cluster = false;
 		boolean thickBamboo = false, ripeCocoa = false;
 		boolean caveVines = false, berries = false, vines = false;
@@ -701,8 +575,7 @@ public final class PrimeChunkFinder {
 						|| block == Blocks.LARGE_AMETHYST_BUD;
 			})) anyBud = true;
 			if (!cluster && section.hasAny(state -> state.getBlock() == Blocks.AMETHYST_CLUSTER)) cluster = true;
-			// Bamboo thickens only once a stalk has grown tall, so age=1 is a
-			// stalk that has been random-ticked many times over.
+			// Bamboo only reaches age=1 after many random ticks on a tall stalk.
 			if (!thickBamboo && section.hasAny(state -> state.isOf(Blocks.BAMBOO)
 					&& propertyValue(state, "age").equals("1"))) thickBamboo = true;
 			if (!ripeCocoa && section.hasAny(state -> state.isOf(Blocks.COCOA)
@@ -717,17 +590,12 @@ public final class PrimeChunkFinder {
 
 		double harvest = budding && !anyBud && !cluster ? W_HARVESTED_GEODE : 0.0;
 		if (budding && cluster && !anyBud) heat += 0.4; // all buds fully mature
-		// Glow berries regrow on random ticks and are picked by hand. A chunk
-		// hung with cave vines and not one berry on any of them is somebody's
-		// harvest round — the same tell as a geode stripped of its buds.
+		// Cave vines with no berries anywhere means they were picked, since berries regrow
+		// on random ticks.
 		if (caveVines && !berries) harvest += W_HARVESTED_BERRIES;
 		double freshHarvest = Math.min(CAP_HARVEST, harvest);
 
-		// Cultivated growth. These never flag a chunk on their own — heat is
-		// capped well under every threshold and only speaks for a chunk that
-		// already testifies — because lush caves grow their own vines and
-		// jungles their own bamboo. What they are good for is separating a
-		// chunk somebody has been standing in from one that merely generated.
+		// Growth heat is capped below every threshold, so it can never flag alone.
 		if (thickBamboo) heat += 0.5;
 		if (ripeCocoa) heat += 0.5;
 		if (berries) heat += 0.3;
@@ -738,38 +606,18 @@ public final class PrimeChunkFinder {
 	}
 
 	/**
-	 * Folds a fresh scan into a chunk's standing evidence.
-	 *
-	 * <p>Static evidence is kept at its <b>high-water mark</b> rather than
-	 * overwritten, and that is the whole point of this method. The light channel
-	 * — the one that finds bases nobody else can — works by catching block light
-	 * glowing inside what renders as solid stone. Walking closer makes the server
-	 * send the real blocks, the fake stone becomes the real room, and the light
-	 * is no longer inside anything. The evidence is destroyed <em>by the act of
-	 * going to look at it</em>. Recomputing straight over the top meant a flag
-	 * evaporated exactly when you approached it, while fresh chunks kept flagging
-	 * at the far edge of the scan — so the base appeared to flee. It never moved;
-	 * the proof did.
-	 *
-	 * <p>Latching alone would make every flag permanent, so it is paired with a
-	 * verdict: see {@link #VERDICT_RADIUS_CHUNKS}.
+	 * Folds a fresh scan into a chunk's standing evidence, keeping static channels at
+	 * their high-water mark. Approaching a chunk destroys its light evidence, so latching
+	 * is paired with the point-blank verdict at {@link #VERDICT_RADIUS_CHUNKS}.
 	 */
 	private void commitEvidence(MinecraftClient client, Evidence cell, int chunkX, int chunkZ,
 			double light, double containers, boolean spawner, double palette, double rotation,
 			double harvest, double heat) {
 		boolean pointBlank = withinVerdictRadius(client, chunkX, chunkZ);
 		if (pointBlank) {
-			// Close enough that the client certainly holds the real blocks, so
-			// this scan is a verdict rather than a sample. Judge on the channels
-			// that survive being looked at — containers, palette, rotation,
-			// harvest, spawners.
-			//
-			// Unless the light channel is still firing. Light inside render-solid
-			// stone at point-blank range means the server is masking this chunk
-			// even here, so the real blocks were never delivered and there is
-			// nothing to have a verdict about. Some servers hide the deep bands
-			// at every distance; clearing those would throw away exactly the
-			// bases this module exists to find.
+			// Judge on the channels that survive inspection: containers, palette, rotation,
+			// harvest, spawners. Light still firing at this range means the server is masking
+			// even here, so there are no real blocks to adjudicate against.
 			boolean maskStillOn = light > 0.01;
 			double durable = containers + palette + rotation + harvest;
 			if (!maskStillOn && durable < 0.5 && !spawner && cell.trafficScore < 0.5) {
@@ -804,11 +652,7 @@ public final class PrimeChunkFinder {
 				&& Math.abs(playerChunkZ - chunkZ) <= VERDICT_RADIUS_CHUNKS;
 	}
 
-	/**
-	 * True for a pillar block turned off the axis world generation would have
-	 * given it. Absent the axis property entirely, the answer is no — a block
-	 * that cannot record a rotation cannot record a wrong one.
-	 */
+	/** True for a natural pillar block whose axis property is set to something other than y. */
 	private static boolean improperlyRotated(BlockState state) {
 		if (!NATURAL_Y_PILLARS.contains(state.getBlock())) return false;
 		String axis = propertyValue(state, "axis");
@@ -822,9 +666,8 @@ public final class PrimeChunkFinder {
 	}
 
 	/**
-	 * Reads a block property by name, empty string when absent. By name rather
-	 * than by {@code Properties} constant so a mapping rename downgrades a
-	 * signal to silence instead of breaking the build.
+	 * Reads a block property by name, returning an empty string when absent. Looked up by
+	 * name so a mapping rename silences a signal rather than breaking the build.
 	 */
 	private static String propertyValue(BlockState state, String name) {
 		for (Property<?> property : state.getProperties()) {
@@ -838,12 +681,9 @@ public final class PrimeChunkFinder {
 	}
 
 	/**
-	 * Follow the block-light gradient uphill from a lit air cell to its peak,
-	 * then look for a rendered emitter around that peak. Light data is sent
-	 * separately from block data, so on withholding servers the gradient often
-	 * continues below y=0 into "air" the server never populated — and at the
-	 * peak nothing luminous exists in our copy. That is a light source the
-	 * server is hiding: somebody's torch, lantern or lava farm under the floor.
+	 * True when the block-light gradient from a lit air cell peaks with no rendered emitter
+	 * nearby, meaning the light source was withheld. Light data is sent separately from
+	 * block data, so the gradient can lead into unpopulated space.
 	 */
 	private static boolean isOrphanLight(ClientWorld world, int x, int y, int z) {
 		BlockPos.Mutable pos = new BlockPos.Mutable(x, y, z);
@@ -877,8 +717,7 @@ public final class PrimeChunkFinder {
 				}
 			}
 		}
-		// No visible emitter — orphan light. Only trust it when the peak sits
-		// at or under the send boundary, where a hidden source must live.
+		// No visible emitter. Only trust this when the peak sits at or under the send boundary.
 		return pos.getY() <= 2;
 	}
 
@@ -897,8 +736,6 @@ public final class PrimeChunkFinder {
 				|| type == BlockEntityType.CRAFTER;
 	}
 
-	// ── Flags and rectangle merging ───────────────────────────────────────────
-
 	private double threshold() {
 		double weight = MathHelper.clamp(config.donutPrimeChunkWeight, 0, 100) / 100.0;
 		return MathHelper.lerp(weight, THRESHOLD_STRICT, THRESHOLD_LOOSE);
@@ -915,8 +752,7 @@ public final class PrimeChunkFinder {
 			double total = entry.getValue().total();
 			if (total > 0.0) totals.put(entry.getKey(), total);
 		}
-		// Second pass: adjacency amplification — only for chunks with their own
-		// voice, so one loud chunk cannot paint a silent neighbourhood.
+		// Second pass: adjacency amplification, restricted to chunks with their own score.
 		for (Map.Entry<Long, Double> entry : totals.entrySet()) {
 			double own = entry.getValue();
 			long key = entry.getKey();
@@ -930,9 +766,7 @@ public final class PrimeChunkFinder {
 					if (neighbour != null && neighbour >= line) loudNeighbours++;
 				}
 			}
-			// The floor gates only the amplification — any chunk may still flag
-			// on its own merits, which is what lets Weight 100 actually behave
-			// like Weight 100.
+			// NEIGHBOUR_NEEDS_OWN gates only the bonus; a chunk can still flag on its own score.
 			double bonus = own >= NEIGHBOUR_NEEDS_OWN
 					? Math.min(NEIGHBOUR_BONUS_CAP, loudNeighbours * NEIGHBOUR_BONUS) : 0.0;
 			double amplified = own * (1.0 + bonus);
@@ -950,10 +784,7 @@ public final class PrimeChunkFinder {
 		rebuildRects();
 	}
 
-	/**
-	 * Greedy row-run merge: grow east along a row, then south while every
-	 * column of the strip matches, per tier. A base becomes one sheet.
-	 */
+	/** Greedy row-run merge: grow east along a row, then south while every column matches tier. */
 	private void rebuildRects() {
 		List<Rect> merged = new ArrayList<>();
 		Set<Long> consumed = new HashSet<>();
@@ -990,8 +821,6 @@ public final class PrimeChunkFinder {
 		return flagged.contains(key) && !consumed.contains(key) && strong.contains(key) == tier;
 	}
 
-	// ── Rendering ─────────────────────────────────────────────────────────────
-
 	public void renderWorld(WorldRenderContext ctx) {
 		if (failedClosed || !config.enabled || !config.donutPrimeChunk || rects.isEmpty()) return;
 		try {
@@ -1004,8 +833,8 @@ public final class PrimeChunkFinder {
 			MatrixStack.Entry entry = matrices.peek();
 			Matrix4fc pos = entry.getPositionMatrix();
 
-			// The immediate provider owns one active buffer at a time: finish
-			// all fills before the lines layer flushes them.
+			// The immediate provider holds one active buffer, so all fills must finish
+			// before requesting the lines layer.
 			VertexConsumer fills = ctx.consumers().getBuffer(DonutWorldRenderer.FILLS);
 			for (Rect rect : rects) {
 				int color = rect.strongTier() ? COLOR_STRONG : COLOR_PALE;
@@ -1040,9 +869,8 @@ public final class PrimeChunkFinder {
 
 	private static Set<Block> buildManMadeSet() {
 		Set<Block> set = new HashSet<>(List.of(
-				// Farm and machinery blocks: none of these generate below zero,
-				// and unlike light evidence they SURVIVE the mask lifting when
-				// the player gets close — which keeps real-base flags stable.
+				// Farm and machinery blocks; none of these generate below zero, and unlike
+				// light evidence they survive the mask lifting as the player approaches.
 				Blocks.BAMBOO, Blocks.SUGAR_CANE, Blocks.CACTUS, Blocks.MELON, Blocks.PUMPKIN,
 				Blocks.WHEAT, Blocks.CARROTS, Blocks.POTATOES, Blocks.BEETROOTS,
 				Blocks.NETHER_WART, Blocks.FARMLAND, Blocks.DIRT_PATH, Blocks.COCOA,

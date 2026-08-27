@@ -9,14 +9,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Spoofs a player's name at the SOURCE — {@code getName()} and {@code getDisplayName()}.
- *
- * <p>In 1.21.11 the floating nametag and most GUI text are batched/deferred, so they no
- * longer pass through the {@code TextRenderer.draw} overloads the old text mixin hooked —
- * which is why only chat changed. The nametag render state captures {@code getDisplayName()},
- * so rewriting the name here makes the name above the head (and anywhere else derived from
- * it) show the Nickname / Nick Other value. Client-only, cosmetic; {@link NicknameManager#spoof}
- * returns the input unchanged when nothing matches.
+ * Spoofs a player's name at {@code getName()} and {@code getDisplayName()}, which the
+ * nametag render state and GUI text derive from.
  */
 @Mixin(PlayerEntity.class)
 public abstract class PlayerDisplayNameMixin {

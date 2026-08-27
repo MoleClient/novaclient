@@ -20,23 +20,16 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 /**
- * Declarative catalogue of every NovaClient module, bound straight to
- * {@link ProFPSConfig} fields. Both the GUI and the in-game keybind handler
- * work off this model, so toggling from either place behaves identically.
- * Every module here is independent; none pulls another on.
+ * Declarative catalogue of every module, bound directly to {@link ProFPSConfig} fields
+ * and shared by the GUI and the in-game keybind handler.
  */
 public final class NovaModules {
-	/** Mode module ids. These match the keybind ids the Modes panel used, so existing binds survive. */
+	/** Mode module ids, matching the ids used by existing keybinds. */
 	public static final String MODE_SWORD = "combat_mode_sword";
 	public static final String MODE_AXE = "combat_mode_axe";
 	public static final String MODE_MACE = "combat_mode_mace";
 
-	/**
-	 * Standalone modules each mode actually drives, mapped to the mode-side switch that stands in
-	 * for them — and ONLY those. A mode owning the mace does not own your Triggerbot: anything not
-	 * listed here keeps running from its own module while the mode is on, which is exactly what
-	 * {@code CombatModePolicy.enabled} now falls through to.
-	 */
+	/** Per combat mode, the standalone modules it drives mapped to the mode-side switch that replaces them. */
 	private static final Map<Integer, Map<String, String>> MANAGED = Map.of(
 			1, Map.of("aim", "swordModeAim", "strafe", "swordModeStrafe",
 					"hit", "swordModeTrigger", "swordai", "swordModeAiBot"),
@@ -50,11 +43,9 @@ public final class NovaModules {
 	private NovaModules() {}
 
 	/**
-	 * Whether the ACTIVE combat mode has taken this module over, and if so whether the mode is
-	 * currently running it. Null means the module is the player's own to toggle. Drives three
-	 * things: the UI locks the card, paints it in mode colours instead of the accent, and the HUD
-	 * leaves it out so only the mode itself is listed. Modules the mode does not drive return null
-	 * and stay entirely yours — Triggerbot is still yours to run while Mace mode is on.
+	 * Whether the active combat mode drives this module, and if so whether the mode is running it.
+	 *
+	 * @return null if no active mode owns the module
 	 */
 	public static Boolean managedState(ProFPSConfig cfg, String moduleId) {
 		if (cfg == null || moduleId == null) return null;
@@ -105,9 +96,8 @@ public final class NovaModules {
 		public final Supplier<Boolean> get;
 		public final Consumer<Boolean> set;
 		public final List<Setting> settings;
-		public boolean momentary; // keybind-only action (no persistent toggle) — UI hides the toggle pill
-		/** 0 for an ordinary module; 1/2/3 mark the Sword/Axe/Mace combat modes, which the UI draws
-		 *  as hero cards and which take over the standalone modules listed in {@link #MANAGED}. */
+		public boolean momentary; // keybind-only action with no persistent toggle
+		/** 0 for an ordinary module; 1/2/3 mark the Sword/Axe/Mace combat modes. */
 		public int combatMode;
 
 		Module(String id, String name, Item icon, Supplier<Boolean> get, Consumer<Boolean> set, Setting... settings) {
@@ -123,13 +113,13 @@ public final class NovaModules {
 			this.settings = List.of(settings);
 		}
 
-		/** Mark this as a keybind-fired one-shot: no toggle pill, triggered only by its bound key. */
+		/** Marks this as a keybind-fired one-shot with no toggle pill. */
 		Module momentary() {
 			this.momentary = true;
 			return this;
 		}
 
-		/** Mark this as a combat mode: exclusive with the other modes, drawn as a hero card. */
+		/** Marks this as a combat mode, exclusive with the other modes. */
 		Module mode(int combatMode) {
 			this.combatMode = combatMode;
 			return this;
@@ -158,7 +148,7 @@ public final class NovaModules {
 		}
 	}
 
-	/** An ordinary inline mode selector, rendered with the same dropdown language as combat tiers. */
+	/** An inline dropdown selector over a fixed or computed option list. */
 	public static final class ChoiceSetting extends Setting {
 		private final Supplier<List<String>> options;
 		public final IntSupplier get;
@@ -177,15 +167,7 @@ public final class NovaModules {
 			this(label, List.of(options), get, set);
 		}
 
-		/**
-		 * Options computed on read, for lists that change while the game runs —
-		 * the schematic picker, whose folder the player edits from outside.
-		 * Categories are built once at startup, so a fixed list would be a
-		 * snapshot of whatever existed when the game launched.
-		 *
-		 * <p>Read during rendering, so the supplier must be cheap: cache the
-		 * work and refresh it on an explicit action, never scan a disk here.
-		 */
+		/** Options computed on read, for lists that change at runtime. The supplier runs during rendering, so it must be cheap. */
 		ChoiceSetting(String label, Supplier<List<String>> options, IntSupplier get, IntConsumer set) {
 			super(label);
 			this.options = options == null ? List::of : options;
@@ -193,14 +175,14 @@ public final class NovaModules {
 			this.set = set;
 		}
 
-		/** Never empty, so the dropdown always has a row to draw. */
+		/** Never returns an empty list, so the dropdown always has a row to draw. */
 		public List<String> options() {
 			List<String> live = options.get();
 			return live == null || live.isEmpty() ? List.of("(none)") : live;
 		}
 	}
 
-	/** A momentary action button (e.g. Advanced ESP "Reload"). */
+	/** A momentary action button. */
 	public static final class ButtonSetting extends Setting {
 		public final String caption;
 		public final Runnable action;
@@ -212,11 +194,7 @@ public final class NovaModules {
 		}
 	}
 
-	/**
-	 * A dynamic list of "real name → shown name (+ skin)" rows, for Nick Other. The
-	 * UI edits {@link #entries} in place (add via +, remove via −) and calls
-	 * {@link #onChange} to persist.
-	 */
+	/** A dynamic name-remap list; the UI edits {@link #entries} in place and calls {@link #onChange} to persist. */
 	public static final class NickListSetting extends Setting {
 		public final List<NickEntry> entries;
 		public final Runnable onChange;
@@ -228,7 +206,7 @@ public final class NovaModules {
 		}
 	}
 
-	/** A free-text field (e.g. the Spam message) — click to focus, type to edit. */
+	/** A free-text field. */
 	public static final class StringSetting extends Setting {
 		public final String placeholder;
 		public final Supplier<String> get;
@@ -242,11 +220,7 @@ public final class NovaModules {
 		}
 	}
 
-	/**
-	 * A searchable multi-select block list (e.g. BreakOn's "Certain Blocks"): an
-	 * on/off toggle that, when on, expands a dropdown of block suggestions you
-	 * tick. The selected list is the live config list, mutated in place by the UI.
-	 */
+	/** A toggle plus a searchable multi-select block list; {@link #selected} is the live config list, mutated in place. */
 	public static final class BlockPickerSetting extends Setting {
 		public final Supplier<Boolean> enabledGet;
 		public final Consumer<Boolean> enabledSet;
@@ -263,7 +237,7 @@ public final class NovaModules {
 	public static final class BoolSetting extends Setting {
 		public final Supplier<Boolean> get;
 		public final Consumer<Boolean> set;
-		/** Dependency gate — false greys the row out and refuses the click (e.g. "requires AI Bot"). */
+		/** Dependency gate; false greys the row out and refuses the click. */
 		public final Supplier<Boolean> available;
 
 		BoolSetting(String label, Supplier<Boolean> get, Consumer<Boolean> set) {
@@ -278,10 +252,7 @@ public final class NovaModules {
 		}
 	}
 
-	/**
-	 * The LT5→HT1 strength ramp for a combat mode. Its own type because it is neither a plain int
-	 * slider nor a toggle: it renders as a ten-notch track carrying the tier colour ramp.
-	 */
+	/** The LT5 to HT1 strength ramp for a combat mode, rendered as a ten-notch track. */
 	public static final class TierSetting extends Setting {
 		public final String modeKey;      // "sword" / "axe" / "mace"
 		public final IntSupplier get;
@@ -300,7 +271,7 @@ public final class NovaModules {
 		public final int min;
 		public final int max;
 		public final int step;
-		public final int divisor;   // display value = stored / divisor (1 = plain int; >1 shows a decimal)
+		public final int divisor;   // display value = stored / divisor
 		public final IntSupplier get;
 		public final IntConsumer set;
 
@@ -327,10 +298,10 @@ public final class NovaModules {
 		return stack;
 	}
 
-	/** One-line description per module id, shown as a tooltip in the panel. */
+	/** Module id to tooltip description. */
 	private static final java.util.Map<String, String> DESCRIPTIONS = buildDescriptions();
 
-	/** The blurb for a module id, or empty if none. */
+	/** Description for a module id, or empty if none. */
 	public static String description(String id) {
 		return DESCRIPTIONS.getOrDefault(id, "");
 	}
@@ -419,15 +390,10 @@ public final class NovaModules {
 	}
 
 	public static List<Category> build(ProFPSConfig cfg) {
-		// Every module is defined once here; the categories below just group them by id, so
-		// re-categorising is a one-line change to an id list rather than moving code around.
+		// Modules are defined once here; the categories below group them by id.
 		Map<String, Module> m = new java.util.LinkedHashMap<>();
 
 		// ── Combat modes ─────────────────────────────────────────────────────────────
-		// Modes are ordinary catalogue entries so they toggle, keybind and appear on the HUD like
-		// anything else — but they are exclusive with each other and, while one is on, it takes over
-		// the standalone modules in MANAGED (the UI locks those and shows them running in mode
-		// colours; the HUD hides them so only "Sword Mode" is listed).
 		m.put(MODE_SWORD, new Module(MODE_SWORD, "Sword Mode", Items.NETHERITE_SWORD,
 				() -> cfg.combatMode == 1, v -> cfg.combatMode = v ? 1 : 0,
 				new TierSetting("Tier", "sword", () -> cfg.swordModeTier, v -> cfg.swordModeTier = v),
@@ -809,8 +775,7 @@ public final class NovaModules {
 				new ChoiceSetting("Schematic", SchematicLibrary::names,
 						() -> cfg.schematicLibrarySelection,
 						v -> cfg.schematicLibrarySelection = v),
-				// Anchors the schematic where you stand and switches the builder
-				// on, so one press is the whole setup.
+				// Anchors the schematic at the player position and enables the builder.
 				new ButtonSetting("Place", "Load here", () -> SchematicLibrary.load(
 						MinecraftClient.getInstance(), cfg, cfg.schematicLibrarySelection)),
 				new ButtonSetting("Folder", "Rescan", SchematicLibrary::rescan),
@@ -944,7 +909,7 @@ public final class NovaModules {
 		return out;
 	}
 
-	/** Coordinates are typed, not dragged, so a bad keystroke keeps the previous value. */
+	/** Parses a typed coordinate, returning the fallback when unparseable. */
 	private static int parseCoord(String value, int fallback) {
 		try {
 			return Integer.parseInt(value.trim().replace(",", "").replace("_", ""));

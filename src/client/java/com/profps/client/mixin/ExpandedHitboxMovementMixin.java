@@ -7,10 +7,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/**
- * Applies Expanded Hitbox's packet-facing rotation only while vanilla constructs
- * the local player's movement update, then immediately restores the camera.
- */
+/** Applies the Expanded Hitbox packet rotation around movement packet construction. */
 @Mixin(ClientPlayerEntity.class)
 public abstract class ExpandedHitboxMovementMixin {
 

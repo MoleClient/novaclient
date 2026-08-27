@@ -11,16 +11,8 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.MathHelper;
 
 /**
- * Lazily-baked sprite atlas for the Nova GUI shapes.
- *
- * <p>Circles, glows and rounded corners used to be rasterised row-by-row into
- * dozens-to-hundreds of fill() elements each, every frame — thousands of GUI
- * elements per frame in total, which is what kept the panel from feeling
- * perfectly smooth. They are now baked ONCE into a small antialiased atlas
- * sampled with bilinear filtering, so each shape on screen is a single
- * textured quad.
- *
- * <p>Atlas cells (64px each): filled disc | radial glow | corner TL | TR | BL | BR.
+ * Lazily-baked antialiased sprite atlas for the Nova GUI shapes, so each shape draws as one quad.
+ * Cells (64px each): filled disc, radial glow, corner TL, TR, BL, BR.
  */
 final class NovaSprites {
 	static final Identifier ATLAS_ID = Identifier.of(ProFPS.MOD_ID, "nova_shapes");
@@ -33,7 +25,7 @@ final class NovaSprites {
 	static final int CORNER_TR_U = CELL * 3;
 	static final int CORNER_BL_U = CELL * 4;
 	static final int CORNER_BR_U = CELL * 5;
-	/** Disc/glow radius inside the cell; the margin keeps bilinear sampling from bleeding. */
+	/** Disc/glow radius inside the cell; the remaining margin stops bilinear bleed. */
 	static final float DISC_RADIUS = 30.0F;
 
 	private static boolean registered;
@@ -52,7 +44,7 @@ final class NovaSprites {
 		NativeImageBackedTexture texture = new NativeImageBackedTexture(() -> "profps nova shape atlas", image) {
 			@Override
 			public GpuSampler getSampler() {
-				// LINEAR keeps the shapes smooth at every drawn size.
+				// LINEAR keeps shapes smooth at any drawn size.
 				return RenderSystem.getSamplerCache().get(FilterMode.LINEAR);
 			}
 		};
@@ -82,11 +74,7 @@ final class NovaSprites {
 		}
 	}
 
-	/**
-	 * Quarter-disc corner cells. The arc radius is the full cell, centred on the
-	 * inner corner, so a cell scaled to r x r is exactly a radius-r round corner.
-	 * The other three orientations are mirrors of the first.
-	 */
+	/** Bakes the four quarter-disc corner cells; arc radius is the full cell, so a cell scaled to r x r is a radius-r corner. */
 	private static void bakeCorners(NativeImage image) {
 		for (int y = 0; y < CELL; y++) {
 			for (int x = 0; x < CELL; x++) {

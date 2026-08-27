@@ -25,8 +25,7 @@ public abstract class MouseMixin {
 
 	@Inject(method = "onMouseScroll", at = @At("HEAD"), cancellable = true)
 	private void profps$freecamScrollTrimsSpeed(long window, double horizontal, double vertical, CallbackInfo ci) {
-		// While flying, the wheel is a live speed trim — and the event is eaten
-		// so the hotbar doesn't silently switch slots underneath the flight.
+		// Consumes the event so the hotbar does not switch slots during freecam.
 		if (!FreecamController.isActive() || client.currentScreen != null) return;
 		double amount = vertical != 0.0 ? vertical : horizontal;
 		if (amount == 0.0) return;
@@ -37,9 +36,7 @@ public abstract class MouseMixin {
 	@Inject(method = "updateMouse", at = @At("HEAD"), cancellable = true)
 	private void profps$redirectSilentAimLook(double timeDelta, CallbackInfo ci) {
 		if (client.currentScreen != null || !((Mouse) (Object) this).isCursorLocked()) return;
-		// Silent aim: the body belongs to the combat module, so the player's own
-		// mouse steers the view it is rendering instead. Vanilla must not also
-		// apply the delta, or the aim would fight the hand every frame.
+		// The delta steers the rendered view only; vanilla must not also apply it.
 		if (SilentAimController.isActive()) {
 			SilentAimController.instance().handleMouse(client, cursorDeltaX, cursorDeltaY);
 			cursorDeltaX = 0.0;

@@ -33,33 +33,14 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Storage ESP — every container and every piece of redstone machinery, drawn as
- * its own outlined, semi-translucent box.
- *
- * <p>Deliberately standalone. Finding stashes used to require Advanced ESP, which
- * also meant carrying its hole/tunnel/stairs terrain scan; the two answer
- * completely different questions and only one of them is usually wanted.
- *
- * <p>Each block gets its own box rather than a merged cluster volume. A stash is
- * read by its shape — a double wall of chests, a barrel row, a hopper line under
- * a farm — and merging that into one blob throws away exactly the detail worth
- * seeing. The outlines are what keep touching containers legible as separate
- * blocks, so they are drawn brighter than the fills.
- *
- * <p>Containers are found through the chunk's block-entity map, which is both far
- * cheaper than a block sweep and more reliable: a server that obfuscates block
- * states still has to send block entities for its containers. Redstone parts are
- * not block entities, so those need a real sweep — but a section can be dismissed
- * in one palette test, so the common case never touches a block.
- */
+/** Renders one outlined box per container and per redstone machinery block. */
 public final class StorageEspRenderer {
 	private static final int SCAN_INTERVAL_TICKS = 40;
 	private static final int MAX_MARKERS = 4096;
 
-	private static final int CHEST_COLOR = 0xB35CFF;   // chests / trapped chests
-	private static final int ENDER_COLOR = 0x8A4BFF;   // ender chests, a deeper violet
-	private static final int SHULKER_COLOR = 0xE3A44E; // shulker boxes and barrels share this
+	private static final int CHEST_COLOR = 0xB35CFF;   // chests and trapped chests
+	private static final int ENDER_COLOR = 0x8A4BFF;   // ender chests
+	private static final int SHULKER_COLOR = 0xE3A44E; // shulker boxes and barrels
 	private static final int REDSTONE_COLOR = 0x4FD971;
 	private static final int FURNACE_COLOR = 0xE0663C;
 
@@ -89,12 +70,7 @@ public final class StorageEspRenderer {
 		if (failedClosed || client.world == null || client.player == null) return;
 		if (nextScanTick > client.player.age + SCAN_INTERVAL_TICKS) nextScanTick = 0;
 
-		// Flying outruns the cycle. A sweep is planned around one point and takes
-		// hundreds of ticks; at 40 blocks a second the player is two and a half
-		// chunks further on every second, so by the end the queue is grinding
-		// terrain far behind and nothing ahead was ever queued. Re-plan around
-		// the new position instead. The queue is ordered nearest-first, so what
-		// is closest always gets scanned first no matter how often this fires.
+		// A cycle spans hundreds of ticks, so re-plan once the player leaves its centre.
 		if (!scanQueue.isEmpty()
 				&& ScanBudget.leftScanArea(client, scanCentreChunkX, scanCentreChunkZ, 3)) {
 			scanQueue.clear();
@@ -136,9 +112,8 @@ public final class StorageEspRenderer {
 				visible.add(marker);
 			}
 
-			// The immediate provider owns one active buffer at a time: every fill
-			// has to be emitted before the lines layer is requested, because
-			// asking for it flushes the fill buffer.
+			// The immediate provider holds one active buffer, so all fills must finish
+			// before requesting the lines layer.
 			VertexConsumer fills = ctx.consumers().getBuffer(DonutWorldRenderer.FILLS);
 			for (Marker marker : visible) {
 				DonutWorldRenderer.drawFilledBox(fills, pos, marker.box(), camera, marker.color(), fill);
@@ -219,7 +194,7 @@ public final class StorageEspRenderer {
 		for (int i = 0; i < next.size() && i < MAX_MARKERS; i++) markers.add(next.get(i));
 	}
 
-	/** Containers come from the block-entity map — cheaper and harder to hide. */
+	/** Collects containers from the chunk's block-entity map. */
 	private void scanContainers(MinecraftClient client, WorldChunk chunk) {
 		for (Map.Entry<BlockPos, BlockEntity> found : chunk.getBlockEntities().entrySet()) {
 			BlockPos pos = found.getKey();
@@ -241,9 +216,7 @@ public final class StorageEspRenderer {
 		if (blockEntity instanceof ShulkerBoxBlockEntity || blockEntity instanceof BarrelBlockEntity) {
 			return config.donutStorageShowShulkers ? SHULKER_COLOR : 0;
 		}
-		// Hoppers, droppers, dispensers and crafters are containers, but on a
-		// farm they are the machinery — group them with redstone so hiding the
-		// machinery hides all of it at once.
+		// Hoppers, dispensers and crafters are containers but count as machinery here.
 		if (blockEntity instanceof HopperBlockEntity || blockEntity instanceof DispenserBlockEntity
 				|| blockEntity instanceof CrafterBlockEntity) {
 			return config.donutStorageShowRedstone ? REDSTONE_COLOR : 0;
@@ -255,11 +228,7 @@ public final class StorageEspRenderer {
 		return 0;
 	}
 
-	/**
-	 * Redstone parts are plain block states, so this is a real sweep — but a
-	 * whole 16-cube section is dismissed by one palette test, so sections without
-	 * any redstone in them never cost a block lookup.
-	 */
+	/** Sweeps block states for redstone parts; one palette test dismisses a whole section. */
 	private void scanRedstone(MinecraftClient client, WorldChunk chunk) {
 		ChunkSection[] sections = chunk.getSectionArray();
 		int startX = chunk.getPos().getStartX();
@@ -288,11 +257,7 @@ public final class StorageEspRenderer {
 		}
 	}
 
-	/**
-	 * Machinery, not wiring. Redstone dust and repeated torches carpet a farm in
-	 * hundreds of boxes and bury the thing you are trying to see, so the sweep
-	 * looks for the parts that mark out what a contraption actually is.
-	 */
+	/** Machinery blocks only; dust and torches are excluded to keep marker counts down. */
 	private static boolean isRedstonePart(BlockState state) {
 		return state.isOf(Blocks.OBSERVER) || state.isOf(Blocks.PISTON) || state.isOf(Blocks.STICKY_PISTON)
 				|| state.isOf(Blocks.REPEATER) || state.isOf(Blocks.COMPARATOR)
@@ -305,8 +270,7 @@ public final class StorageEspRenderer {
 	private void add(BlockPos pos, int color) {
 		if (pending == null) return;
 		if (pending.size() < MAX_MARKERS) {
-			// A hair of inflation so a box on a shared face still reads as two
-			// outlines rather than one doubled line.
+			// Slight inflation keeps shared faces as two distinct outlines.
 			pending.add(new Marker(new Box(pos).expand(0.012D), color));
 		}
 	}

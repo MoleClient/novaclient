@@ -28,20 +28,14 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Records one row of player state per client tick and hands it to {@link ContributionUploader},
- * which batches, compresses and ships it. The point of the corpus is to learn what real human
- * movement looks like at tick resolution, so this runs from {@code firePreMovement} — the tail of
- * {@code handleInputEvents()}, after the keyboard has been read and before the player tick sends
- * movement. That is the only phase where the raw human input and the state it was a response to
- * are both on hand and neither has been rewritten by a module yet.
+ * Records one row of player state per client tick and hands it to {@link ContributionUploader}.
  *
- * <p>Everything is spatially relative by default. Rows carry an offset from a per-session origin
- * rather than world coordinates, which is both what a movement model wants (motion generalises,
- * map positions do not) and what keeps a contributor's base off the wire. Absolute coordinates and
- * the server address ride along only when the player has separately opted into location data.
+ * <p>Runs from {@code firePreMovement}, the tail of {@code handleInputEvents()}, after the keyboard
+ * is read and before the player tick sends movement. Positions are relative to a per-session origin
+ * unless the player opted into location data.
  */
 public final class DataContribution {
-	/** Bump when the field order below changes. Rows are positional, so readers key off this. */
+	/** Bump when the field order below changes. Rows are positional. */
 	static final int SCHEMA = 3;
 
 	private static final int MAX_TRACKED = 4;
@@ -50,12 +44,12 @@ public final class DataContribution {
 	private static DataContribution instance;
 
 	/**
-	 * Positional field names for the local-player row. Order is the wire format — append to the
-	 * end and bump {@link #SCHEMA}, never insert into the middle.
+	 * Positional field names for the local-player row. Order is the wire format: append to the end
+	 * and bump {@link #SCHEMA}, never insert into the middle.
 	 */
 	static final String[] FIELDS = {
 			"tick", "ms",
-			// Offset from the session origin: full trajectory shape, no real place.
+			// Offset from the session origin.
 			"rel_x", "rel_y", "rel_z",
 			"dx", "dy", "dz",
 			"vx", "vy", "vz", "speed",
@@ -64,14 +58,12 @@ public final class DataContribution {
 			"in_water", "submerged", "in_lava", "swimming", "gliding", "jumping",
 			"sprint", "sneak", "using_item", "use_ticks", "blocking",
 			"health", "absorption", "food", "saturation", "air", "hurt_time",
-			// The human's actual key state this tick — the label a movement model predicts.
+			// Raw key state this tick.
 			"key_forward", "key_back", "key_left", "key_right",
 			"key_jump", "key_sneak", "key_sprint", "key_attack", "key_use",
-			// What the body was actually given. Note this lags key_* by one tick by construction:
-			// it was written during the previous player tick, before this sample was taken.
+			// Input the body was given. Lags key_* by one tick: written during the previous player tick.
 			"eff_forward", "eff_back", "eff_left", "eff_right", "eff_jump", "eff_sneak", "eff_sprint",
-			// A module rewrote the movement input. Computed from the two aligned to the SAME tick,
-			// not from the two columns above — those are a tick apart and differ on every keypress.
+			// Computed from two samples aligned to the same tick, not from the two columns above.
 			"overridden",
 			"mv_side", "mv_fwd",
 			"slot", "main_item", "off_item", "attack_cd",
@@ -81,20 +73,15 @@ public final class DataContribution {
 			"near_count", "player_count",
 			// Zero unless the player opted into location data; the batch header says which.
 			"abs_x", "abs_y", "abs_z",
-			// What the player is doing, and a segment id that groups consecutive ticks of it.
-			// The segment also breaks across any gap the module gate left, so nothing downstream
-			// reads across dropped ticks as though the motion were continuous.
+			// Activity label plus a segment id that also breaks across any gap the module gate left.
 			"activity", "segment", "ms_in_activity", "pvp", "threat_dist"
 	};
 
 	/**
 	 * Positional field names for each tracked nearby entity. Same append-only rule.
 	 *
-	 * <p>{@code id} is what makes the four slots followable. They are sorted players-first then by
-	 * distance, so when two opponents swap ranks between ticks slot 0 silently becomes a different
-	 * person — without an identity you cannot track one opponent through a fight, which is exactly
-	 * what a combat model has to learn from. The network id is stable for as long as the entity is
-	 * tracked in the session and says nothing about who it belongs to.
+	 * <p>Slots are sorted players-first then by distance, so {@code id} is what identifies an entity
+	 * across ticks when slots reorder.
 	 */
 	static final String[] ENTITY_FIELDS = {
 			"id", "type", "is_player", "dx", "dy", "dz", "dist",
@@ -113,8 +100,7 @@ public final class DataContribution {
 	private long tickIndex;
 	private Vec3d origin;
 
-	// Edge-detection state: events are derived from state transitions rather than by hooking
-	// every call site, so the recorder stays a leaf and cannot perturb what it is measuring.
+	// Edge-detection state: events are derived from state transitions, not from call-site hooks.
 	private Vec3d lastPos;
 	private float lastYaw;
 	private float lastPitch;
@@ -124,11 +110,11 @@ public final class DataContribution {
 	private boolean lastBreaking;
 	private int lastHurtTime;
 	private int lastSlot = -1;
-	/** Previous tick's raw key state, so `overridden` compares like with like. See sample(). */
+	/** Previous tick's raw key state, so {@code overridden} compares against the same tick's input. */
 	private boolean[] lastKeys;
 	private long recorded;
 	private long skipped;
-	/** Last gate verdict, so only transitions are logged rather than a sample of blocked ticks. */
+	/** Last gate verdict, so only transitions are logged. */
 	private boolean lastBlocked;
 	private final List<String> pendingEvents = new ArrayList<>(4);
 
@@ -145,12 +131,12 @@ public final class DataContribution {
 		return instance;
 	}
 
-	/** Called from the attack path so a swing that actually landed is distinguishable from a miss. */
+	/** Called from the attack path when a swing lands. */
 	public static void noteAttack() {
 		if (instance != null) instance.pendingEvents.add("attack");
 	}
 
-	/** Called from the block-use path; also what flips the activity label to building. */
+	/** Called from the block-use path; flips the activity label to building. */
 	public static void noteBlockPlace() {
 		if (instance != null) instance.pendingEvents.add("place");
 	}
@@ -165,7 +151,7 @@ public final class DataContribution {
 
 	public void tick(MinecraftClient client) {
 		if (!config.dataContribution) {
-			// A mid-session opt-out drops the buffer rather than shipping what it already holds.
+			// Mid-session opt-out drops the buffer instead of shipping it.
 			if (sessionWorld != null) {
 				uploader.discard();
 				sessionWorld = null;
@@ -186,8 +172,7 @@ public final class DataContribution {
 		try {
 			sample(client, self, world);
 		} catch (RuntimeException exception) {
-			// Telemetry must never be able to take the client down with it. One bad row is
-			// dropped and the session carries on; a broken recorder is not worth a crash.
+			// Drop the bad row rather than let the recorder crash the client.
 			ProFPS.LOGGER.warn("Data contribution row failed; skipping this tick.", exception);
 		} finally {
 			pendingEvents.clear();
@@ -196,10 +181,8 @@ public final class DataContribution {
 	}
 
 	/**
-	 * Works out what this tick is before deciding whether to keep it. The order matters: events
-	 * and the entity list feed the activity label, the label plus the module gate decide whether
-	 * the row is real play, and only then is anything encoded. Per-tick deltas are advanced either
-	 * way, so a delta is always "since the previous tick" rather than silently spanning a gap.
+	 * Classifies the tick, then decides whether to keep it. Deltas advance whether or not the row is
+	 * kept, so a delta never spans a gap.
 	 */
 	private void sample(MinecraftClient client, ClientPlayerEntity self, ClientWorld world) {
 		Vec3d pos = self.getEntityPos();
@@ -212,13 +195,8 @@ public final class DataContribution {
 				keys.jumpKey.isPressed(), keys.sneakKey.isPressed(), keys.sprintKey.isPressed()
 		};
 
-		// The two samples are a tick apart and have to be aligned before they can be compared.
-		// This runs at the tail of handleInputEvents(); `input.playerInput` was last written by
-		// KeyboardInput.tick() during the PREVIOUS player tick, so it reflects the keyboard as it
-		// was then, not as it is now. Comparing it against the keys held right now flags every
-		// press and every release as an override — symmetric, transition-only noise that has
-		// nothing to do with modules. So compare last tick's keys against last tick's applied
-		// input, which is like for like.
+		// input.playerInput was written by KeyboardInput.tick() during the previous player tick, so
+		// it must be compared against the previous tick's keys, not the keys held now.
 		boolean[] applied = {
 				input.forward(), input.backward(), input.left(), input.right(),
 				input.jump(), input.sneak(), input.sprint()
@@ -234,9 +212,7 @@ public final class DataContribution {
 		gate.update(client, config, overridden);
 
 		boolean blocked = !gate.allows(activity.activity());
-		// Log the EDGES, not a sample of the blocked ticks. A rate-limited counter told me nothing
-		// when the count stayed at zero while the UI still said paused — the two disagreeing is
-		// itself the symptom, so record both sides of every transition.
+		// Log both sides of every transition rather than sampling blocked ticks.
 		if (blocked != lastBlocked) {
 			ProFPS.LOGGER.info("Data contribution {}: reason={} activity={} overridden={}{} kept={} skipped={}",
 					blocked ? "PAUSED" : "resumed",
@@ -246,8 +222,7 @@ public final class DataContribution {
 			lastBlocked = blocked;
 		}
 		if (blocked) {
-			// Deliberately not recorded: a module is driving this. Advancing the deltas here is
-			// what keeps the next kept row honest instead of carrying a stale reference point.
+			// Not recorded, but the deltas still advance so the next kept row is not stale.
 			skipped++;
 			lastPos = pos;
 			lastYaw = self.getYaw();
@@ -258,18 +233,14 @@ public final class DataContribution {
 		uploader.submit(row(client, self, world, tracked, input, pressed, overridden, nowMs));
 	}
 
-	/** What the Data settings page shows: null while recording, otherwise why it is paused. */
+	/** Null while recording, otherwise why recording is paused. */
 	public String pausedReason() {
 		if (!config.dataContribution) return "Turned off";
 		String reason = gate.reason();
 		return reason == null ? null : reason + " is on";
 	}
 
-	/**
-	 * Live counters for {@code /nova data}. Telemetry that fails quietly is worse than none —
-	 * a wrong endpoint and an empty corpus look exactly the same from the outside — so the state
-	 * that decides whether anything is being collected is readable in-game.
-	 */
+	/** Live counters for {@code /nova data}. */
 	public List<String> status() {
 		String paused = pausedReason();
 		List<String> lines = new ArrayList<>();
@@ -303,11 +274,7 @@ public final class DataContribution {
 		uploader.beginSession(UUID.randomUUID().toString(), pseudonym(self), serverLabel(client));
 	}
 
-	/**
-	 * A stable per-install identity that is not the account. Recordings from one contributor group
-	 * together — which train/test splits need, or the model learns to recognise individuals across
-	 * the split — while the UUID itself never leaves the machine. Deleting the config re-rolls it.
-	 */
+	/** Stable per-install identity derived from a local salt and the account UUID. */
 	private String pseudonym(ClientPlayerEntity self) {
 		try {
 			MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -319,7 +286,7 @@ public final class DataContribution {
 		}
 	}
 
-	/** Only ever non-null with location data on; otherwise the collector cannot tell servers apart. */
+	/** Non-null only when location data is enabled. */
 	private String serverLabel(MinecraftClient client) {
 		if (!config.dataContributionLocation) return null;
 		if (client.isInSingleplayer()) return "singleplayer";
@@ -357,8 +324,7 @@ public final class DataContribution {
 		w.n(self.getHealth()); w.n(self.getAbsorptionAmount());
 		w.n(self.getHungerManager().getFoodLevel()); w.n(self.getHungerManager().getSaturationLevel());
 		w.n(self.getAir()); w.n(self.hurtTime);
-		// The same snapshot sample() took, not a fresh read: re-reading here could land on the
-		// other side of a keypress and disagree with the flag computed moments ago.
+		// The snapshot sample() took, not a fresh read, so it agrees with the overridden flag.
 		for (boolean held : pressed) w.b(held);
 		w.b(client.options.attackKey.isPressed()); w.b(client.options.useKey.isPressed());
 		w.b(input.forward()); w.b(input.backward()); w.b(input.left()); w.b(input.right());
@@ -405,7 +371,7 @@ public final class DataContribution {
 
 	private static final String[] INPUT_NAMES = {"forward","back","left","right","jump","sneak","sprint"};
 
-	/** Names exactly which inputs disagreed and which way, so a false positive is diagnosable. */
+	/** Names which inputs disagreed and in which direction. */
 	static String describeOverride(boolean[] lastKeys, boolean[] applied) {
 		if (lastKeys == null) return "[no previous tick]";
 		StringBuilder out = new StringBuilder("[");
@@ -418,13 +384,7 @@ public final class DataContribution {
 	}
 
 	/**
-	 * Whether a module rewrote the movement input, given the keys held on the previous tick and the
-	 * input that was actually applied for that same tick.
-	 *
-	 * <p>Both arguments must describe the SAME tick. Comparing the keys held right now against the
-	 * already-applied input is off by one and flags every press and release, which is symmetric,
-	 * transition-only noise — and because an override suppresses recording for 40 ticks, it starved
-	 * the corpus to about 2% of real play before this was caught.
+	 * Whether a module rewrote the movement input. Both arguments must describe the same tick.
 	 *
 	 * @param lastKeys previous tick's raw keyboard state, or null on the very first tick
 	 * @param applied  the input actually given to the body for that same tick
@@ -437,18 +397,14 @@ public final class DataContribution {
 		return false;
 	}
 
-	/**
-	 * Turns state transitions into the sparse event list. Kept to edges the client can see for
-	 * itself so that no combat module has to call into the recorder and change its own timing.
-	 */
+	/** Turns state transitions the client can already see into the sparse event list. */
 	private void detectEdges(MinecraftClient client, ClientPlayerEntity self, Vec3d velocity) {
 		if (self.handSwinging && !lastSwinging) pendingEvents.add("swing");
 		lastSwinging = self.handSwinging;
 
 		boolean breaking = client.interactionManager != null && client.interactionManager.isBreakingBlock();
 		if (breaking && !lastBreaking) pendingEvents.add("break_start");
-		// The falling edge is "stopped breaking", which covers both finishing the block and
-		// letting go of it. The mining label already says which stretch was the dig.
+		// Falling edge covers both finishing the block and releasing it.
 		if (!breaking && lastBreaking) pendingEvents.add("break_end");
 		lastBreaking = breaking;
 
@@ -468,7 +424,7 @@ public final class DataContribution {
 		lastSlot = slot;
 	}
 
-	/** The nearest few entities, players first, so the tracked slots do not churn every tick. */
+	/** The nearest few living entities, players first. */
 	private List<Entity> nearby(ClientWorld world, ClientPlayerEntity self) {
 		Box box = self.getBoundingBox().expand(TRACK_RADIUS);
 		List<Entity> found = new ArrayList<>(world.getOtherEntities(self, box,
@@ -488,8 +444,7 @@ public final class DataContribution {
 			Vec3d rel = pos.subtract(selfPos);
 			Vec3d velocity = entity.getVelocity();
 			double dist = rel.length();
-			// Bearing is the target's direction in the player's own frame, so a model sees
-			// "to my left" rather than a world-axis offset it would have to rotate itself.
+			// Bearing is the target's direction in the player's own frame, not world axes.
 			double bearing = MathHelper.wrapDegrees(
 					Math.toDegrees(Math.atan2(-rel.x, rel.z)) - self.getYaw());
 			double facing = MathHelper.wrapDegrees(
@@ -518,11 +473,7 @@ public final class DataContribution {
 		return rows;
 	}
 
-	/**
-	 * How far the floor falls away one block out in a direction. Distinguishes "walked to the edge
-	 * and stopped" from "walked into a wall", which are the same velocity trace but different
-	 * decisions. Capped at four so a void edge does not dominate the feature.
-	 */
+	/** How far the floor falls away one block out in a direction. Returns -1 for a wall, capped at 4. */
 	private static double drop(ClientWorld world, BlockPos feet, int dx, int dz) {
 		BlockPos probe = feet.add(dx, 0, dz);
 		if (!world.getBlockState(probe).getCollisionShape(world, probe).isEmpty()) return -1.0D;
@@ -543,7 +494,7 @@ public final class DataContribution {
 		return 3.0D;
 	}
 
-	/** Open blocks above the head, up to four — the ceiling that decides whether a jump is possible. */
+	/** Open blocks above the head, up to four. */
 	private static double headRoom(ClientWorld world, BlockPos feet) {
 		for (int height = 2; height <= 5; height++) {
 			BlockPos probe = feet.up(height);
@@ -567,11 +518,7 @@ public final class DataContribution {
 		return entry == null ? 0 : entry.getLatency();
 	}
 
-	/**
-	 * Builds one positional row. Fields are appended in order and the count is checked on the way
-	 * out, so a field added to the name array but not written here fails loudly at the first tick
-	 * rather than silently shifting every later column in the corpus.
-	 */
+	/** Builds one positional row and checks the field count against the schema on the way out. */
 	static final class RowWriter {
 		private final StringBuilder out = new StringBuilder(512);
 		private final ContributionUploader uploader;
@@ -594,7 +541,7 @@ public final class DataContribution {
 			out.append(value ? '1' : '0');
 		}
 
-		/** Strings go in as an index into the batch dictionary, never as repeated literals. */
+		/** Writes a string as an index into the batch dictionary. */
 		void s(String value) {
 			separator();
 			out.append(uploader.intern(value));

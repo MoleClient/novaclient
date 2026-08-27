@@ -121,7 +121,6 @@ class CombatModePolicyTest {
 				() -> assertEquals(90, breach.chargePct()),
 				() -> assertFalse(CombatModePolicy.enabled(config, CombatFeature.PEARL_CATCH)));
 
-		// Pearl Catch is retired: no tier, mode or legacy flag can arm it again.
 		for (CombatTier tier : CombatTier.values()) {
 			config.maceModeTier = tier.index();
 			assertFalse(CombatModePolicy.enabled(config, CombatFeature.PEARL_CATCH));
@@ -143,7 +142,7 @@ class CombatModePolicyTest {
 		config.maceModeAutoSwitch = false;
 		assertFalse(CombatModePolicy.autoMaceAutoSwitch(config));
 
-		// Under another mode AutoMace runs as the standalone module, so its switch follows suit.
+		// Under another mode AutoMace runs standalone, so its switch follows suit.
 		config.autoMaceAutoSwitch = true;
 		config.combatMode = CombatMode.SWORD.configValue();
 		assertTrue(CombatModePolicy.autoMaceAutoSwitch(config));
@@ -172,7 +171,7 @@ class CombatModePolicyTest {
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.STRAFE)),
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.SWORD_AUTO_SPRINT)),
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.TRIGGER)),
-				// Sword mode does not drive projectiles, so Auto Aim keeps running on its own.
+				// Sword mode does not drive projectiles, so Auto Aim stays standalone.
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.PROJECTILE_AIM)));
 
 		config.swordModeAiBot = true;
@@ -188,10 +187,10 @@ class CombatModePolicyTest {
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.BOW_AIM)),
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.CROSSBOW_AIM)),
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.FIREBALL_AIM)),
-				// Axe mode drives the Triggerbot from its own switch, like Sword mode does.
+				// Axe mode drives the Triggerbot from its own switch.
 				() -> assertTrue(CombatModeRuntime.triggerEnabledFor(config, java.util.UUID.randomUUID())));
 
-		// With that switch off, the only way in is the post-stun continuation.
+		// With that switch off only the post-stun continuation can enable the Triggerbot.
 		config.axeModeTrigger = false;
 		assertFalse(CombatModeRuntime.triggerEnabledFor(config, java.util.UUID.randomUUID()));
 		config.axeModeTrigger = true;
@@ -210,8 +209,7 @@ class CombatModePolicyTest {
 		config.aimImprovements = true;
 		config.swordAiEnabled = true;
 
-		// Mace mode owns the mace and nothing else: everything it does not drive keeps running from
-		// its own module, including the Triggerbot.
+		// Mace mode owns only the mace; every other module keeps running standalone.
 		assertAll(
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.TRIGGER)),
 				() -> assertTrue(CombatModeRuntime.triggerEnabledFor(config, java.util.UUID.randomUUID())),
@@ -220,7 +218,7 @@ class CombatModePolicyTest {
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.MELEE_AIM)),
 				() -> assertTrue(CombatModePolicy.enabled(config, CombatFeature.SWORD_AI)));
 
-		// The mace itself comes from the mode, not from the standalone AutoMace flag.
+		// The mace comes from the mode, not from the standalone AutoMace flag.
 		config.autoMace = false;
 		config.maceModeAutoMace = true;
 		assertTrue(CombatModePolicy.enabled(config, CombatFeature.AUTO_MACE));

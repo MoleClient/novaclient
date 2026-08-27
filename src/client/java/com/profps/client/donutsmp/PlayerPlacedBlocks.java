@@ -14,16 +14,7 @@ import net.minecraft.registry.tag.BlockTags;
 
 import java.util.Set;
 
-/**
- * Shared classifier for "a player built this" blocks, used by the base-finding
- * scan in Hole/Tunnel/Stairs ESP.
- *
- * <p>The original detectors only knew about functional blocks (chests,
- * furnaces, redstone). A raided/destroyed base keeps none of those — what
- * remains is the SHELL: stained glass, concrete, wool, glowstone, candles,
- * quartz... none of which generate naturally underground. This classifier is
- * what lets the scanners see that shell.
- */
+/** Classifies blocks that indicate player construction rather than natural generation. */
 public final class PlayerPlacedBlocks {
 
 	private static final Set<Block> CONCRETE = Set.of(
@@ -49,9 +40,9 @@ public final class PlayerPlacedBlocks {
 	private PlayerPlacedBlocks() {}
 
 	/**
-	 * Build/decor blocks that essentially never occur in natural underground
-	 * generation. Glowstone IS natural in the nether — callers scanning nether
-	 * chunks should pass {@code inNether = true} so it doesn't false-ping.
+	 * True for build/decor blocks that do not occur in natural underground generation.
+	 *
+	 * @param inNether pass true for nether chunks, where glowstone and shroomlight are natural
 	 */
 	public static boolean isBuildDecor(BlockState state, boolean inNether) {
 		Block block = state.getBlock();

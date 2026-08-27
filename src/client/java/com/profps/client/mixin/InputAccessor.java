@@ -7,10 +7,8 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
 /**
- * Setters for the movement fields declared on {@link Input}. They can't be
- * {@code @Shadow}-ed from the {@code KeyboardInput} mixin (a field shadow has to
- * live in the class that declares it), so the override goes through these
- * accessors instead.
+ * Accessors for the movement fields declared on {@link Input}, which cannot be
+ * shadowed from the KeyboardInput mixin.
  */
 @Mixin(Input.class)
 public interface InputAccessor {

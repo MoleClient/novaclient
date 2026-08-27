@@ -1,10 +1,6 @@
 package com.profps.client.combatmode;
 
-/**
- * Immutable effective tuning returned by {@link CombatModePolicy}. None of these
- * values weakens a legality gate; controllers still own ray, reach, packet-order,
- * collision, and mouse-quantization checks.
- */
+/** Immutable effective tuning records returned by {@link CombatModePolicy}. */
 public final class CombatModeProfile {
 	private CombatModeProfile() {}
 

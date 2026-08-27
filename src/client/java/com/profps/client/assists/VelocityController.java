@@ -10,10 +10,7 @@ import net.minecraft.util.math.Vec3d;
 
 import java.util.concurrent.ThreadLocalRandom;
 
-/**
- * Stateful part of Vape-style Velocity. The packet mixin delegates each local
- * knockback vector here; delayed reduction is completed from the client tick.
- */
+/** Reduces incoming knockback; the packet mixin delegates each local knockback vector here. */
 public final class VelocityController {
 	private static VelocityController active;
 	private static final double FACE_TO_FACE_DOT = Math.cos(Math.toRadians(55.0D));

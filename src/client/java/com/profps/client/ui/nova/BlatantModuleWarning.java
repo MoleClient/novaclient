@@ -8,11 +8,7 @@ import net.minecraft.util.Formatting;
 
 import java.util.Set;
 
-/**
- * Central confirmation gate for modules that directly violate vanilla multiplayer
- * reach, velocity, or movement physics. Runtime behavior remains available; only
- * an explicit user confirmation may turn one on through the module UI/keybinds.
- */
+/** Confirmation gate required before enabling modules that alter vanilla reach, velocity or movement. */
 final class BlatantModuleWarning {
 	private static final Set<String> MODULE_IDS = Set.of(
 			"reach", "velocity", "flight", "waterwalk", "boatfly", "teleporter");

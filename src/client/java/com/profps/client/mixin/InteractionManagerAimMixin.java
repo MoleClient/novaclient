@@ -12,11 +12,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Lets Auto Aim perfect a projectile shot the instant before it leaves. We hook the
- * two ways a projectile fires — releasing a drawn bow ({@code stopUsingItem}) and a
- * right-click that throws a fireball or fires a loaded crossbow ({@code interactItem})
- * — at HEAD, so the corrected rotation (and its look packet) reach the server before
- * the fire packet does, and the projectile launches along the solved aim.
+ * Applies the Auto Aim rotation at HEAD of both projectile fire paths, so the look
+ * packet reaches the server before the fire packet.
  */
 @Mixin(ClientPlayerInteractionManager.class)
 public abstract class InteractionManagerAimMixin {

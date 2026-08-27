@@ -172,8 +172,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		AutoBedController autoBed = new AutoBedController(config);
 		autoCreeper = new AutoCreeperController(config);
 		AutoMinecartController autoMinecart = new AutoMinecartController(config);
-		// Re-open whatever schematic was loaded last session, at its saved anchor,
-		// so a restart does not silently leave the builder with nothing to build.
+		// Restore the last loaded schematic at its saved anchor.
 		com.profps.client.extras.SchematicLibrary.restore(config);
 		novaCategories = NovaModules.build(config);
 		ModuleKeybinds moduleKeybinds = new ModuleKeybinds(config, novaCategories);
@@ -199,35 +198,31 @@ public final class ProFPSClient implements ClientModInitializer {
 			com.profps.client.classics.NicknameManager.update(config);
 			aimImprovements.tick(client);
 			strafeImprovements.tick(client);
-			// hitImprovements (triggerbot) is driven from TriggerbotPreMovementMixin instead,
-			// so its attack packet is sent BEFORE the flying packet (vanilla order) and never
-			// trips Grim's "Post" check. Do NOT also tick it here or it would double-fire.
+			// hitImprovements is ticked from TriggerbotPreMovementMixin to keep attack before
+			// flying packet order; ticking it here too would double-fire.
 			jumpReset.tick(client);
 			velocity.tick(client);
 			autoPot.tick(client);
 			autoXp.tick(client);
 			fastUse.tick(client);
 			totemTweaks.tick(client);
-			// Freecam ticks before Tunnel on purpose: both write body rotation,
-			// and the bot's steering has to land last so it keeps mining while
-			// the camera is away.
+			// Both write body rotation; Tunnel must land last, so Freecam ticks first.
 			freecam.tick(client);
 			tunnel.tick(client);
 			advancedEsp.tick(client);
 			storageEsp.tick(client);
 			primeChunk.tick(client);
-			// Stash Pinger reads Prime's flag set for corroboration, so it ticks after it.
+			// Reads primeChunk's flag set, so it must tick after it.
 			stashPinger.tick(client);
 			amethystDetector.tick(client);
 			toolMine.tick(client);
 			fastPlace.tick(client);
 			inventoryAutomation.tick(client);
-			// Auto Sign deliberately runs with a screen open — the sign editor IS its trigger.
+			// Runs with a screen open: the sign editor is its trigger.
 			autoSign.tick(client);
 			rtpFinder.tick(client);
 			movementInstants.tick(client);
-			// autoMace is driven from TriggerbotPreMovementMixin (firePreMovement) so its attack
-			// packet is sent BEFORE the flying packet (vanilla order) and won't trip Grim "Post".
+			// autoMace is ticked from firePreMovement to keep attack before flying packet order.
 			autoAim.tick(client);
 			scaffold.tick(client);
 			clutch.tick(client);
@@ -247,16 +242,13 @@ public final class ProFPSClient implements ClientModInitializer {
 			bedBreaker.tick(client);
 		});
 
-		// Top-left FPS box removed. (ProFPSHud kept in the codebase, just not registered.)
+		// ProFPSHud is intentionally not registered.
 		HudRenderCallback.EVENT.register(new NovaModuleListHud(config, novaCategories));
 		HudRenderCallback.EVENT.register(scaffold::renderHud);
 		WorldRenderEvents.END_MAIN.register(context -> {
 				MinecraftClient mc = MinecraftClient.getInstance();
-				// Runs unconditionally and before any aiming module: silent aim is
-				// held by continuous request, so this is what walks the body back
-				// under the camera the moment nothing is asking for it any more —
-				// including when a higher-priority controller stops the mace's
-				// frame hook from running at all.
+				// Must run before any aiming module: silent aim is held by continuous
+				// request, and this restores the body once nothing is requesting it.
 				com.profps.client.aim.SilentAimController.instance().frame(mc, silentAimFrameDelta());
 				pearlCatch.frame(mc);
 				boolean pearlOwnsRotation = pearlCatch.ownsRotation();
@@ -265,8 +257,7 @@ public final class ProFPSClient implements ClientModInitializer {
 				boolean creeperOwnsRotation = autoCreeper.ownsRotation();
 				boolean spearOwnsRotation = false;
 				if (!pearlOwnsRotation && !expandedOwnsRotation && !creeperOwnsRotation) {
-					// Auto Lunge Swap first: it is a momentary, deliberately fired burst, so it
-					// outranks Auto Spear's standing aim for the few ticks it runs.
+					// autoLunge is a momentary burst and outranks autoSpear's standing aim.
 					spearOwnsRotation = autoLunge.frame(mc);
 					if (!spearOwnsRotation) spearOwnsRotation = autoSpear.frame(mc);
 				}
@@ -275,14 +266,7 @@ public final class ProFPSClient implements ClientModInitializer {
 					schematicBuild.frame(mc);
 				}
 				boolean schematicOwnsRotation = schematicBuild.ownsRotation();
-				// The pot flick has to own the view outright for the ~400ms it runs.
-				// It used to be sandwiched between the two aim blocks below, so an
-				// aim assist dragged the head back toward the opponent on the very
-				// same frames the flick was turning away — and since the throw was
-				// released on the flick's own clock rather than on where the view
-				// had actually ended up, the pot went out at whatever half-turned
-				// angle that fight happened to leave. Hence "sometimes down,
-				// sometimes straight at them".
+				// The pot flick must own rotation exclusively while it runs.
 				boolean potOwnsRotation = autoPot.ownsRotation();
 				if (!schematicOwnsRotation) {
 					autoPot.frame(mc);
@@ -304,16 +288,12 @@ public final class ProFPSClient implements ClientModInitializer {
 				if (!schematicOwnsRotation && !pearlOwnsRotation && !expandedOwnsRotation) autoCreeper.frame(mc);
 				if (!schematicOwnsRotation) autoMinecart.frame(mc);
 			});
-		// Do not attach overlays to BEFORE_DEBUG_RENDER. Performance mods can skip the
-		// vanilla debug-renderer invocation entirely, which also skips Fabric's event.
-		// END_MAIN is part of the normal world pass and renders these overlays after
-		// terrain/translucency regardless of whether debug rendering is active.
+		// Use END_MAIN, not BEFORE_DEBUG_RENDER: performance mods can skip the vanilla
+		// debug-renderer invocation and with it Fabric's event.
 		WorldRenderEvents.END_MAIN.register(hitboxes::render);
 		WorldRenderEvents.END_MAIN.register(advancedEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(storageEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(remember::render);
-		// The loaded-schematic hologram draws alongside the Remember ghosts, not
-		// instead of them: one shows a captured build, the other a file.
 		WorldRenderEvents.END_MAIN.register(
 				new com.profps.client.extras.SchematicGhostRenderer(config)::render);
 		WorldRenderEvents.END_MAIN.register(primeChunk::renderWorld);
@@ -344,22 +324,19 @@ public final class ProFPSClient implements ClientModInitializer {
 								.executes(context -> reportDataContribution(MinecraftClient.getInstance())))
 		));
 
-		// Packet Utils: draw the in-GUI toolbar on every screen and reset its live state on
-		// disconnect so a reconnect never rejoins already silenced or holding a stale queue.
 		PacketOverlay.register();
 		ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
 			PacketManager.INSTANCE.reset();
 			CombatModeRuntime.reset();
 			if (pearlCatch != null) pearlCatch.reset();
-			// Ship the tail of the session now; quitting to the menu is the common way a
-			// session ends and the last partial batch would otherwise die with it.
+			// Flush the last partial batch before the session state is lost.
 			com.profps.client.data.DataContribution.endSession();
 		});
 
 		ProFPS.LOGGER.info("ProFPS client loaded.");
 	}
 
-	/** {@code /nova data} — whether the recorder is actually collecting and shipping anything. */
+	/** Prints the data recorder's status for {@code /nova data}. */
 	private static int reportDataContribution(MinecraftClient client) {
 		if (client.player == null) return 0;
 		com.profps.client.data.DataContribution recorder = com.profps.client.data.DataContribution.instance();
@@ -379,16 +356,15 @@ public final class ProFPSClient implements ClientModInitializer {
 
 	public static ProFPSConfig config() { return config; }
 
-	/** The built module catalogue, for screens (home/menus) that open the Modules UI. */
+	/** The built module catalogue used by screens that open the Modules UI. */
 	public static java.util.List<NovaModules.Category> novaCategories() { return novaCategories; }
 	public static AimImprovementsController aimImprovements() { return aimImprovements; }
 	public static StrafeImprovementsController strafeImprovements() { return strafeImprovements; }
 	public static HitImprovementsController hitImprovements() { return hitImprovements; }
 
 	/**
-	 * Tick click/action modules at the tail of {@code handleInputEvents()}, the same phase
-	 * vanilla handles a click and before the player tick sends movement. Their action packets
-	 * therefore keep vanilla action → flying order. Driven by {@code TriggerbotPreMovementMixin}.
+	 * Ticks click/action modules at the tail of {@code handleInputEvents()}, before movement is
+	 * sent, so action packets precede the flying packet. Called by {@code TriggerbotPreMovementMixin}.
 	 */
 	public static void firePreMovement(MinecraftClient client) {
 		CombatModeRuntime.beginPreMovementTick(config);
@@ -406,8 +382,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		CombatMode mode = CombatModePolicy.mode(config);
 		switch (mode) {
 			case SWORD -> {
-				// Disabled controllers still tick first so an in-flight hotbar sequence from
-				// the previously selected mode can restore its item and clear transient state.
+				// Disabled controllers still tick so an in-flight hotbar sequence can restore.
 				if (autoMace != null) autoMace.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
 				if (axeStun != null) axeStun.tick(client);
@@ -429,8 +404,7 @@ public final class ProFPSClient implements ClientModInitializer {
 				if (autoMace != null) autoMace.tick(client);
 			}
 			case OFF -> {
-				// Let any in-flight hotbar sequence restore first after Modes are turned off;
-				// the shared action claim still permits only one ordered action in this tick.
+				// Order lets an in-flight hotbar sequence restore first once Modes are off.
 				if (axeStun != null) axeStun.tick(client);
 				if (axeCrit != null) axeCrit.tick(client);
 				if (autoBreachSwap != null) autoBreachSwap.tick(client);
@@ -444,14 +418,13 @@ public final class ProFPSClient implements ClientModInitializer {
 		if (anchorMacro != null) anchorMacro.tick(client);
 		if (autoCrystal != null) autoCrystal.tick(client);
 		if (autoClicker != null) autoClicker.tickPreMovement(client);
-		// Last, and a pure reader: the recorder samples the state every module above just
-		// finished settling, and never writes anything a controller could observe.
+		// Read-only, and last, so it samples the state the modules above settled.
 		com.profps.client.data.DataContribution recorder = com.profps.client.data.DataContribution.instance();
 		if (recorder != null) recorder.tick(client);
 	}
 	private static long silentAimFrameNanos;
 
-	/** Elapsed render-frame time in tick units, so the hand-back is frame-rate independent. */
+	/** Elapsed render-frame time in tick units. */
 	private static float silentAimFrameDelta() {
 		long now = System.nanoTime();
 		long previous = silentAimFrameNanos;

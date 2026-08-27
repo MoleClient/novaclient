@@ -20,64 +20,19 @@ import java.util.Random;
 import java.util.UUID;
 
 /**
- * Auto Pot — the PvP splash-heal at real duel speed.
- *
- * <p>The motion is a BALLISTIC FLICK, not a tracking turn: a single eased
- * burst from the current orientation to the throw orientation over ~120-160ms
- * (the speed of a practiced pot flick), with a slight overshoot-and-settle at
- * the end the way a fast wrist actually lands. Applied per render frame and
- * GCD-quantized with carry, so on screen it is butter smooth and on the wire
- * every delta is a legitimate integer mouse count.
- *
- * <p>Sequence: health under 5 hearts with a splash heal on the hotbar → a short
- * flick STEEPLY DOWN, leaning a little away from the nearby enemy → hotbar
- * rolls to the pot mid-flick → one-tick use tap once the head has genuinely
- * reached the throw line → at ≤2.5 hearts a second pot follows after the
- * vanilla right-click cooldown with a small re-settle → flick back to the
- * original orientation (or live onto the enemy with "Flick To Player") while
- * the hotbar restores mid-turn. Whole single-pot cycle: ~350-450ms.
- *
- * <p>The motion is deliberately nearly all pitch. Vanilla throws a splash 20
- * degrees shallower than you are looking, at speed 0.5 under 0.05 gravity, so
- * from an ~83 degree look the potion lands about three quarters of a block in
- * front of your feet — and yaw only decides which way that three quarters of a
- * block points, against a splash radius of four. Turning further is a rounding
- * error in coverage and a real cost in travel, time and return distance, which
- * is why the sideways sweep this used to do is gone.
- *
- * <p>Two rules make it reliable next to an aim assist, which is what it shares
- * a duel with. It <b>owns the view</b> for the whole sequence — see
- * {@link #ownsRotation()} — because it used to run between the two aiming
- * blocks and the assist spent those same frames dragging the head back toward
- * the opponent. And the release is gated on {@link #onThrowLine} plus
- * {@link #safeToThrow}, the angle actually achieved, rather than on how long
- * the flick has been running: a clock says the wrist has finished, which is a
- * different claim from the head being pointed at the floor. Together those are
- * the difference between a pot at your feet and a pot at theirs. If the line is
- * never reached the flick times out and the pot stays in the bag, which in a
- * duel beats healing the person you are fighting.
+ * Throws splash healing potions at the player's own feet when health drops below the trigger.
+ * The view flicks steeply down, the hotbar rolls to the potion mid-flick, and the throw is
+ * released only once {@link #onThrowLine} and {@link #safeToThrow} both hold.
  */
 public final class AutoPotController {
 	private enum Phase { IDLE, WINDUP, FLICK, REPOT, RETURN }
 
 	private static final double ENEMY_RANGE = 12.0;
 
-	/**
-	 * How close the view has to have actually got to the throw line before the
-	 * potion leaves the hand. The flick's own progress only says the wrist has
-	 * finished moving; it says nothing about where the head ended up, which is
-	 * the entire difference between a pot at your feet and a pot at theirs.
-	 */
+	/** How close the view must be to the throw line before the potion is released. */
 	private static final float YAW_TOLERANCE = 30.0F;
 	private static final float PITCH_TOLERANCE = 8.0F;
-	/**
-	 * Below this the throw is no longer landing at your own feet, so it is not a
-	 * heal, it is a gift. This is the ONLY safety condition, because it is the
-	 * only one that does anything: vanilla throws a splash 20 degrees shallower
-	 * than the look, so pitch alone decides whether the potion drops at your feet
-	 * or sails off, and a steep throw lands under a block away whatever the yaw
-	 * is doing.
-	 */
+	/** Vanilla throws a splash 20 degrees shallower than the look, so pitch alone decides the landing. */
 	private static final float MIN_SAFE_PITCH = 62.0F;
 
 	private final ProFPSConfig config;
@@ -86,7 +41,7 @@ public final class AutoPotController {
 	private float carryYaw;
 	private float carryPitch;
 
-	// ── Ballistic flick state (consumed per render frame) ──────────────────────
+	// Flick state, consumed per render frame.
 	private volatile boolean flickActive;
 	private float flickStartYaw;
 	private float flickStartPitch;
@@ -105,7 +60,7 @@ public final class AutoPotController {
 	private int slotSwitchTicks;
 	private int repotTicks;
 	private int restoreSlotTicks;
-	private int potReadyAge;   // no use packet before the slot change has been sent
+	private int potReadyAge;   // no use packet until the slot change has been sent
 	private int originalSlot = -1;
 	private float originalYaw;
 	private float originalPitch;
@@ -119,7 +74,7 @@ public final class AutoPotController {
 		this.config = config;
 	}
 
-	/** Called every render frame: advances the ballistic flick, mouse-smooth. */
+	/** Advances the flick; called every render frame. */
 	public void frame(MinecraftClient client) {
 		long now = System.nanoTime();
 		float dtTicks = lastFrameNanos == 0L ? 1.0F : (float) ((now - lastFrameNanos) / 1_000_000_000.0 * 20.0);
@@ -129,8 +84,7 @@ public final class AutoPotController {
 
 		flickProgress = Math.min(1.0F, flickProgress + MathHelper.clamp(dtTicks, 0.01F, 2.0F) / flickDurationTicks);
 		float t = flickProgress;
-		// Fast-out ease (a flick accelerates immediately and lands soft) with a
-		// late overshoot bump that settles back to exact by the end.
+		// Fast-out ease with a late overshoot bump that settles back to exact by the end.
 		float eased = 1.0F - (float) Math.pow(1.0F - t, 2.4);
 		float overshoot = t > 0.45F
 				? (flickOvershoot - 1.0F) * (float) Math.sin((t - 0.45F) / 0.55F * Math.PI)
@@ -140,8 +94,7 @@ public final class AutoPotController {
 		float desiredYaw = flickStartYaw + MathHelper.wrapDegrees(flickTargetYaw - flickStartYaw) * k;
 		float desiredPitch = flickStartPitch + (flickTargetPitch - flickStartPitch) * k;
 
-		// Quantize the frame delta to the mouse GCD, carrying remainders so
-		// the per-tick sums on the wire stay genuine integer mouse counts.
+		// Quantize the frame delta to the mouse GCD, carrying remainders across frames.
 		float yawWanted = MathHelper.wrapDegrees(desiredYaw - player.getYaw()) + carryYaw;
 		float pitchWanted = (desiredPitch - player.getPitch()) + carryPitch;
 		float yawApplied = quantize(yawWanted);
@@ -151,16 +104,12 @@ public final class AutoPotController {
 		if (yawApplied != 0.0F) player.setYaw(MathHelper.wrapDegrees(player.getYaw() + yawApplied));
 		if (pitchApplied != 0.0F) player.setPitch(MathHelper.clamp(player.getPitch() + pitchApplied, -89.0F, 89.0F));
 
-		// A throw flick keeps holding the line after it has landed, instead of
-		// switching itself off the moment the animation finishes. Whatever nudges
-		// the view in the last few frames before the release — the player's own
-		// mouse, most often — is then pulled straight back out, rather than
-		// leaving the pot to time out unthrown because the head drifted 3 degrees.
+		// A holding flick keeps correcting toward the line after it lands.
 		if (flickProgress >= 1.0F && !flickHold) flickActive = false;
 	}
 
 	private float quantize(float delta) {
-		return com.profps.client.aim.MouseGcd.quantize(delta); // player's real live mouse grid
+		return com.profps.client.aim.MouseGcd.quantize(delta);
 	}
 
 	private void startFlick(ClientPlayerEntity player, float targetYaw, float targetPitch,
@@ -179,8 +128,7 @@ public final class AutoPotController {
 	}
 
 	public void tick(MinecraftClient client) {
-		// A throw is a one-tick tap, released first thing the following tick —
-		// exactly the press profile of a real click.
+		// A throw is a one-tick tap, released at the start of the following tick.
 		if (useTapped) {
 			if (client.options != null) client.options.useKey.setPressed(false);
 			useTapped = false;
@@ -213,35 +161,22 @@ public final class AutoPotController {
 		originalYaw = player.getYaw();
 		originalPitch = player.getPitch();
 
-		// The flick is almost entirely PITCH. Run the numbers and the yaw barely
-		// matters: a splash leaves the hand 20 degrees shallower than you are
-		// looking (vanilla throws it at pitch - 20) at speed 0.5 under 0.05
-		// gravity, so from an ~83 degree look it lands about three quarters of a
-		// block in front of your feet. Yaw only chooses which direction that
-		// three quarters of a block points, against a splash radius of four. A
-		// big turn buys a rounding error and costs the whole flick: more travel,
-		// more time for something to contest the view, and a return turn just as
-		// long. So nudge just far enough that the small offset leans away from
-		// them, and spend the motion where it actually does something.
+		// Mostly pitch: from a steep look the splash lands under a block away whatever the yaw.
 		if (enemy != null) {
-			// Turn the short way, opposite to whichever side they are on. Always
-			// a small flick, always leaning the splash away from them.
+			// Small turn the short way, leaning the splash away from the enemy.
 			float side = MathHelper.wrapDegrees(bearingTo(player, enemy) - originalYaw) >= 0.0F
 					? -1.0F : 1.0F;
 			throwYaw = MathHelper.wrapDegrees(
 					originalYaw + side * (22.0F + random.nextFloat() * 16.0F));
 		} else {
-			// Nobody to lean away from, so there is nothing for a turn to
-			// achieve. It used to swing 75-105 degrees to one side anyway, which
-			// is most of a sideways flick spent on nothing at all.
 			throwYaw = originalYaw;
 		}
-		// Steep, because the 20 degree shortfall above comes straight off this.
+		// Steep, to absorb vanilla's 20 degree throw shortfall.
 		throwPitch = 79.0F + random.nextFloat() * 9.0F;
 		potsPlanned = config.autoPotMode == 0 && player.getHealth() <= triggerHealth * 0.5F
 				&& countHealingPots(player) >= 2 ? 2 : 1;
 
-		windupTicks = random.nextInt(2);     // 0-1 tick — duels don't wait
+		windupTicks = random.nextInt(2);
 		slotSwitchTicks = random.nextInt(2); // pot in hand as the flick launches
 		phase = Phase.WINDUP;
 		phaseTicks = 0;
@@ -249,7 +184,7 @@ public final class AutoPotController {
 	}
 
 	private void launchFlick(ClientPlayerEntity player) {
-		startFlick(player, throwYaw, throwPitch, 2.2F + random.nextFloat() * 1.0F, true); // 110-160ms down
+		startFlick(player, throwYaw, throwPitch, 2.2F + random.nextFloat() * 1.0F, true);
 		phase = Phase.FLICK;
 		phaseTicks = 0;
 	}
@@ -262,7 +197,7 @@ public final class AutoPotController {
 	private void tickFlick(MinecraftClient client, ClientPlayerEntity player) {
 		phaseTicks++;
 
-		// Hotbar rolls to the pot DURING the flick, not before or after.
+		// Hotbar rolls to the pot during the flick.
 		if (slotSwitchTicks >= 0 && slotSwitchTicks-- == 0) {
 			int slot = findHealingPotSlot(player);
 			if (slot < 0) {
@@ -270,24 +205,18 @@ public final class AutoPotController {
 				return;
 			}
 			select(client, player, slot);
-			// The use packet must not overtake the slot change: the server resolves
-			// a use against the slot IT believes is held, so a same-tick pair throws
-			// whatever was in the previous slot. One tick, exactly like the mace
-			// handoff, and the ordering is guaranteed.
+			// The use packet must not overtake the slot change; the server resolves it
+			// against the slot it believes is held.
 			potReadyAge = player.age + 1;
 		}
 
-		// Release on where the view actually IS, not on how long the wrist has
-		// been moving. The flick clock said "close enough" even when another
-		// aiming module had spent those frames dragging the head somewhere else
-		// entirely, and that is what sent pots at the opponent.
+		// Release on the achieved angle, not on flick progress.
 		if (slotSwitchTicks < 0 && player.age >= potReadyAge
 				&& isHealingPot(player.getMainHandStack())
 				&& onThrowLine(player) && safeToThrow(client, player)) {
 			throwPot(client);
 			if (potsPlanned > 1) {
-				// Vanilla right-click cooldown + a beat, with a small re-settle
-				// so the second throw isn't pixel-identical.
+				// Vanilla right-click cooldown plus a beat, then a small re-settle.
 				repotTicks = 4 + random.nextInt(2);
 				throwYaw = MathHelper.wrapDegrees(throwYaw + (random.nextFloat() - 0.5F) * 9.0F);
 				throwPitch = MathHelper.clamp(throwPitch + (random.nextFloat() - 0.5F) * 6.0F, 68.0F, 86.0F);
@@ -299,9 +228,7 @@ public final class AutoPotController {
 			}
 			return;
 		}
-		// Timing out is now a real outcome rather than a fumble: the release waits
-		// for the throw line, so this is what happens when the line is never
-		// reached. Give it enough ticks that a settling head still makes it.
+		// Give up if the throw line is never reached.
 		if (phaseTicks > 12) startReturn(player);
 	}
 
@@ -319,7 +246,7 @@ public final class AutoPotController {
 		if (player.getInventory().getSelectedSlot() != slot) {
 			select(client, player, slot);
 			potReadyAge = player.age + 1;
-			repotTicks = 1; // a beat for the switch, like a real wheel roll
+			repotTicks = 1; // a beat for the switch to land
 			return;
 		}
 		if (isHealingPot(player.getMainHandStack()) && player.age >= potReadyAge
@@ -331,25 +258,13 @@ public final class AutoPotController {
 		}
 	}
 
-	/**
-	 * Whether the head has genuinely reached the throw line. This is the release
-	 * authority: the flick animation is a comfort, this is the fact.
-	 */
+	/** Whether the view has reached the throw orientation within tolerance. */
 	private boolean onThrowLine(ClientPlayerEntity player) {
 		return Math.abs(MathHelper.wrapDegrees(player.getYaw() - throwYaw)) <= YAW_TOLERANCE
 				&& Math.abs(player.getPitch() - throwPitch) <= PITCH_TOLERANCE;
 	}
 
-	/**
-	 * The last line of defence: never let a pot go anywhere but down. A steep
-	 * throw lands at your own feet regardless of bearing, so pitch carries the
-	 * whole guarantee. There used to be a bearing test beside it, and it was
-	 * worse than useless — it protected nothing the pitch did not already cover,
-	 * and because it read the opponent's bearing live, an opponent circling you
-	 * could hold it false for the entire flick. The throw then timed out, the
-	 * cycle retried, and the result was the endless flicking with nothing to
-	 * show for it.
-	 */
+	/** Pitch alone decides whether the potion lands at the player's feet. */
 	private boolean safeToThrow(MinecraftClient client, ClientPlayerEntity player) {
 		return player.getPitch() >= MIN_SAFE_PITCH;
 	}
@@ -360,11 +275,7 @@ public final class AutoPotController {
 		return (float) MathHelper.wrapDegrees(Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
 	}
 
-	/**
-	 * Ordinary hotbar selection, told to the server immediately so it is ordered
-	 * ahead of the use packet rather than left to vanilla's own sync, which runs
-	 * in a later phase of the tick than the input handling that sends the throw.
-	 */
+	/** Selects a hotbar slot and sends the slot packet immediately, ahead of any use packet. */
 	private void select(MinecraftClient client, ClientPlayerEntity player, int slot) {
 		if (!PlayerInventory.isValidHotbarIndex(slot)
 				|| player.getInventory().getSelectedSlot() == slot) {
@@ -377,12 +288,7 @@ public final class AutoPotController {
 				.profps$setLastSelectedSlot(slot);
 	}
 
-	/**
-	 * True for the whole sequence, not just while the wrist is moving: between
-	 * the flick landing and the throw leaving there is still a view that must not
-	 * be dragged, and the return turn is just as much this module's motion as the
-	 * flick out was.
-	 */
+	/** True for the whole sequence; other aim modules must not move the view while it holds. */
 	public boolean ownsRotation() {
 		return phase != Phase.IDLE;
 	}
@@ -398,8 +304,7 @@ public final class AutoPotController {
 	private void tickReturn(MinecraftClient client, ClientPlayerEntity player) {
 		phaseTicks++;
 
-		// With the setting on, come back ONTO the nearby player instead of the
-		// old orientation — live-tracked, like re-acquiring the fight.
+		// Flick To Player returns onto the tracked enemy instead of the original orientation.
 		PlayerEntity enemy = config.autoPotFlickToPlayer ? enemyByUuid(client, player) : null;
 		if (enemy != null) {
 			Vec3d eye = player.getEyePos();
@@ -428,7 +333,7 @@ public final class AutoPotController {
 		flickHold = false;
 		originalSlot = -1;
 		enemyUuid = null;
-		cooldownTicks = 14 + random.nextInt(10); // ready again fast, never machine-gun
+		cooldownTicks = 14 + random.nextInt(10);
 	}
 
 	private void abort(MinecraftClient client) {
@@ -448,7 +353,7 @@ public final class AutoPotController {
 	private void throwPot(MinecraftClient client) {
 		client.options.useKey.setPressed(true);
 		useTapped = true;
-		flickHold = false;   // the line has served its purpose; let the flick end
+		flickHold = false;   // stop holding the throw line
 	}
 
 	private boolean isReady(MinecraftClient client) {
@@ -479,11 +384,7 @@ public final class AutoPotController {
 		for (PlayerEntity other : client.world.getPlayers()) {
 			if (!enemyUuid.equals(other.getUuid())) continue;
 			if (!other.isAlive() || other.isSpectator()) return null;
-			// Bounded to the range they were acquired in, plus slack for the
-			// ground they cover during the cycle. It used to allow forty blocks —
-			// more than three times the acquisition range — so an opponent who
-			// disengaged mid-pot had the "flick to player" return whip the head
-			// across the map onto them, which is not re-acquiring a fight.
+			// Bounded to the acquisition range plus slack for movement during the cycle.
 			double bound = ENEMY_RANGE * 1.5;
 			return other.squaredDistanceTo(player) <= bound * bound ? other : null;
 		}

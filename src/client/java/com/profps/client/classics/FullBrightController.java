@@ -2,14 +2,7 @@ package com.profps.client.classics;
 
 import com.profps.client.config.ProFPSConfig;
 
-/**
- * Client-only lightmap tuning for Full Bright.
- *
- * <p>The lightmap already has two continuous inputs that are safe to enhance:
- * vanilla gamma and night-vision blend strength. Raising those values changes
- * only the rendered frame; it never adds a status effect, edits the world, or
- * sends anything to the server.
- */
+/** Client-only lightmap tuning: raises vanilla gamma and night-vision blend strength. */
 public final class FullBrightController {
 	private static volatile ProFPSConfig config;
 

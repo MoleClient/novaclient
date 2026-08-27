@@ -10,33 +10,9 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * Walks the body along a planned route using ordinary movement keys.
- *
- * <p>Nothing here writes velocity or position. It publishes a {@link PlayerInput}
- * — the same seven booleans a keyboard produces — and lets vanilla physics do
- * the rest, so the resulting movement is legal by construction.
- *
- * <p>Most of the work is in <em>not</em> looking like a program. Three things
- * give a naive path-follower away, and each has an answer here:
- *
- * <ul>
- * <li><b>Key chatter.</b> Deriving keys from a yaw error with a hard threshold
- * makes left/right flip every single tick whenever the error happens to sit on
- * the boundary. Real hands cannot do that. Every key here has a hysteresis
- * band: a wider angle is required to release a key than to press it.</li>
- * <li><b>A perfectly held sprint.</b> Sprint held unbroken for a thousand ticks
- * is not what a player produces. Sprint runs in dwelling stretches with
- * occasional short releases.</li>
- * <li><b>Binary arrival.</b> Stopping dead on a coordinate is a teleport in
- * disguise. Sprint drops, then forward drops, and the body coasts the last
- * fraction of a block in.</li>
- * </ul>
- *
- * <p>Arrival itself is tested over the tick's whole travel <em>segment</em>
- * rather than its sampled end position: a sprinting body covers more than a
- * third of a block per tick, so a radius test around a waypoint can be stepped
- * clean over, leaving the navigator convinced it never arrived while the body
- * sails past the build.
+ * Walks the body along a planned route by publishing a {@link PlayerInput} and letting
+ * vanilla physics move the player. Keys use hysteresis bands, sprint runs in stretches,
+ * and arrival is tested across the tick's travel segment rather than its end position.
  */
 final class SchematicNavigator {
 	/** Ticks without measurable progress before trying to shake loose. */
@@ -80,7 +56,7 @@ final class SchematicNavigator {
 	private int unstickTicks;
 	private int unstickStrafe;
 
-	// Key hysteresis — the previous tick's decision is an input to this one.
+	// Key hysteresis: the previous tick's decision feeds into this one.
 	private boolean heldForward;
 	private boolean heldBackward;
 	private boolean heldLeft;
@@ -95,10 +71,7 @@ final class SchematicNavigator {
 		this.random = random;
 	}
 
-	/**
-	 * Loads a route. {@code arriveSneaking} makes the last stretch a crouch,
-	 * which is what a stand on the rim of a drop needs.
-	 */
+	/** Loads a route; {@code arriveSneaking} crouches for the last stretch. */
 	void startRoute(List<SchematicPathfinder.Node> route, boolean arriveSneaking) {
 		this.path = route == null ? List.of() : route;
 		// Node 0 is the cell the body already occupies.
@@ -113,11 +86,8 @@ final class SchematicNavigator {
 	}
 
 	/**
-	 * Keeps the route but forgets where the body was, for a tick the navigator
-	 * did not drive. Arrival is measured across the segment travelled since the
-	 * last tick, so a stale position turns a pause into one enormous phantom
-	 * segment that sweeps up several waypoints at once — including the last —
-	 * and reports arrival with the body still metres away.
+	 * Keeps the route but forgets the last position, for a tick the navigator did not drive.
+	 * A stale position would make the next arrival segment sweep up several waypoints.
 	 */
 	void pause() {
 		lastPosition = null;
@@ -172,8 +142,6 @@ final class SchematicNavigator {
 			stuckTicks = 0;
 			unstickTicks = 0;
 			lastWaypointDistance = Double.POSITIVE_INFINITY;
-			// A player crossing a corner does not pivot instantly; a rare beat
-			// of hesitation is cheaper than looking metronomic.
 			if (pathIndex < path.size() && random.nextInt(50) == 0) pauseTicks = 2 + random.nextInt(4);
 		}
 
@@ -203,8 +171,6 @@ final class SchematicNavigator {
 			lastWaypointDistance = distance;
 			stuckTicks = 0;
 		} else if (++stuckTicks == UNSTICK_TRIGGER_TICKS) {
-			// A lip, a fence post, a corner the route did not model. Shake free
-			// before throwing away a route that is otherwise sound.
 			unstickTicks = UNSTICK_BURST_TICKS;
 			unstickStrafe = random.nextBoolean() ? 1 : -1;
 		} else if (stuckTicks > STUCK_GIVE_UP_TICKS) {
@@ -216,13 +182,7 @@ final class SchematicNavigator {
 		return State.TRAVELLING;
 	}
 
-	// ── Steering ───────────────────────────────────────────────────────────────
-
-	/**
-	 * Looks a little way down the route rather than at the next waypoint, so
-	 * corners are rounded instead of pivoted through. Pitch is clamped: a body
-	 * walking a staircase should not be staring at its own feet.
-	 */
+	/** Looks a little way down the route rather than at the next waypoint; pitch is clamped. */
 	private void steerLook(ClientPlayerEntity player, Vec3d fallback) {
 		Vec3d steering = lookahead(player, fallback);
 		lookGoal = new Vec3d(steering.x,
@@ -250,10 +210,7 @@ final class SchematicNavigator {
 		return result;
 	}
 
-	/**
-	 * Movement keys for this tick. Every direction runs through a hysteresis
-	 * band so a yaw error resting on a threshold cannot make the keys flutter.
-	 */
+	/** Movement keys for this tick; every direction runs through a hysteresis band. */
 	private PlayerInput keysFor(ClientPlayerEntity player, Vec3d point, double vertical, double remaining) {
 		double desiredYaw = Math.toDegrees(Math.atan2(point.z - player.getZ(), point.x - player.getX())) - 90.0D;
 		double yawError = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
@@ -268,14 +225,13 @@ final class SchematicNavigator {
 		boolean sneak = arriveSneaking && remaining < SPRINT_RELEASE_DISTANCE;
 
 		if (unstickTicks > 0) {
-			// Hold the heading, add a hop and a sidestep, drop sprint so the
-			// body can round whatever the route walked into.
+			// Hold the heading, add a hop and a sidestep, drop sprint.
 			unstickTicks--;
 			return new PlayerInput(heldForward, heldBackward,
 					unstickStrafe < 0, unstickStrafe > 0, true, sneak, false);
 		}
 
-		// Coast the last fraction of a block rather than stopping on a dime.
+		// Coast the last fraction of a block instead of stopping instantly.
 		boolean forward = heldForward && !(remaining < COAST_DISTANCE);
 		boolean sprint = forward && !heldBackward && !sneak
 				&& !player.isTouchingWater()
@@ -285,11 +241,7 @@ final class SchematicNavigator {
 		return new PlayerInput(forward, heldBackward, heldLeft, heldRight, jump, sneak, sprint);
 	}
 
-	/**
-	 * Sprint held in stretches with occasional short releases. A sprint bit
-	 * that is simply always true for the length of a build is a stronger tell
-	 * than the movement itself.
-	 */
+	/** Sprint held in stretches with occasional short releases. */
 	private boolean sprintPhase() {
 		if (--sprintDwell > 0) return sprintPhase;
 		if (sprintPhase) {
@@ -320,24 +272,16 @@ final class SchematicNavigator {
 		heldRight = false;
 	}
 
-	// ── Geometry ───────────────────────────────────────────────────────────────
-
 	/**
-	 * Arrival tested across the tick's whole travel segment. The final node
-	 * keeps a tight band because the placement phase depends on standing where
-	 * the solver proved the placement from; intermediate nodes accept a wider
-	 * pass, since the lookahead steering rounds them off anyway.
+	 * Arrival tested across the tick's whole travel segment; the final node uses a tighter
+	 * horizontal band than intermediate ones.
 	 */
 	private boolean reached(Vec3d previous, Vec3d position, SchematicPathfinder.Node waypoint, boolean finalNode) {
 		Vec3d point = new Vec3d(waypoint.x() + 0.5D, waypoint.y(), waypoint.z() + 0.5D);
 		Vec3d closest = closestOnSegment(previous, position, point);
 		double horizontal = finalNode ? 0.16D : 0.30D;
-		// Generous vertically on purpose. A node's Y is the cell the body box
-		// occupies, which for anything thinner than a slab underfoot — carpet,
-		// a single snow layer — sits almost a full block above where the body
-		// actually rests. A tight band there is unreachable by construction.
-		// Waypoints stay distinct because the horizontal band is what separates
-		// them: a ground route never stacks two nodes in one column.
+		// The vertical band is loose because a node's Y is the body cell, which sits up to
+		// a block above the surface for thin blocks like carpet or a snow layer.
 		return horizontalDistanceSq(closest, point) < horizontal
 				&& Math.abs(point.y - closest.y) < 1.05D;
 	}

@@ -8,14 +8,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 
-/**
- * The catch-all for the Nickname / Nick Other modules: every piece of text the game
- * draws funnels through one of {@link TextRenderer}'s three public {@code draw}
- * overloads, so swapping names here covers chat, tab list, nametags, scoreboards,
- * titles, signs, GUIs — everything. {@link NicknameManager#spoof} returns the input
- * unchanged (no allocation, no rewrite) whenever the modules are off or the text
- * holds no target name, so this is effectively free when idle.
- */
+/** Spoofs names in all three public {@link TextRenderer} draw overloads. */
 @Mixin(TextRenderer.class)
 public abstract class TextRendererNickMixin {
 

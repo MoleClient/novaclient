@@ -16,28 +16,14 @@ import net.minecraft.world.World;
 import java.security.SecureRandom;
 
 /**
- * Height Clutch — a survival fall-save built around a held item rather than a
- * placed block, so it works where the normal block Clutch can't. It only acts when
- * the right item is in your HOTBAR and you're genuinely falling. Neither mode ever
- * moves your view.
- *
- * <p><b>Water bucket (preferred).</b> Falling onto solid ground while looking down
- * with a water bucket in your hotbar, it MLGs for you: switches to the bucket,
- * places the water below you, waits until you've landed in it, pauses a human beat,
- * scoops the water back up, and switches your hand back — spread over frames. It
- * never aims for you, so you have to be looking down for the water to land where you
- * fall.
- *
- * <p><b>Ladder (backup).</b> If instead you have ladders and you're falling beside a
- * wall, it silently places a ladder against the nearest reachable wall block in your
- * path (recomputed at the moment of placement so it lands below where you actually
- * are) so you catch and climb to safety — no head turn.
+ * Fall save using a hotbar item: water bucket MLG when possible, ladder against a wall otherwise.
+ * Never moves the view.
  */
 public final class HeightClutchController {
-	private static final int DANGER_FALL = 4;          // blocks fallen before it bothers to clutch
-	private static final int GROUND_REACH = 4;         // water: solid ground must be within this far below
-	private static final int LADDER_SCAN = 5;          // ladder: search this far down for a grabbable wall
-	private static final float LOOK_DOWN_PITCH = 42.0F; // water: you must be looking at least this far down
+	private static final int DANGER_FALL = 4;           // blocks fallen before clutching
+	private static final int GROUND_REACH = 4;          // water: solid ground must be within this far below
+	private static final int LADDER_SCAN = 5;           // ladder: search this far down for a wall
+	private static final float LOOK_DOWN_PITCH = 42.0F; // water: minimum downward pitch
 	private static final long CLUTCH_COOLDOWN_NS = 400_000_000L;
 
 	private enum Mode { NONE, WATER, LADDER }
@@ -67,7 +53,6 @@ public final class HeightClutchController {
 			return;
 		}
 
-		// A clutch already in progress just advances, frame by frame.
 		if (phase != Phase.IDLE) {
 			advance(client, player);
 			return;
@@ -76,11 +61,10 @@ public final class HeightClutchController {
 		long now = System.nanoTime();
 		if (now < cooldownUntilNanos) return;
 		if (player.isClimbing() || player.hasVehicle()) return;
-		if (player.getVelocity().y >= -0.15) return;   // not actually falling
-		if (player.fallDistance < DANGER_FALL) return; // not far enough to hurt yet
+		if (player.getVelocity().y >= -0.15) return;
+		if (player.fallDistance < DANGER_FALL) return;
 
-		// Water first — it doesn't leave a trail of ladders. Skip in the Nether,
-		// where placed water just evaporates.
+		// Water is preferred, but evaporates in the Nether.
 		int waterSlot = hotbarSlot(player, Items.WATER_BUCKET);
 		if (waterSlot >= 0 && client.world.getRegistryKey() != World.NETHER
 				&& player.getPitch() >= LOOK_DOWN_PITCH && groundWithinReach(client, player)) {
@@ -88,8 +72,7 @@ public final class HeightClutchController {
 			return;
 		}
 
-		// Ladder backup — needs a wall in your fall path. (Target is recomputed at
-		// placement time; here we only check one exists.)
+		// Ladder backup; the target is recomputed at placement time.
 		int ladderSlot = hotbarSlot(player, Items.LADDER);
 		if (ladderSlot >= 0 && ladderTarget(client, player) != null) {
 			begin(player, Mode.LADDER, ladderSlot, now);
@@ -109,7 +92,7 @@ public final class HeightClutchController {
 	private void advance(MinecraftClient client, ClientPlayerEntity player) {
 		long now = System.nanoTime();
 		phaseTicks++;
-		if (phaseTicks > 80) { // safety net — never get stuck mid-sequence
+		if (phaseTicks > 80) { // safety net against a stuck sequence
 			restoreSlot(player);
 			reset();
 			return;
@@ -125,12 +108,11 @@ public final class HeightClutchController {
 			case PLACE -> {
 				if (now < phaseReadyNanos) return;
 				if (mode == Mode.WATER) {
-					((MinecraftClientInvoker) client).invokeDoItemUse(); // place water you're looking at
+					((MinecraftClientInvoker) client).invokeDoItemUse(); // place water at the crosshair
 					phase = Phase.WAIT_PICKUP;
 					phaseTicks = 0;
 				} else {
-					// Recompute now so the ladder lands below where you actually are,
-					// not where you were a couple ticks ago — and silently, no aim.
+					// Recompute so the ladder lands below the current position.
 					BlockHitResult target = ladderTarget(client, player);
 					if (target != null) {
 						client.interactionManager.interactBlock(player, Hand.MAIN_HAND, target);
@@ -141,10 +123,7 @@ public final class HeightClutchController {
 				}
 			}
 			case WAIT_PICKUP -> {
-				// Wait until you're actually in the water, THEN pause a human beat
-				// before scooping — picking it back up the instant you land reads as
-				// a bot. The bucket raycasts the source itself, so you stay looking
-				// down and don't move your view.
+				// Scoop only after landing, plus a jittered delay.
 				boolean landed = player.isOnGround() || player.isTouchingWater();
 				if (!landedForPickup) {
 					if (landed) {
@@ -154,7 +133,7 @@ public final class HeightClutchController {
 					return;
 				}
 				if (now < phaseReadyNanos) return;
-				((MinecraftClientInvoker) client).invokeDoItemUse(); // scoop the water back
+				((MinecraftClientInvoker) client).invokeDoItemUse(); // scoop the water back up
 				phase = Phase.RESTORE;
 				phaseReadyNanos = now + jitterMs(30, 70);
 			}
@@ -194,7 +173,7 @@ public final class HeightClutchController {
 		return -1;
 	}
 
-	/** Solid ground straight below within bucket reach — where the water will land. */
+	/** True when solid ground is straight below within {@link #GROUND_REACH}. */
 	private boolean groundWithinReach(MinecraftClient client, ClientPlayerEntity player) {
 		int x = player.getBlockX();
 		int z = player.getBlockZ();
@@ -206,10 +185,9 @@ public final class HeightClutchController {
 	}
 
 	/**
-	 * The nearest reachable wall block to ladder onto, scanning your fall path from
-	 * just below your feet downward — so on a tower it grabs the first wall block you
-	 * can still reach as you fall, not only the very last one. Returns the click on
-	 * that wall's face, or null if nothing's in reach.
+	 * Finds the nearest reachable wall block below the player to place a ladder against.
+	 *
+	 * @return the click on that wall's face, or null if nothing is in reach
 	 */
 	private BlockHitResult ladderTarget(MinecraftClient client, ClientPlayerEntity player) {
 		int x = player.getBlockX();
@@ -217,11 +195,11 @@ public final class HeightClutchController {
 		int feetY = player.getBlockY();
 		for (int dy = 1; dy <= LADDER_SCAN; dy++) {
 			BlockPos p = new BlockPos(x, feetY - dy, z);
-			if (!client.world.getBlockState(p).isReplaceable()) continue; // need air to hold the ladder
+			if (!client.world.getBlockState(p).isReplaceable()) continue;
 			for (Direction d : Direction.Type.HORIZONTAL) {
 				BlockPos wall = p.offset(d);
 				if (!isSolid(client, wall)) continue;
-				Direction face = d.getOpposite(); // the wall face that points at the ladder block
+				Direction face = d.getOpposite();
 				Vec3d hit = new Vec3d(
 						wall.getX() + 0.5 + face.getOffsetX() * 0.5,
 						wall.getY() + 0.5,

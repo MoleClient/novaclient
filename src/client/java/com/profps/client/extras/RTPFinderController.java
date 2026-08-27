@@ -6,16 +6,7 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.MathHelper;
 
-/**
- * RTP Finder — spams a random-teleport command until it drops you near coordinates you want.
- *
- * <p>Set a target X/Z and how close counts as close enough, switch it on and go AFK. Every
- * interval it fires the command, measures the horizontal distance to your target, and keeps
- * going until a landing falls inside the radius — then it stops and leaves you there.</p>
- *
- * <p>Turning it on without a target or a command switches it straight back off with an action
- * bar note, rather than silently burning teleport cooldowns for nothing.</p>
- */
+/** Repeats a random-teleport command until a landing falls within the configured radius of the target. */
 public final class RTPFinderController {
 	private static final int[] RADII = {5000, 10000, 20000};
 

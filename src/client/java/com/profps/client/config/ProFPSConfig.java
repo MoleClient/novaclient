@@ -23,9 +23,7 @@ import java.util.stream.Stream;
 public final class ProFPSConfig {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
-	// Resolve Fabric's directories only when doing actual I/O. Eager static path
-	// resolution made this otherwise plain data object impossible to instantiate in
-	// unit tests (and other tooling) before Fabric had installed a game provider.
+	// Resolved lazily so this stays instantiable before Fabric has a game provider.
 	private static Path configPath() {
 		return FabricLoader.getInstance().getConfigDir().resolve("profps.json");
 	}
@@ -36,17 +34,13 @@ public final class ProFPSConfig {
 
 	public boolean enabled = true;
 
-	// ── Combat Modes ───────────────────────────────────────────────────
-	// Exactly one mode can be active. Numeric values are kept deliberately simple for
-	// backwards-compatible JSON: 0 Off, 1 Sword, 2 Axe, 3 Mace. Tier indices run in
+	// Combat Modes. One mode at a time: 0 Off, 1 Sword, 2 Axe, 3 Mace. Tier indices run in
 	// display order: LT5, HT5, LT4, HT4, LT3, HT3, LT2, HT2, LT1, HT1.
-	//
-	// These settings are an overlay, not a rewrite of the standalone module fields
-	// below. Turning Modes off therefore restores the user's manual module profile.
+	// These are an overlay over the standalone module fields below, not a rewrite of them.
 	public int combatMode = 0;
-	public int swordModeTier = 3; // HT4: exactly the existing Sword-assist defaults
-	public int axeModeTier = 2;   // LT4: exactly the existing Axe-assist defaults
-	public int maceModeTier = 4;  // LT3: exactly the existing Mace-assist defaults
+	public int swordModeTier = 3; // HT4
+	public int axeModeTier = 2;   // LT4
+	public int maceModeTier = 4;  // LT3
 
 	public boolean swordModeAim = true;
 	public boolean swordModeStrafe = true;
@@ -100,32 +94,19 @@ public final class ProFPSConfig {
 	public boolean hitCritTiming = true;  // hold the swing while you're rising into a jump; fire as you fall (crit)
 	public boolean hitCritSprintRelease = true; // tap off forward mid-air so a sprinting jump can actually crit
 
-	// Reach — extends entity targeting + the attack-range gate. Stored in HUNDREDTHS of a block.
-	// Grounded in Grim's actual Reach.java: it flags when (eye→look-ray-intercept of the
-	// lag-compensated, hitboxMargin-expanded target box) > maxReach, where maxReach is the
-	// server-authoritative item ATTACK_RANGE component (~3.0, unspoofable) and the box is expanded
-	// by threshold(0.0005) + itemHitboxMargin + movementThreshold(0.03 only on a tick with no
-	// position packet, i.e. standing still). So:
-	//   • 300 (3.00) = vanilla; undetectable on EVERY anticheat.
-	//   • ~305 (3.05) = the Grim ceiling — within its built-in margins (esp. the free 0.03 you get
-	//     standing still); safe on Grim but NOT guaranteed on stricter/zero-margin checks.
-	//   • >305 flags Grim (block-impossible-hits even cancels 3.05+ in real time). Only use the
-	//     higher range on lenient/no-anticheat servers (vanilla itself allows up to ~6 blocks).
+	// Reach extends entity targeting and the attack-range gate. Stored in hundredths of a block.
+	// Vanilla item ATTACK_RANGE is ~3.0 and server-authoritative; Grim's own margins reach ~3.05.
 	public boolean reach = false;
-	public int reachCm = 300;             // 300 = 3.00 blocks (safe everywhere); Grim ceiling ~305; max 600
+	public int reachCm = 300;             // 300 = 3.00 blocks; max 600
 
-	// Expanded Hitbox — a near-miss acquisition margin around player boxes. The
-	// attack itself is delayed until a packet-facing yaw/pitch ray intersects the
-	// target's REAL box; Amount is stored in hundredths of a block.
+	// Expanded Hitbox is an acquisition margin only; the attack waits for a ray into the real
+	// box. Amount is stored in hundredths of a block.
 	public boolean expandedHitbox = false;
 	public int expandedHitboxAmountCm = 18;
 	public int expandedHitboxTurnSpeed = 62;
 	public int expandedHitboxReactionMs = 35;
 
-	// Velocity (anti-knockback) — scales the knockback the server sends when you're hit.
-	// Defaults are deliberately GENTLE so strong simulation anti-cheats (Grim) don't flag: most
-	// hits are untouched and the rest only shaved a little, keeping the cumulative offset under
-	// Grim's tolerance. On weak/no-anticheat servers crank Horizontal down (toward 0) + Chance up.
+	// Velocity scales server-sent knockback. Defaults are gentle to stay inside Grim's tolerance.
 	public boolean velocity = false;
 	public int velocityHorizontal = 80;   // % of horizontal knockback kept (lower = more negated)
 	public int velocityVertical = 100;    // % of vertical knockback kept
@@ -153,42 +134,34 @@ public final class ProFPSConfig {
 	public int autoMaceTurnSpeed = 45;    // how snappy the view whips onto the target (higher = faster)
 	public int autoMaceSettleMs = 35;     // acquisition dwell; overlaps aim + cooldown
 	public int autoMaceSmashSpeed = 75;   // turn speed during a falling smash (kept high so it lands mid-air)
-	/**
-	 * Silent aim: the mace turns the body onto the target as it always has, and
-	 * the camera stays under your own mouse. Rotations are never spoofed into
-	 * packets — the body really is aimed, so movement and the packet stream stay
-	 * consistent for a simulating anti-cheat. Only the drawn view changes.
-	 */
+	/** Aims the body while the camera stays under the player's own mouse. Rotations are not spoofed. */
 	public boolean maceSilentAim = false;
-	public boolean autoMaceShieldBreak = true; // stun-slam: with an axe in hand, axe-tap to disable shield / stun, then mace-smash — fires on shielding targets and falling dives
-	public int autoMaceShieldBreakMs = 60;     // gap between the axe (stun) hit and the mace smash — ~1 server tick
+	public boolean autoMaceShieldBreak = true; // stun-slam: axe-tap to break the shield, then mace-smash
+	public int autoMaceShieldBreakMs = 60;     // gap between the axe hit and the mace smash, about 1 server tick
 
-	// Axe Stun (General) — standalone ground shield-breaker: when you're aiming at a shielder and
-	// carry an axe, swap to the axe, break the shield, then swap back to your previous item.
+	// Standalone ground shield-breaker: swap to the axe, break the shield, swap back.
 	public boolean axeStun = false;
-	public int axeStunReactionMs = 110;   // humanized reaction before the swap fires
-	public int axeStunSwitchBackMs = 90;  // gap between the axe hit and swapping back (~1+ server tick)
-	public boolean axeStunRestorePrevious = false; // standalone: restore the exact pre-axe hotbar slot
+	public int axeStunReactionMs = 110;
+	public int axeStunSwitchBackMs = 90;  // gap between the axe hit and swapping back, at least 1 server tick
+	public boolean axeStunRestorePrevious = false;
 
-	// Axe Crit — you jump onto a player holding an axe; this releases the swing on the descent,
-	// past 0.9 charge and with the sprint dropped, which is what vanilla actually needs for the 1.5x.
+	// Vanilla needs the descent, over 0.9 charge and no sprint for the 1.5x crit.
 	public boolean axeCrit = false;
 
-	// Auto Breachswap — visible sword→Breach-mace handoff on a crit descent.
-	public boolean autoBreachSwap = false;     // advanced; off by default
-	public int autoBreachSwapCharge = 90;      // required MACE attack-charge % at hit time (vanilla crits above 90)
+	// Visible sword to Breach-mace handoff on a crit descent.
+	public boolean autoBreachSwap = false;
+	public int autoBreachSwapCharge = 90;      // required mace attack-charge %; vanilla crits above 90
 
-	// Auto Pearl Catch — retired. It is no longer a setting anywhere and CombatModePolicy gates
-	// the feature off outright; only this dormant tuning remains so the controller still compiles.
-	public int pearlCatchDelayMs = 0;          // wait after the throw before lining up (low = catch it high/early)
-	public int pearlCatchAngle = 0;            // degrees to aim BELOW the intercept (0 = straight at it)
-	public int pearlCatchAimSpeed = 80;        // how snappy the view turns onto the catch point
+	// Pearl Catch is retired; CombatModePolicy gates it off. These remain so the controller compiles.
+	public int pearlCatchDelayMs = 0;
+	public int pearlCatchAngle = 0;            // degrees below the intercept; 0 aims straight at it
+	public int pearlCatchAimSpeed = 80;
 
 	public boolean autoAim = false;       // projectile aim assist for bow/crossbow/fireball
-	public int autoAimStrength = 45;      // how strongly it follows (low = gentle, easy to break out of)
-	public int autoAimFov = 70;           // acquisition cone (degrees) around your look
+	public int autoAimStrength = 45;
+	public int autoAimFov = 70;           // acquisition cone in degrees
 
-	// Hitboxes — combat overlay. RGB is stored as 0..255; opacity as a percentage.
+	// Hitboxes overlay. RGB is stored as 0..255; opacity as a percentage.
 	public boolean hitboxes = false;
 	public int hitboxRed = 255;
 	public int hitboxGreen = 140;
@@ -197,17 +170,16 @@ public final class ProFPSConfig {
 	public int hitboxFillOpacity = 14;
 	public int hitboxLineWidth = 2;
 
-	// ── SubTiers ───────────────────────────────────────────────────────────────
+	// SubTiers
 	public boolean subTiersAutoBed = false;
 	public boolean subTiersAutoCreeper = false;
 	public boolean subTiersAutoMinecart = false;
 	public int subTiersMinecartBowSpeed = 6;
 
-	/** Client-side held-item swing slowdown (mining/attacking/placing look slower; server timing unchanged). */
+	/** Client-side held-item swing slowdown; server timing is unchanged. */
 	public boolean slowAnimations = false;
 	public int slowAnimationStrength = 4;
 
-	// ── Instants (game-mechanic optimizers; humanized, low-detection) ──────────
 	public boolean instantBreakOn = false;
 	public boolean instantBreakOnHandUse = false;
 	/** When on, BreakOn only mines blocks whose id is in {@link #instantBreakOnBlocks}. */
@@ -244,7 +216,7 @@ public final class ProFPSConfig {
 	public int instantFastPlaceHeldItem = 0;
 	public int instantFastPlaceDelay = 1;
 
-	// ── Inventory automation (shared serialized click engine) ───────────────
+	// Inventory automation
 	public boolean inventoryAutoArmor = false;
 	public boolean inventoryAutoArmorOpen = true;
 	public boolean inventoryAutoArmorOnly = true;
@@ -289,7 +261,7 @@ public final class ProFPSConfig {
 	public boolean instantAutoSprint = false;
 	public boolean instantAutoWalk = false;
 
-	// ── Extra Assists ──────────────────────────────────────────────────────────
+	// Extra Assists
 	public boolean scaffoldAssist = false;
 	/** Scaffold modes: 0 Legit, 1 GodBridge, 2 TellyBridge. */
 	public int scaffoldMode = 0;
@@ -323,7 +295,7 @@ public final class ProFPSConfig {
 	public int scaffoldTellyYIncrease = 1;
 	// Retained only so old JSON remains readable; the replacement mode system does not use them.
 	public boolean scaffoldSneakOnly = false;
-	public int scaffoldSpeed = 7; // 0 (slowest / most cautious) .. 10 (fastest) — how quick bridging is
+	public int scaffoldSpeed = 7; // 0 slowest .. 10 fastest
 	public boolean clutchAssist = false;
 	public boolean heightClutchAssist = false; // water-bucket MLG / ladder fall-save from a held item
 	public boolean autoXpEnabled = false;      // throw XP bottles until Mending armour is back to full
@@ -360,7 +332,7 @@ public final class ProFPSConfig {
 	public boolean swordAiAim = true;          // let the AI turn your view (pitch + yaw) onto the target
 	public boolean swordAiJump = true;         // let the AI jump for crits + occasional movement (never constant)
 
-	// ── Classics ───────────────────────────────────────────────────────────────
+	// Classics
 	public boolean flightEnabled = false;
 	public int flightSpeed = 5; // 1 (slow) .. 10 (fast) blocks-per-tick fly speed
 	public boolean spamEnabled = false;
@@ -373,15 +345,15 @@ public final class ProFPSConfig {
 	public int teleporterRange = 64; // max blocks the look-and-right-click teleport reaches
 	public boolean fullBrightEnabled = false;
 	public int fullBrightLevel = 7; // 1 (gentle lift) .. 10 (maximum night-vision-grade lightmap)
-	// ── NovaClient skin ─────────────────────────────────────────────────────────
+	// NovaClient skin
 	public String  novaSkinUsername = "";       // Configure: wear this player's skin everywhere YOU see (client-side)
 
-	// ── Nickname (self) ──────────────────────────────────────────────────────
+	// Nickname
 	public boolean nicknameEnabled = false;
 	public String nicknameSelfName = "Marlowww"; // the name shown everywhere instead of your real one
 	public boolean nicknameSelfSkin = true;       // also wear a skin (on by default)
 	public String nicknameSelfSkinFrom = "";       // whose skin to wear (blank = your nickname's own skin)
-	// ── Nick Other ───────────────────────────────────────────────────────────
+	// Nick Other
 	public boolean nickOtherEnabled = false;
 	public java.util.List<NickEntry> nickOtherEntries = new java.util.ArrayList<>();
 
@@ -406,11 +378,7 @@ public final class ProFPSConfig {
 	/** Anchor action speed: 1 deliberate, 10 immediate. */
 	public int anchorSpeed = 6;
 	public boolean totemTweaks = false;
-	/**
-	 * Last resort for a totem that is not in the hotbar. The normal refill is the
-	 * swap-hands key, which needs no screen; a slot click implies an open inventory,
-	 * and an open inventory implies a player who is not sprinting or swinging.
-	 */
+	/** Fallback for a totem outside the hotbar; the normal refill uses the swap-hands key. */
 	public boolean autoCrystal = false;
 	/** Crystal Aura modes: 0 Auto, 1 Manual. */
 	public int crystalAuraMode = 0;
@@ -442,12 +410,12 @@ public final class ProFPSConfig {
 	public int donutCategoryY = 28;
 	public boolean donutCategoryCollapsed = false;
 	public boolean donutBasicEsp = false;
-	public boolean donutAdvancedEsp = false;   // "Hole/Tunnel/Stairs ESP" in the UI — terrain cavities only
+	public boolean donutAdvancedEsp = false;   // "Hole/Tunnel/Stairs ESP" in the UI; terrain cavities only
 	public boolean donutAdvancedShowStairs = true;
 	public transient boolean donutAdvancedEspReloadRequested = false; // momentary UI "Reload" signal (not persisted)
 	public transient boolean autoLungeRequested = false; // momentary Auto Lunge keybind/click signal (not persisted)
 
-	// Knockback Displacement — momentary, keybind-fired sprint-reset displacement hit.
+	// Knockback Displacement: momentary, keybind-fired sprint-reset displacement hit.
 	public transient boolean kbDisplaceRequested = false; // momentary keybind/click signal (not persisted)
 	public int kbDisplaceAimSpeed = 70;   // how snappy the view whips onto the target
 	public boolean kbDisplaceReset = true; // W-tap (sprint reset) before the hit for full sprint knockback
@@ -462,12 +430,12 @@ public final class ProFPSConfig {
 	public boolean lungeSpamScaling = true;
 	/** Sampled reaction, charge overshoot and recovery gaps instead of fixed frame offsets. */
 	public boolean lungeSwapHumanize = true;
-	/** Sprint-jump into the burst; on the ground friction scrubs the velocity off almost at once. */
+	/** Sprint-jump into the burst; ground friction scrubs the velocity off almost at once. */
 	public boolean lungeSwapJump = true;
-	/** Auto Spear: holds the kinetic charge and aims it at whoever is close enough to hit. */
+	/** Holds the kinetic charge and aims it at whoever is close enough to hit. */
 	public boolean autoSpearEnabled = false;
 	public int autoSpearFov = 90;
-	/** Contact happens at 2–4.5m; the range is how early the spear comes out, not its reach. */
+	/** Contact happens at 2 to 4.5m; the range is how early the spear comes out, not its reach. */
 	public int autoSpearRange = 20;
 	public int autoSpearTurnSpeed = 55;
 	/** Pull the spear from the hotbar for the run in, and put the old slot back after. */
@@ -522,49 +490,33 @@ public final class ProFPSConfig {
 	/** GLFW key code per module id, assigned from the Nova GUI keybind rows. */
 	public Map<String, Integer> moduleKeybinds = new HashMap<>();
 
-	// ── GUI theme + preferences (the Theme / Settings pages) ─────────────────────
-	public int guiAccent = 0;            // accent-colour preset index (0 = Ice Blue)
-	public boolean guiAnimations = true; // eased motion on cards, sidebar, toggles
-	public boolean guiGlow = true;       // soft accent glow behind active elements
-	public boolean guiSounds = true;     // UI click sounds
-	public boolean guiAutoScale = true;  // fit the entire Nova layout to the current GUI viewport
-	public int guiScalePct = 100;         // requested manual size; the viewport fit ceiling still wins
+	// GUI theme and preferences.
+	public int guiAccent = 0;            // accent-colour preset index; 0 = Ice Blue
+	public boolean guiAnimations = true;
+	public boolean guiGlow = true;
+	public boolean guiSounds = true;
+	public boolean guiAutoScale = true;  // fit the Nova layout to the current GUI viewport
+	public int guiScalePct = 100;         // manual size request; the viewport fit ceiling still wins
 
-	// ── On-screen HUD ────────────────────────────────────────────────────────────
-	public boolean hudModuleList = true;       // enabled-modules list at the screen edge (on by default)
-	public boolean hudModuleListRight = false; // false = left edge (default), true = right edge
+	public boolean hudModuleList = true;
+	public boolean hudModuleListRight = false; // false = left edge, true = right edge
 
-	// ── Packet Utils (its own sidebar page) ──────────────────────────────────────
-	// Master switch for the in-GUI packet toolkit. Off by default. When on, EVERY screen
-	// you open (chests, auction houses, trades, …) gets a Nova-styled overlay of packet
-	// controls. The live send/delay/desync toggles are session state on PacketManager,
-	// not persisted here — a fresh session always starts sending normally.
+	// Master switch for the in-GUI packet toolkit. The live send/delay/desync toggles are
+	// session state on PacketManager, not persisted here.
 	public boolean packetUtils = false;
 
-	// ── Data contribution (the Data page) ────────────────────────────────────────
-	// Anonymous per-tick movement telemetry, uploaded in batches so the recordings can
-	// train movement models. On by default; the first time the Nova GUI opens it says so
-	// in a card above the wordmark, and after that it lives only on the Data page.
+	// Anonymous per-tick movement telemetry, uploaded in batches.
 	public boolean dataContribution = true;
-	/**
-	 * Absolute world coordinates, dimension and server address, on top of the relative motion the
-	 * master switch already sends. Kept as its own switch because it is the one field with a real
-	 * cost to the contributor — it says where they play, base included — and because a movement
-	 * model does not want it: motion generalises, map positions do not.
-	 */
+	/** Adds absolute world coordinates, dimension and server address to the uploaded motion. */
 	public boolean dataContributionLocation = true;
-	/** Ingest host. A hostname, never a bare IP — it has to terminate real TLS. */
+	/** Ingest host. Must be a hostname, not a bare IP, so it can terminate TLS. */
 	public String dataContributionEndpoint = "https://ingest.goatmath.org";
-	/**
-	 * Random per-install salt. The uploaded pseudonym is a hash of the account UUID and this
-	 * salt, so recordings from one install group together for train/test splits without the
-	 * account itself ever leaving the machine. Deleting the config re-anonymises you.
-	 */
+	/** Random per-install salt; the uploaded pseudonym is a hash of the account UUID and this salt. */
 	public String dataContributionSalt = "";
 
 	public int configVersion = 112;
 
-	/** Plain HTTP is tolerated only to your own machine, where there is nothing to intercept. */
+	/** Plain HTTP is accepted only for loopback. */
 	static boolean isLoopback(String endpoint) {
 		return endpoint.startsWith("http://127.0.0.1")
 				|| endpoint.startsWith("http://localhost")
@@ -606,7 +558,7 @@ public final class ProFPSConfig {
 		}
 	}
 
-	// ── Named config profiles (the Configs page) ─────────────────────────────────
+	// Named config profiles
 	// Saved under <config>/profps-configs/<name>.json. Loading copies fields INTO the live
 	// instance (controllers hold a reference to it, so we mutate rather than swap it out).
 
@@ -650,7 +602,7 @@ public final class ProFPSConfig {
 		}
 	}
 
-	/** Load a saved profile into THIS instance (then persist to the live file). True on success. */
+	/** Loads a saved profile into this instance and persists it. Returns true on success. */
 	public boolean loadProfile(String name) {
 		String clean = sanitizeName(name);
 		Path file = profileDir().resolve(clean + ".json");
@@ -676,13 +628,13 @@ public final class ProFPSConfig {
 		}
 	}
 
-	/** Reset every setting to defaults (mutating the live instance) and persist. */
+	/** Resets every setting to defaults on this instance and persists. */
 	public void resetToDefaults() {
 		copyFrom(new ProFPSConfig());
 		save();
 	}
 
-	/** Copy every persisted field from {@code other} into this live instance (reflection). */
+	/** Copies every persisted field from {@code other} into this instance by reflection. */
 	private void copyFrom(ProFPSConfig other) {
 		for (Field field : ProFPSConfig.class.getDeclaredFields()) {
 			int mods = field.getModifiers();
@@ -1211,11 +1163,11 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 31) {
-			configVersion = 31; // (scaffold timing migration — superseded by the Speed meter at v34)
+			configVersion = 31; // scaffold timing migration, superseded by the Speed meter at v34
 			changed = true;
 		}
 		if (configVersion < 32) {
-			configVersion = 32; // (scaffold auto-look was added then removed — view-rotation bridging was a mistake)
+			configVersion = 32; // scaffold auto-look was added then removed
 			changed = true;
 		}
 		if (configVersion < 33) {
@@ -1290,9 +1242,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 46) {
-			// Strafe now moves you for real via legitimate input (the old velocity
-			// backstep is gone). "Backstep" became "Backward" — include a back step
-			// in the juke — and defaults ON so the strafe actually repositions you.
+			// Backstep became Backward: the juke now includes a real back step and defaults on.
 			strafeBackstep = true;
 			configVersion = 46;
 			changed = true;
@@ -1308,7 +1258,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 48) {
-			autoMaceShieldBreak = true;   // on by default — axe-break a held-up shield before the mace
+			autoMaceShieldBreak = true;   // axe-break a held-up shield before the mace
 			autoMaceShieldBreakMs = 60;
 			autoBreachSwap = false;       // advanced module, off by default
 			autoBreachSwapCharge = 90;
@@ -1316,7 +1266,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 49) {
-			// (retired) the custom home screen has been removed entirely — classic main menu for everyone
+			// The custom home screen was removed.
 			configVersion = 49;
 			changed = true;
 		}
@@ -1338,7 +1288,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 52) {
-			// Velocity: retire the brutal full-negate default for a Grim-safe gentle one.
+			// Replace the full-negate Velocity default with a gentler one.
 			velocityHorizontal = 80;
 			velocityVertical = 100;
 			velocityChance = 30;
@@ -1360,8 +1310,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 55) {
-			// Auto Crystal was defaulting to full-tick speed (an obvious bot cadence); move
-			// everyone down to the slower, humanized default unless they'd hand-lowered it.
+			// Move existing configs off the full-tick Auto Crystal speed unless already lowered.
 			if (autoCrystalSpeed > 4) autoCrystalSpeed = 4;
 			configVersion = 55;
 			changed = true;
@@ -1375,8 +1324,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 58) {
-			// Triggerbot v58: explicit acquisition range, stable weapon-aware cooldown
-			// cycles, optional sneak pause, and a human post-ready axe beat.
+			// Triggerbot v58 adds acquisition range, weapon-aware cooldown, sneak pause and an axe post-delay.
 			hitDisableWhileSneaking = true;
 			hitSprintAwareCooldown = true;
 			if (hitReactionMs == 110) hitReactionMs = 95; // migrate the old default only
@@ -1386,8 +1334,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 59) {
-			// Hitboxes is now a through-wall Combat overlay with configurable color,
-			// outline/fill opacity, and line width. Preserve the old orange look.
+			// Hitboxes became a configurable overlay; preserve the old orange look.
 			hitboxRed = 255;
 			hitboxGreen = 140;
 			hitboxBlue = 31;
@@ -1405,43 +1352,35 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 61) {
-			// Scaffold v61 follows the real movement path and supports bounded
-			// diagonal/air bridging, zig-zag movement, and jump assists.
+			// Scaffold v61 adds diagonal/air bridging, zig-zag movement and jump assists.
 			scaffoldSneakOnly = false;
 			configVersion = 61;
 			changed = true;
 		}
 		if (configVersion < 62) {
-			// Level 4 preserves the original Auto Minecart bow timing. New and
-			// existing configs start at the quicker level 6 requested for v62.
+			// Move existing configs from Auto Minecart bow level 4 to level 6.
 			subTiersMinecartBowSpeed = 6;
 			configVersion = 62;
 			changed = true;
 		}
 		if (configVersion < 63) {
-			// Scaffold no longer has any camera/aim subsystem. Advancing the
-			// version also rewrites old configs without the retired aim setting.
+			// Scaffold lost its aim subsystem; this rewrites old configs without the retired setting.
 			configVersion = 63;
 			changed = true;
 		}
 		if (configVersion < 64) {
-			// Scaffold v64 is placement-only. It never rewrites movement or jump
-			// input; old movement-assist settings are retired from saved configs.
+			// Scaffold v64 is placement-only; the old movement-assist settings are retired.
 			configVersion = 64;
 			changed = true;
 		}
 		if (configVersion < 65) {
-			// Triggerbot v65 keeps sword damage near full and routes sweep-prone
-			// grounded cycles through genuine pre-hit sprint input. Values equal to
-			// the previous 95% default follow the new default; other values stay intact.
+			// Triggerbot v65: only values equal to the previous 95% default follow the new default.
 			if (hitCooldownPct == 95) hitCooldownPct = 100;
 			configVersion = 65;
 			changed = true;
 		}
 		if (configVersion < 66) {
-			// Triggerbot v66 overlaps anti-sweep preparation with acquisition/cooldown
-			// and moves the old defaults to the faster response profile. Equality is
-			// the only provenance available, so exact former-default values follow it.
+			// Triggerbot v66: only values equal to the former defaults move to the faster profile.
 			if (hitCooldownPct == 100) hitCooldownPct = 93;
 			if (hitReactionMinMs == 20 && hitReactionMs == 95) {
 				hitReactionMinMs = 8;
@@ -1465,8 +1404,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 69) {
-			// Combat Modes are a non-destructive overlay. Existing standalone module
-			// toggles and tuning are intentionally left untouched by this migration.
+			// Combat Modes are an overlay; standalone module fields are left untouched.
 			combatMode = 0;
 			swordModeTier = 3; // HT4
 			axeModeTier = 2;   // LT4
@@ -1495,9 +1433,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 70) {
-			// Sword mode owns a conservative sprint-key layer. It never supplies forward
-			// movement and yields to AI Bot/manual retreat, sneak, unsafe footing and every
-			// vanilla sprint restriction.
+			// Sword mode gains a sprint-key layer that never supplies forward movement.
 			swordModeAutoSprint = true;
 			configVersion = 70;
 			changed = true;
@@ -1509,15 +1445,12 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 72) {
-			// v72 added an Auto Move navigation layer to Auto Schem Build. It has
-			// since been removed entirely, so this step now only carries the
-			// version forward.
+			// v72 added Auto Move to Auto Schem Build; the feature is gone, so this only carries the version forward.
 			configVersion = 72;
 			changed = true;
 		}
 		if (configVersion < 73) {
-			// Full Bright is opt-in. Existing profiles receive the balanced slider
-			// position without unexpectedly changing their lighting on upgrade.
+			// Full Bright is opt-in; existing profiles get the balanced slider position.
 			fullBrightEnabled = false;
 			fullBrightLevel = 7;
 			configVersion = 73;
@@ -1535,8 +1468,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 76) {
-			// Move only the former default. Explicitly customized settle values
-			// remain untouched.
+			// Move only the former default settle value; customized values stay.
 			if (autoMaceSettleMs == 70) autoMaceSettleMs = 35;
 			configVersion = 76;
 			changed = true;
@@ -1546,25 +1478,19 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 78) {
-			// v77/v78 toggled Auto Move off and back on. The feature is gone, so
-			// both steps now only carry the version forward. Gson keys are matched
-			// by field name, so the stale schematicAutoMove in old saved JSON is
-			// simply ignored.
+			// v77/v78 toggled Auto Move; the feature is gone, so these only carry the version forward.
 			configVersion = 78;
 			changed = true;
 		}
 		if (configVersion < 79) {
-			// Keep target validation and a bounded rate on old profiles. Auto Clicker
-			// now owns an autonomous stream whenever enabled; the former Hold setting
-			// has been retired and old JSON values are intentionally ignored.
+			// Auto Clicker is autonomous when enabled; the old Hold setting is retired.
 			instantClickTargetOnly = true;
 			instantClickCps = MathHelper.clamp(instantClickCps, 1, 20);
 			configVersion = 79;
 			changed = true;
 		}
 		if (configVersion < 80) {
-			// Replace the old hidden-pitch/end-tick Lunge with a visible, fully
-			// charged pre-movement jab and an optional target-scoped mace handoff.
+			// Lunge becomes a visible pre-movement jab with an optional mace handoff.
 			lungeAim = true;
 			lungeFov = 55;
 			lungeRange = 14;
@@ -1576,36 +1502,29 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 81) {
-			// Previous-slot restoration is now explicit. Keep it off on upgrade so
-			// Axe Stun never fights a player's post-hit slot choice unexpectedly.
+			// Axe Stun previous-slot restoration is now explicit; keep it off on upgrade.
 			axeStunRestorePrevious = false;
 			configVersion = 81;
 			changed = true;
 		}
 		if (configVersion < 82) {
-			// Autonomous means the click rhythm is observable immediately after the
-			// module is enabled. Target Only remains available as an opt-in filter.
+			// Auto Clicker runs on enable; Target Only stays as an opt-in filter.
 			instantClickTargetOnly = false;
 			configVersion = 82;
 			changed = true;
 		}
 		if (configVersion < 83) {
-			// Anchor Tweaks became a focused Anchor Macro. Legacy JSON is read
-			// through @SerializedName, and this save drops the retired cover,
-			// detonation, rotation, aggression, and blast-policy settings.
+			// Anchor Tweaks became Anchor Macro; the retired cover, detonation, rotation, aggression and blast-policy settings are dropped.
 			configVersion = 83;
 			changed = true;
 		}
 		if (configVersion < 84) {
-			// The classic sidebar panel was removed; the column panel is the only UI, and its
-			// settings live behind the wordmark. The retired guiExperimental key is simply
-			// ignored on load.
+			// The classic sidebar panel was removed; the retired guiExperimental key is ignored on load.
 			configVersion = 84;
 			changed = true;
 		}
 		if (configVersion < 85) {
-			// Replace the old one-size Scaffold/AutoCrystal/Anchor surfaces with the
-			// recovered client's explicit mode layouts. Existing enable toggles survive.
+			// Scaffold, Auto Crystal and Anchor gain explicit mode layouts; existing enable toggles survive.
 			scaffoldMode = 0;
 			scaffoldBlockCount = false;
 			scaffoldPitchCheck = false;
@@ -1643,8 +1562,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 86) {
-			// Complete the recovered client's utility surfaces. Fast Place existed as
-			// an orphaned flag; AutoTool and Velocity only exposed their basic scales.
+			// Add the Fast Place, AutoTool and Velocity settings that had no surface.
 			velocityTicks = 0;
 			velocityKiteMode = false;
 			velocityAlwaysKite = false;
@@ -1686,14 +1604,12 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 88) {
-			// Network and World module groups were removed. Saving v88 drops their retired
-			// JSON keys; Bed Breaker survives under its Hypixel-specific serialized name.
+			// Network and World module groups removed; Bed Breaker keeps its Hypixel serialized name.
 			configVersion = 88;
 			changed = true;
 		}
 		if (configVersion < 89) {
-			// Anchor confirmation now gates every action. The retired raw delay fields
-			// were replaced by a single speed control in v105.
+			// Anchor confirmation gates every action; the raw delay fields became one speed control in v105.
 			configVersion = 89;
 			changed = true;
 		}
@@ -1721,12 +1637,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 92) {
-			// Auto Totem now maintains the offhand continuously instead of
-			// reacting once to the pop packet. Silent swap becomes the default:
-			// the visible-inventory path locks the player's own movement and
-			// clicks for as long as the screen is up, which is the worst thing
-			// to do in the fight that just cost a totem. The GUI mode is still
-			// available for anyone who prefers to see the refill happen.
+			// Auto Totem maintains the offhand continuously; silent swap is the default.
 			maceSilentAim = false;
 			lungeSpamScaling = true;
 			hitCritSprintRelease = true;
@@ -1734,9 +1645,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 93) {
-			// The ESP split. Storage detection leaves Advanced ESP and becomes its
-			// own module, so Advanced ESP is now only about terrain — and gains a
-			// staircase detector to match the name it is given in the UI.
+			// Storage detection splits out of Advanced ESP, which gains a staircase detector.
 			donutStorageEsp = false;
 			donutStorageEspRange = 128;
 			donutStorageEspOpacity = 22;
@@ -1749,9 +1658,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 94) {
-			// Auto Lunge became Auto Lunge Swap: the burst is now an attribute
-			// swap rather than a held-spear jab, so its old target-aiming
-			// settings no longer describe anything it does.
+			// Auto Lunge became Auto Lunge Swap; its old target-aiming settings are retired.
 			lungeSwapHumanize = true;
 			lungeSpamScaling = true;
 			lungeSwapJump = true;
@@ -1759,9 +1666,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 95) {
-			// Spear Charge Assist only aimed while you held a charge yourself.
-			// Auto Spear replaces it: it decides when to start the charge so a
-			// fly-through actually lands, which is the part that needed timing.
+			// Auto Spear replaces Spear Charge Assist and decides when to start the charge.
 			autoSpearEnabled = false;
 			autoSpearFov = 75;
 			autoSpearRange = 42;
@@ -1773,40 +1678,28 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 98) {
-			// Anchor Macro settles back to one sequence: place, charge, detonate,
-			// stop. Double Anchor and the short-lived air place are both gone, so
-			// nothing chains a second anchor and nothing clicks an empty cell.
-			// Their fields are dropped rather than migrated — an absent field just
-			// reads as the default, so an old config needs no rewriting.
+			// Anchor Macro settles to one sequence: place, charge, detonate, stop. Retired fields are dropped, not migrated.
 			configVersion = 98;
 			changed = true;
 		}
 		if (configVersion < 99) {
-			// Auto Clicker clicks continuously once enabled, not only while the
-			// crosshair rests on somebody. "Only on targets" stays as the way to
-			// narrow it back down, but it is off unless it is asked for.
+			// Auto Clicker clicks continuously once enabled; Only on targets is off unless asked for.
 			instantClickTargetOnly = false;
 			configVersion = 99;
 			changed = true;
 		}
 		if (configVersion < 100) {
-			// Auto Totem refills with the swap-hands key now, so it needs no screen
-			// at all when the totem is in the hotbar. The inventory route survives
-			// only as a fallback for a totem stored deeper than that.
+			// Auto Totem refills with the swap-hands key; the inventory route is a fallback.
 			configVersion = 100;
 			changed = true;
 		}
 		if (configVersion < 101) {
-			// The inventory fallback stopped being optional. It is only reached for
-			// a totem stored outside the hotbar, and the alternative there is doing
-			// nothing at all, so the field is dropped rather than migrated.
+			// The inventory fallback is no longer optional, so the field is dropped rather than migrated.
 			configVersion = 101;
 			changed = true;
 		}
 		if (configVersion < 102) {
-			// Auto Crystal reduced to place-and-break off the live crosshair. It no
-			// longer touches the hotbar, so the strict-ray option lost its meaning:
-			// the fresh ray is now the whole mechanism rather than a mode.
+			// Auto Crystal is place-and-break off the live crosshair; the strict-ray option is retired.
 			configVersion = 102;
 			changed = true;
 		}
@@ -1816,17 +1709,13 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 104) {
-			// The collector moved off its placeholder hostname. load() keeps whatever is already
-			// in profps.json, so without this every install that ran an earlier build stays
-			// pinned to an endpoint that does not exist and silently never uploads.
+			// Repoint existing installs off the placeholder collector hostname, which load() would otherwise keep.
 			dataContributionEndpoint = new ProFPSConfig().dataContributionEndpoint;
 			configVersion = 104;
 			changed = true;
 		}
 		if (configVersion < 105) {
-			// The former maximum-speed anchor sequence could charge and detonate in the
-			// same client tick. Start every existing profile at the requested quick but
-			// human-readable speed; players can still opt back into immediate level 10.
+			// Anchor speed 10 could charge and detonate in one tick; start existing profiles lower.
 			anchorSpeed = 6;
 			configVersion = 105;
 			changed = true;
@@ -1842,45 +1731,30 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 		if (configVersion < 108) {
-			// Safe Anchor's best-effort glowstone cover is now the one Anchor Macro
-			// behavior instead of a mode. Existing profiles start with detonation on.
+			// Glowstone cover is now the single Anchor Macro behavior; existing profiles start with detonation on.
 			anchorDetonate = true;
 			configVersion = 108;
 			changed = true;
 		}
 		if (configVersion < 109) {
-			// Remove Anchor rotation handling completely. Actions now use the real
-			// crosshair and Minecraft's own doItemUse/held-slot synchronization path.
+			// Anchor rotation handling removed; actions use the real crosshair and vanilla doItemUse.
 			configVersion = 109;
 			changed = true;
 		}
 		if (configVersion < 110) {
-			// Freecam's launch default (1.0) flew like a rowboat. Existing saves
-			// move to the new 4.0 base once; the slider still goes both ways.
+			// Move existing saves from Freecam speed 1.0 to the new 4.0 base.
 			donutFreecamSpeed = 40;
 			configVersion = 110;
 			changed = true;
 		}
 		if (configVersion < 111) {
-			// Auto Move returns, rebuilt: it now picks where to stand from the
-			// block rotation the schematic asks for, crouches to place against
-			// interactive blocks, and holds fluids back to a final pass. Old
-			// profiles get it on, including the v77 ones that had it forced off.
+			// Auto Move returns and is enabled for old profiles, including the v77 ones that had it forced off.
 			schematicAutoMove = true;
 			configVersion = 111;
 			changed = true;
 		}
 		if (configVersion < 112) {
-			// Auto Spear rebuilt. It used to wait for a 0.28 blocks/tick closing run before it
-			// would even start the charge — a bar that reads true only when you are already
-			// sprinting straight down the line to somebody, by which point the spear's 8–10
-			// tick arm delay has eaten the pass. It also never aimed, so the contact ray it
-			// was arming pointed wherever the player happened to be looking.
-			//
-			// The rebuild holds the charge whenever an opponent is close (a spear charge
-			// costs no speed and does not block sprinting) and turns the head onto them. The
-			// old range was tuned for arming at elytra distance, so 42m of "come out now" is
-			// far too eager for a weapon that connects at 4.5m; 20m is the fight you are in.
+			// Auto Spear rebuilt: it holds the charge whenever an opponent is near, aims at them, and arms at 20m instead of 42m.
 			autoSpearFov = 90;
 			autoSpearRange = 20;
 			autoSpearTurnSpeed = 55;
@@ -1890,9 +1764,7 @@ public final class ProFPSConfig {
 			changed = true;
 		}
 
-		// HTTPS or loopback, nothing else. A hand-edited http:// host would ship the recordings
-		// in the clear; loopback is exempt because those bytes never leave the machine, and
-		// without the exemption there is no way to point a build at a local collector to test it.
+		// HTTPS or loopback only; loopback is exempt so a local collector can be tested.
 		if (dataContributionEndpoint == null
 				|| !(dataContributionEndpoint.startsWith("https://") || isLoopback(dataContributionEndpoint))) {
 			dataContributionEndpoint = new ProFPSConfig().dataContributionEndpoint;

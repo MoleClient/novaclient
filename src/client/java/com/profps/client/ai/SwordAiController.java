@@ -103,8 +103,7 @@ public final class SwordAiController {
 	}
 
 	public void frame(MinecraftClient client) {
-		// The aim (pitch + yaw turning) is a toggle, on by default. With it off the AI still
-		// drives movement + jumps but leaves your view entirely to you.
+		// Aim is a separate toggle; with it off the AI still drives movement and jumps.
 		if (!CombatModePolicy.enabled(config, CombatFeature.SWORD_AI_AIM) || !allowed(client)) {
 			lastAimFrameNanos = 0L;
 			return;
@@ -403,22 +402,7 @@ public final class SwordAiController {
 		return new PlayerInput(forward, backward, left, right, false, false, forward);
 	}
 
-	/**
-	 * Context-gated jumping — <em>only</em> two reasons, never a constant bunny-hop or a
-	 * context-free "movement hop" (the old 1.5%/tick standalone roll and the model-head nudge
-	 * were exactly the aimless "hopscotching" that looks robotic and gets flagged):
-	 *
-	 * <ol>
-	 *   <li><b>Jump-crit</b> — in melee range, facing them, and the attack is charged, so a hop
-	 *       now lands the swing on the way down as a fall-crit. Present on some exchanges, not
-	 *       every hit, and throttled to at most ~one per 1.1s.</li>
-	 *   <li><b>Catch-up</b> — the opponent is out of reach and we're actively sprint-chasing.
-	 *       A sprint-jump gains ground, the way a real player closes on someone running. Rarer
-	 *       (≥1.6s apart) and only while genuinely moving toward them.</li>
-	 * </ol>
-	 *
-	 * <p>Standing still, backing up, or side-strafing never produces a jump.</p>
-	 */
+	/** Jumps only for a charged in-range crit or a sprint-chase catch-up, each on its own cooldown. */
 	private boolean shouldJump(ClientPlayerEntity player, PlayerEntity opponent, ModelOutput out,
 			boolean movingForward, boolean sprinting) {
 		if (!CombatModePolicy.enabled(config, CombatFeature.SWORD_AI_JUMP) || !player.isOnGround()) return false;
@@ -428,17 +412,17 @@ public final class SwordAiController {
 		boolean facing = Math.abs(yawError(player, opponent)) < 30.0D;
 		if (!facing) return false;
 
-		// 1) Jump-crit — in reach, charged. The only close-range reason to leave the ground.
+		// Jump-crit: in reach and charged.
 		if (dist >= 1.8D && dist <= 3.6D) {
 			if (now - lastJumpNanos < tuning.critCooldownMs() * 1_000_000L) return false;
-			if (player.getAttackCooldownProgress(0.0F) <= 0.86F) return false;   // must be charged
+			if (player.getAttackCooldownProgress(0.0F) <= 0.86F) return false;
 			double chance = tuning.critChance();
-			if (out.probability("bad_crit_jump") > 0.82D) chance *= 0.25D;       // they'd hit us first — skip
+			if (out.probability("bad_crit_jump") > 0.82D) chance *= 0.25D;
 			if (random.nextDouble() < chance) { lastJumpNanos = now; return true; }
 			return false;
 		}
 
-		// 2) Catch-up — beyond reach and chasing. Sprint-jump closes the gap; nothing else jumps.
+		// Catch-up: beyond reach while sprint-chasing.
 		if (dist > 4.2D && dist < tuning.acquireDistance() && movingForward && sprinting) {
 			if (now - lastJumpNanos < tuning.catchupCooldownMs() * 1_000_000L) return false;
 			double chance = tuning.catchupChanceBase()

@@ -24,9 +24,7 @@ public abstract class CameraMixin {
 	private void profps$applyCameraOverrides(World area, Entity focusedEntity, boolean thirdPerson,
 			boolean inverseView, float tickProgress, CallbackInfo ci) {
 		if (FreecamController.isActive()) {
-			// The camera integrates its own movement on the render clock; this
-			// hook is the frame pulse. The drawn transform interpolates the last
-			// frame step so the flight stays glassy at any fps.
+			// Runs on the render clock, so this is the freecam frame pulse.
 			FreecamController.frame();
 			setPos(FreecamController.cameraX(tickProgress),
 					FreecamController.cameraY(tickProgress),
@@ -35,8 +33,7 @@ public abstract class CameraMixin {
 					FreecamController.cameraPitch(tickProgress));
 			return;
 		}
-		// Silent aim only ever changes which rotation is drawn. The body keeps
-		// the aim rotation, so physics and every outbound packet are unchanged.
+		// View-only rotation: physics and outbound packets keep the body rotation.
 		if (SilentAimController.isActive()) {
 			setRotation(SilentAimController.viewYaw(), SilentAimController.viewPitch());
 		}
@@ -44,8 +41,7 @@ public abstract class CameraMixin {
 
 	@Inject(method = "isThirdPerson", at = @At("HEAD"), cancellable = true)
 	private void profps$freecamRendersOwnBody(CallbackInfoReturnable<Boolean> cir) {
-		// A detached camera is third-person by definition: this is what makes
-		// your own body visible (and keeps the first-person hand off screen).
+		// Forces the own-body render and suppresses the first-person hand.
 		if (FreecamController.isActive()) {
 			cir.setReturnValue(true);
 		}

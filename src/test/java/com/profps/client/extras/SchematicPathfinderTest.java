@@ -127,11 +127,7 @@ final class SchematicPathfinderTest {
 
 	@Test
 	void nearbyUnreachableGoalStillYieldsAShortApproachHop() {
-		// The Auto Move approach fallback: a stand can be unprovable from afar
-		// (occlusion, missing floor) while still worth walking toward. With the
-		// preferred progress at 8, the search's minimum-progress clamp sits at
-		// its 2-block floor, so even a player a few blocks behind the build
-		// gets a route instead of a refusal.
+		// A preferred progress of 8 clamps to the 2-block minimum-progress floor.
 		TestSpace space = new TestSpace();
 		SchematicPathfinder.Node floating = new SchematicPathfinder.Node(6, 4, 0);
 		space.forcedY.put("6,0", 4);

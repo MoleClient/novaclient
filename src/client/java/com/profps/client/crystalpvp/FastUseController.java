@@ -48,9 +48,7 @@ public final class FastUseController {
 	private void rerollCaps(long now) {
 		int level = Math.max(1, Math.min(10, config.fastUseLevel));
 		double t = (level - 1) / 9.0D;
-		// Never rewrite attack or mining cooldowns. Fast Use now accelerates only
-		// right-click combat items, with a two-tick floor and a continuously
-		// re-rolled cap so it cannot produce impossible zero-cooldown bursts.
+		// Item-use cooldown only, floored at two ticks; attack and mining cooldowns are untouched.
 		itemUseCap = randomCap(5, 2, t, 0.35D);
 		nextRerollNanos = now + (long) ((95D + rng.nextDouble() * 105D) * 1_000_000D);
 	}
@@ -64,8 +62,7 @@ public final class FastUseController {
 	}
 
 	private boolean crystalPvpContext(MinecraftClient client) {
-		// Anchor Macro owns its sequence and deliberately retains vanilla's use
-		// cooldown. Fast Use must not shorten it, even if the physical key is held.
+		// Anchor Macro relies on vanilla's use cooldown, so never shorten it mid-sequence.
 		boolean anchorSequenceActive = anchorMacro != null && anchorMacro.isSequencing();
 		if (!canAccelerate(client.options.useKey.isPressed(), anchorSequenceActive)) return false;
 		ItemStack main = client.player.getMainHandStack();
@@ -74,7 +71,7 @@ public final class FastUseController {
 		return combatItem;
 	}
 
-	/** Pure policy helper pinned by tests: macros never impersonate held input. */
+	/** Acceleration requires real held input and no active anchor sequence. */
 	static boolean canAccelerate(boolean physicalUsePressed, boolean anchorSequenceActive) {
 		return physicalUsePressed && !anchorSequenceActive;
 	}

@@ -14,12 +14,8 @@ import net.minecraft.util.Hand;
 import java.security.SecureRandom;
 
 /**
- * Drives clicks through vanilla's own attack/use handlers at the same pre-movement
- * input phase as a physical mouse click.
- *
- * <p>The stream has no credit or catch-up mechanism: a delayed/blocked click is
- * discarded and a fresh interval is scheduled. That keeps lag, menus, another
- * combat controller, or an invalid target from turning into a packet burst.</p>
+ * Drives clicks through vanilla's attack and use handlers at the pre-movement input phase.
+ * A blocked click is discarded rather than credited, so intervals never accumulate.
  */
 public final class AutoClickerController {
 	private final ProFPSConfig config;
@@ -39,8 +35,8 @@ public final class AutoClickerController {
 	}
 
 	/**
-	 * Called from {@code MinecraftClient.handleInputEvents()} TAIL, before movement
-	 * packets are sent. Do not also call this from an end-of-tick event.
+	 * Called from {@code MinecraftClient.handleInputEvents()} TAIL, before movement packets
+	 * are sent. Must not also be called from an end-of-tick event.
 	 */
 	public void tickPreMovement(MinecraftClient client) {
 		if (!canRun(client)) {
@@ -65,11 +61,8 @@ public final class AutoClickerController {
 		int age = client.player.age;
 		updatePace(age);
 
-		// Enabling the module starts its own autonomous stream; no physical mouse
-		// hold is required. A real button's rising edge still consumes this beat
-		// because vanilla handled that click earlier in this same dispatch. This
-		// prevents a physical click plus a synthesized click from becoming a
-		// same-tick double action.
+		// A physical rising edge consumes this beat: vanilla already handled that click
+		// earlier in the same dispatch, so clicking again would double-act.
 		if (!streamActive || (physicalHeld && !previousPhysicalHeld)) {
 			streamActive = true;
 			previousPhysicalHeld = physicalHeld;
@@ -80,9 +73,7 @@ public final class AutoClickerController {
 
 		if (age < nextClickAge) return;
 
-		// Advance first. Every due beat is consumed even if its click is rejected,
-		// so target acquisition, cooldown expiry, or another module cannot create a
-		// suspicious immediate/catch-up packet.
+		// Advance first so a rejected click still consumes its beat instead of catching up.
 		scheduleNext(age, rightClick);
 
 		MinecraftClientInvoker minecraft = (MinecraftClientInvoker) client;
@@ -94,13 +85,8 @@ public final class AutoClickerController {
 		} else {
 			if (client.player.isUsingItem()
 					|| client.interactionManager.isBreakingBlock()) return;
-			// The type check is the whole difference between "clicks constantly"
-			// and "clicks only on a player". A miss is reported as a
-			// BlockHitResult too — vanilla builds one through
-			// BlockHitResult.createMissed — so testing the class alone treats
-			// empty air as if the crosshair were resting on a block, takes the
-			// break-blocks path, and returns. That left an entity hit as the only
-			// case that ever reached a click.
+			// The type check is required: a miss is also a BlockHitResult, built by
+			// BlockHitResult.createMissed, so the class alone does not distinguish air.
 			if (client.crosshairTarget instanceof BlockHitResult blockHit
 					&& blockHit.getType() == HitResult.Type.BLOCK) {
 				long now = System.nanoTime();
@@ -114,33 +100,25 @@ public final class AutoClickerController {
 			if (config.instantClickTargetOnly && target == null) return;
 		}
 
-		// Triggerbot, AutoMace, Axe Stun, crystal helpers, and the clicker must never
-		// emit competing actions in the same pre-movement dispatch.
+		// One action owner per pre-movement dispatch.
 		if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_CLICKER)) return;
 
 		if (rightClick) {
 			minecraft.invokeDoItemUse();
 		} else if (target != null) {
 			applyJitter(client);
-			// Use the same interaction and swing calls as vanilla, but bind them to
-			// the fresh legal ray acquired above. Minecraft 1.21.11's doAttack()
-			// silently rejects rapid clicks below its local charge threshold, which
-			// made an enabled clicker appear dead rather than emit the configured
-			// humanized click rhythm. attackEntity already resets the charge clock.
+			// attackEntity rather than doAttack: doAttack silently drops clicks below its
+			// local charge threshold. attackEntity already resets the charge clock.
 			client.interactionManager.attackEntity(client.player, target);
 			client.player.swingHand(Hand.MAIN_HAND);
 		} else {
-			// An air click has no server-side attack target: the server only ever sees
-			// a swing animation, and its own charge clock keeps running. Vanilla still
-			// zeroes the LOCAL counter on a miss, but mirroring that here was a pure
-			// self-inflicted penalty — at 10 CPS it pinned the bar near zero, so every
-			// charge gate in the mod (and every manual sword click) read a weak hit the
-			// server would have paid in full. Swing only.
+			// Swing only. An air click has no server-side target, and the server's charge
+			// clock keeps running, so the local counter is deliberately not reset here.
 			client.player.swingHand(Hand.MAIN_HAND);
 		}
 	}
 
-	/** Clear timing state while a higher-priority multi-tick action owns input. */
+	/** Clears timing state while a higher-priority multi-tick action owns input. */
 	public void suspend() {
 		reset();
 	}
@@ -181,7 +159,6 @@ public final class AutoClickerController {
 			targetPaceScale = 1.0D - spread * 0.5D + rng.nextDouble() * spread;
 			nextPaceChangeAge = age + 14 + rng.nextInt(31);
 		}
-		// Slow drift, rather than changing the rate sharply at a block boundary.
 		paceScale += (targetPaceScale - paceScale) * 0.12;
 	}
 

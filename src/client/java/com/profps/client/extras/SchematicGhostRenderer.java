@@ -20,35 +20,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Draws the loaded schematic as a translucent hologram of what is still missing.
- *
- * <p>Only cells that are not yet built are drawn, so the ghost is a live picture
- * of the remaining work rather than a copy of the schematic laid over the world:
- * as the builder fills a layer, that layer fades away block by block. The layer
- * the builder is currently working is drawn brighter than the rest, which is
- * what makes the bottom-to-top progression legible from a distance.
- *
- * <p>Deciding what is missing means testing every cell of the schematic against
- * the world, which is far too much to do per frame — the schematics this was
- * built against run to tens of thousands of cells. So the visible set is
- * computed on a timer and on every load, then replayed each frame. That also
- * bounds the cost of a very large schematic: the scan is capped, and cells are
- * clipped to a radius around the camera before anything is collected.
- *
- * <p>This is a separate renderer from the Remember ghosts on purpose. Remember
- * draws captured builds; this draws a file. They can be on at the same time and
- * neither knows about the other.
+ * Draws the unbuilt cells of the loaded schematic as a translucent hologram. The visible
+ * set is rebuilt on a timer rather than per frame.
  */
 public final class SchematicGhostRenderer {
 	private static final int FULL_BRIGHT = 0xF000F0;
-	/** Dimmer than the Remember ghosts, so the two are told apart at a glance. */
 	private static final float GHOST_ALPHA = 0.42F;
-	/** The layer being built right now, lifted out of the stack. */
+	/** Alpha for the layer currently being built. */
 	private static final float ACTIVE_ALPHA = 0.80F;
 	private static final float GHOST_SCALE = 0.92F;
 	/** Cells further than this from the camera are not collected. */
 	private static final int RENDER_RADIUS = 80;
-	/** Ceiling on drawn ghosts, so a huge schematic cannot sink the frame rate. */
 	private static final int MAX_GHOSTS = 20_000;
 	/** Ceiling on cells examined per rebuild. */
 	private static final int MAX_SCANNED = 600_000;
@@ -59,8 +41,6 @@ public final class SchematicGhostRenderer {
 	private List<Ghost> ghosts = List.of();
 	private long builtRevision = Long.MIN_VALUE;
 	private int nextRebuildTick;
-	// One warning, not one per rebuild: a schematic big enough to truncate
-	// truncates every time.
 	private boolean warnedTruncated;
 
 	public SchematicGhostRenderer(ProFPSConfig config) {
@@ -81,9 +61,7 @@ public final class SchematicGhostRenderer {
 			BlockRenderManager blockRenderer = client.getBlockRenderManager();
 			int activeLayer = SchematicBuildController.activeLayerY();
 
-			// Two consumers rather than one so the active layer can be brighter
-			// without re-sorting anything: each vertex simply goes to the buffer
-			// carrying the alpha it should have.
+			// Two consumers over one buffer so the active layer draws brighter without re-sorting.
 			VertexConsumer base = ctx.consumers().getBuffer(TexturedRenderLayers.getBlockTranslucentCull());
 			GhostConsumer pale = new GhostConsumer(base, GHOST_ALPHA);
 			GhostConsumer bright = new GhostConsumer(base, ACTIVE_ALPHA);
@@ -102,11 +80,9 @@ public final class SchematicGhostRenderer {
 				matrices.pop();
 			}
 		} catch (RuntimeException ignored) {
-			// A ghost render failure must never take down the client.
+			// Never let a ghost render failure take down the client.
 		}
 	}
-
-	// ── Visible-set rebuild ────────────────────────────────────────────────────
 
 	private void refresh(MinecraftClient client) {
 		int tick = client.player.age;
@@ -125,8 +101,7 @@ public final class SchematicGhostRenderer {
 		}
 		ClientWorld world = client.world;
 		Vec3d eye = client.player.getEntityPos();
-		// Clip the schematic box to a cube around the camera before scanning, so
-		// the cost is bounded by view distance and not by schematic size.
+		// Clip to a cube around the camera so cost is bounded by view distance, not schematic size.
 		int minX = Math.max(bounds[0], (int) Math.floor(eye.x) - RENDER_RADIUS);
 		int minY = Math.max(bounds[1], (int) Math.floor(eye.y) - RENDER_RADIUS);
 		int minZ = Math.max(bounds[2], (int) Math.floor(eye.z) - RENDER_RADIUS);
@@ -139,8 +114,7 @@ public final class SchematicGhostRenderer {
 		int scanned = 0;
 		boolean capped = false;
 
-		// Bottom-up, so a truncated ghost keeps the layers the builder will reach
-		// first — the ones worth seeing.
+		// Bottom-up so a truncated ghost keeps the layers the builder reaches first.
 		outer:
 		for (int y = minY; y <= maxY; y++) {
 			for (int z = minZ; z <= maxZ; z++) {
@@ -166,12 +140,8 @@ public final class SchematicGhostRenderer {
 	}
 
 	/**
-	 * Whether the world already holds this cell's block.
-	 *
-	 * <p>Compares the block plus the properties a player controls by where they
-	 * stand and what they click. Connection state, redstone power and the rest
-	 * are deliberately ignored: the world computes those itself, and demanding
-	 * they match would leave ghosts hanging over finished blocks forever.
+	 * Whether the world already holds this cell's block. Compares only the properties a
+	 * player controls; connection state and redstone power are world-computed and ignored.
 	 */
 	private static boolean alreadyBuilt(BlockState placed, BlockState desired) {
 		if (placed.getBlock() != desired.getBlock()) return false;
@@ -187,7 +157,7 @@ public final class SchematicGhostRenderer {
 	private record Ghost(BlockPos pos, BlockState state) {
 	}
 
-	/** Forces one alpha onto every vertex, so a solid model draws as a hologram. */
+	/** Forces one alpha onto every vertex so a solid model draws translucent. */
 	private static final class GhostConsumer implements VertexConsumer {
 		private final VertexConsumer delegate;
 		private final int alpha;

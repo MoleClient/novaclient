@@ -21,24 +21,13 @@ import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.MathHelper;
 
 /**
- * Same-tick Breach mace handoff.
- *
- * <p>The slot change and the attack are emitted in one dispatch on purpose. The server
- * drains its packet queue before ticking entities, and it is
- * {@code LivingEntity#tick -> sendEquipmentChanges} that swaps the held item's
- * {@code ATTACK_SPEED} modifier — so an attack arriving in the same tick as the slot
- * change resolves against a mixed state: the <em>sword's</em> attack speed (12.5 ticks,
- * so the charge bar reads full) with the <em>mace's</em> stack, which is what supplies
- * Breach, {@code getBonusAttackDamage}, and the crit.</p>
- *
- * <p>This is the module's whole reason to exist. An ordinary visible handoff cannot
- * produce it: with the mace genuinely in hand the bar divides by 33.3 ticks instead,
- * so vanilla's {@code > 0.9} full-strength cut-off needs ~30 ticks of not attacking —
- * unreachable in a real fight, which left the module firing essentially never. The
- * charge gate below is therefore the sword's, matching what the server will read.</p>
+ * Same-tick Breach mace handoff. The slot change and the attack are emitted in one dispatch:
+ * the server drains packets before {@code LivingEntity#tick -> sendEquipmentChanges} swaps the
+ * {@code ATTACK_SPEED} modifier, so the attack resolves with the sword's attack speed and the
+ * mace's stack. The charge gate below is therefore the sword's.
  */
 public final class AutoBreachSwapController {
-	/** Vanilla's full-strength bar: the crit flag and undiminished damage both need more than this. */
+	/** Vanilla requires strictly more than this for the crit flag and undiminished damage. */
 	private static final float FULL_STRENGTH = 0.9F;
 
 	private final ProFPSConfig config;
@@ -59,12 +48,11 @@ public final class AutoBreachSwapController {
 			return;
 		}
 
-		// Restore pending. The attack packet already left; take the sword back on a
-		// later tick so the return slot change cannot overtake it.
+		// Restore on a later tick so the return slot change cannot overtake the attack packet.
 		if (phase == 1) {
 			CombatModeRuntime.markBreachSwapHold(true);
 			if (player.age < readyAge) return;
-			// Manual scrolling wins; only restore when our mace is still selected.
+			// Only restore when the mace is still selected, so manual scrolling wins.
 			if (player.getInventory().getSelectedSlot() == maceSlot
 					&& CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.BREACH_SWAP)) {
 				select(client, player, returnSlot);
@@ -87,18 +75,14 @@ public final class AutoBreachSwapController {
 		CombatModeRuntime.markBreachSwapHold(armed);
 		if (!armed || now < disengageUntilNanos) return;
 
-		// The sword's bar is the one the server will divide by, so it is the one that
-		// has to clear vanilla's cut-off. A sword recharges in 12.5 ticks, which an
-		// ordinary swing rhythm reaches between hits.
+		// The server divides by the sword's 12.5-tick recharge, so gate on the sword's bar.
 		if (!fullStrength(player.getAttackCooldownProgress(0.5F), chargeThreshold(tuning))) return;
 
 		PlayerEntity target = confirmedVanillaTarget(client, player);
 		if (target == null || !CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.BREACH_SWAP)) return;
 
-		// The handoff itself. Set the slot locally only — attackEntity opens with
-		// vanilla's own syncSelectedSlot, which emits the slot packet immediately
-		// before the attack packet. Both therefore land in one server tick, in
-		// vanilla's own order, with no hand-rolled packet in between.
+		// Set the slot locally only: attackEntity's own syncSelectedSlot emits the slot packet
+		// immediately before the attack packet, so both land in one server tick.
 		returnSlot = swordSlot;
 		maceSlot = breachMace;
 		player.getInventory().setSelectedSlot(maceSlot);
@@ -124,11 +108,6 @@ public final class AutoBreachSwapController {
 		return MathHelper.clamp(Math.max(90, tuning.chargePct()), 90, 100) / 100.0F;
 	}
 
-	/**
-	 * Vanilla wants strictly more than {@link #FULL_STRENGTH} for the crit flag and for an
-	 * undiminished damage multiplier, so a configured 90% has to clear that same bar
-	 * rather than merely touch it.
-	 */
 	private boolean fullStrength(float progress, float charge) {
 		return progress > FULL_STRENGTH && progress >= charge;
 	}

@@ -5,16 +5,11 @@ import com.profps.client.config.ProFPSConfig;
 import java.util.UUID;
 
 /**
- * Small, session-only coordination surface for combat controllers.
+ * Session-only coordination state shared by combat controllers.
  *
- * <p>Call {@link #beginPreMovementTick(ProFPSConfig)} exactly once at the start of
- * the pre-movement dispatch, then let controllers call {@link #tryClaim(ActionOwner)}
- * immediately before they emit an attack/use/swap sequence. The first claimant wins;
- * callers must therefore be dispatched in the desired priority order. This prevents
- * two independent controllers from attacking or fighting over the hotbar in one tick.</p>
- *
- * <p>The Axe follow-up is target-scoped and expires automatically. It deliberately
- * does not toggle the persisted standalone Triggerbot field.</p>
+ * <p>{@link #beginPreMovementTick(ProFPSConfig)} must be called once at the start of the
+ * pre-movement dispatch. Controllers call {@link #tryClaim(ActionOwner)} before emitting an
+ * attack, use, or swap sequence; the first claimant wins, so dispatch order sets priority.</p>
  */
 public final class CombatModeRuntime {
 	public enum ActionOwner {
@@ -37,7 +32,7 @@ public final class CombatModeRuntime {
 		AUTO_TOTEM
 	}
 
-	/** How long a published Breach Swap setup keeps the hotbar (a handful of client ticks). */
+	/** How long a published Breach Swap setup keeps the hotbar. */
 	private static final long BREACH_HOLD_NANOS = 300_000_000L;
 
 	private static ActionOwner claimedBy = ActionOwner.NONE;
@@ -81,32 +76,25 @@ public final class CombatModeRuntime {
 		return claimedBy;
 	}
 
-	/** Useful for diagnostics; increments once per {@link #beginPreMovementTick}. */
+	/** Increments once per {@link #beginPreMovementTick}. */
 	public static long dispatchSequence() {
 		return dispatchSequence;
 	}
 
 	/**
-	 * Auto Breachswap publishes its live setup here every pre-movement tick, before its own
-	 * crosshair gate. While it holds the hotbar, AutoMace must not swap a mace in: the swap
-	 * resolves with the SWORD's attributes, so a mace handoff even one tick early silently
-	 * cancels the whole thing — that is the "Auto Mace interrupts Breach Swap" case. The hold
-	 * expires on its own, so a stale flag can never wedge AutoMace off permanently.
+	 * Publishes the Breach Swap hotbar hold. The swap resolves with the sword's attributes,
+	 * so no other controller may change slots while the hold is active. It expires on its own.
 	 */
 	public static void markBreachSwapHold(boolean holding) {
 		breachSwapHoldUntilNanos = holding ? System.nanoTime() + BREACH_HOLD_NANOS : 0L;
 	}
 
-	/** True while an armed Breach Swap owns the hotbar and no other controller may change slots. */
+	/** True while an armed Breach Swap owns the hotbar. */
 	public static boolean breachSwapHoldsHotbar() {
 		return System.nanoTime() < breachSwapHoldUntilNanos;
 	}
 
-	/**
-	 * Hand a successful Lunge jab into AutoMace without toggling its persisted module.
-	 * The handoff is target-scoped and deliberately short: it exists only for the
-	 * airborne arc produced by this one spear action.
-	 */
+	/** Hands a Lunge jab to AutoMace for one target, bounded to 250..3000 ms. */
 	public static void armSpearMace(UUID targetUuid, long durationMillis) {
 		if (targetUuid == null) {
 			clearSpearMace();
@@ -139,8 +127,9 @@ public final class CombatModeRuntime {
 	}
 
 	/**
-	 * Open the Axe mode's sword-trigger continuation for exactly one opponent.
-	 * Returns false when the mode/switches do not permit the continuation.
+	 * Opens the Axe mode sword-trigger continuation for one target.
+	 *
+	 * @return false when the current mode or switches do not permit it
 	 */
 	public static boolean armAxeFollowup(ProFPSConfig config, UUID targetUuid) {
 		long now = System.nanoTime();
@@ -166,23 +155,17 @@ public final class CombatModeRuntime {
 				&& CombatModePolicy.enabled(config, CombatFeature.AXE_TRIGGER_FOLLOWUP);
 	}
 
-	/**
-	 * Effective Triggerbot gate for a concrete target. Sword and Axe modes drive the Triggerbot from
-	 * their own switch (Axe additionally opens a target-scoped window after a stun); Mace mode does
-	 * not use it at all, so there it falls through to the standalone module.
-	 */
+	/** Effective Triggerbot gate for a concrete target. */
 	public static boolean triggerEnabledFor(ProFPSConfig config, UUID targetUuid) {
 		return switch (CombatModePolicy.mode(config)) {
 			case OFF, SWORD, MACE -> CombatModePolicy.enabled(config, CombatFeature.TRIGGER);
-			// Axe mode runs the Triggerbot from its own switch; the post-stun continuation is an
-			// EXTRA window on top, not the only way in. Gating solely on the continuation meant the
-			// Triggerbot never fired at all unless a shield stun had just landed.
+			// The post-stun continuation is an extra window on top of the mode switch, not the only way in.
 			case AXE -> CombatModePolicy.enabled(config, CombatFeature.TRIGGER)
 					|| axeFollowupMatches(config, targetUuid);
 		};
 	}
 
-	/** Consume a successful follow-up so it cannot spill into another cooldown cycle. */
+	/** Consumes a successful follow-up so it cannot spill into another cooldown cycle. */
 	public static void consumeAxeFollowup(UUID targetUuid) {
 		if (targetUuid != null && targetUuid.equals(axeFollowupTarget)) clearAxeFollowup();
 	}
@@ -206,7 +189,7 @@ public final class CombatModeRuntime {
 		axeFollowupUntilNanos = 0L;
 	}
 
-	/** Clear all transient combat-mode state, for disconnects or a hard reset. */
+	/** Clears all transient combat-mode state. */
 	public static void reset() {
 		claimedBy = ActionOwner.NONE;
 		dispatchSequence = 0L;

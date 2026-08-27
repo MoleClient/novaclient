@@ -25,18 +25,9 @@ import java.security.SecureRandom;
 import java.util.UUID;
 
 /**
- * Axe Stun — a standalone ground shield-breaker. While you're aiming at a player who's
- * raising a shield and an axe is in your hotbar, it swiftly swaps to the axe and lands one hit
- * which disables their shield. Previous-slot restoration is optional; Axe mode can instead
- * continue onto its configured sword follow-up.
- *
- * It only fires when the shielder is genuinely your crosshair target (so you're already
- * looking at them — no rotation spoofing) and you're on the ground (normal ground combat,
- * not an aerial mace dive — that's AutoMace's job). The whole thing is humanized: a short
- * randomized reaction before the swap, a jittered ~1-tick gap before swapping back, and a
- * brief cooldown after, so it reads like a real hand flicking to an axe and back rather than
- * a robotic flicker. The slot packet is always sent before the attack packet so the server
- * sees us holding the axe the instant the hit resolves.
+ * Shield breaker. Swaps to a hotbar axe and lands one hit on the crosshair-confirmed shielder,
+ * then restores the previous slot or continues onto the configured sword follow-up. The slot
+ * packet is always sent before the attack packet.
  */
 public final class AxeStunController {
 	private final ProFPSConfig config;
@@ -45,10 +36,10 @@ public final class AxeStunController {
 	// 0 = idle, 1 = reaction pending, 2 = hit sent / waiting to swap back,
 	// 3 = axe selected / waiting for that axe's real cooldown.
 	private int phase;
-	private long engageAtNanos;   // when the reaction delay elapses and we fire (phase 1)
-	private long returnAtNanos;   // when we swap back to the original item (phase 2)
-	private long cooldownUntil;   // brief rest after a combo before we'll engage again
-	private int previousSlot = -1; // the hotbar slot we were on, to return to
+	private long engageAtNanos;   // phase 1: when the reaction delay elapses
+	private long returnAtNanos;   // phase 2: when to swap back
+	private long cooldownUntil;   // rest period after a combo
+	private int previousSlot = -1;
 	private int axeSlot = -1;
 	private int axeReadyAge;
 	private int axeAttackDeadlineAge;
@@ -61,7 +52,7 @@ public final class AxeStunController {
 
 	public void tick(MinecraftClient client) {
 		if (!enabled(client)) {
-			// Toggled off / left the world mid-combo while holding the axe — restore the original item.
+			// Restore the original item if disabled mid-combo while holding the axe.
 			if ((phase == 2 || phase == 3) && client.player != null && previousSlot >= 0
 					&& client.player.getInventory().getSelectedSlot() != previousSlot) {
 				if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AXE_STUN)) return;
@@ -74,14 +65,11 @@ public final class AxeStunController {
 		long now = System.nanoTime();
 		CombatModeProfile.Axe tuning = CombatModePolicy.axe(config);
 
-		// Phase 2: the axe hit is out. Axe mode continues onto the best hotbar sword;
-		// standalone restoration happens only when its explicit setting is enabled.
+		// Phase 2: the axe hit is out, pick the destination slot.
 		if (phase == 2) {
 			if (player.age < axeReadyAge || now < returnAtNanos) return;
 			PlayerEntity hitTarget = byUuid(client, followupTarget);
-			// Give the server several ordinary movement ticks to publish the shield
-			// cooldown/cleared active item. The deadline prevents lag from wedging
-			// the controller on the axe forever.
+			// Wait a few ticks for the server to publish the cleared shield, with a deadline.
 			if (hitTarget != null && isHoldingShield(hitTarget)
 					&& player.age < shieldConfirmDeadlineAge) return;
 
@@ -92,8 +80,7 @@ public final class AxeStunController {
 				if (sword >= 0) destination = sword;
 			}
 
-			// A manual slot change during the tiny return gap always wins. Do not fight the
-			// player's hand or arm a trigger continuation for a slot we did not choose.
+			// A manual slot change during the return gap wins.
 			int selected = player.getInventory().getSelectedSlot();
 			if (selected != axeSlot) {
 				finishCombo(now, tuning);
@@ -112,21 +99,16 @@ public final class AxeStunController {
 
 		PlayerEntity target = shieldTargetUnderCrosshair(client, player);
 
-		// The axe is already genuinely selected, so this cooldown is calculated from
-		// the prospective weapon rather than whichever fast item was held beforehand.
+		// Phase 3: the axe is selected, so the cooldown read below is the axe's own.
 		if (phase == 3) {
 			if (player.getInventory().getSelectedSlot() != axeSlot) {
 				resetCombo(); // manual scroll wins
 				return;
 			}
-			// Once armed, retain the same ray-confirmed player even if the remote
-			// "using item" flag flickers for a tick during shield warmup.
 			PlayerEntity aimedTarget = freshPlayerTarget(client, player);
 			if (aimedTarget == null || followupTarget == null
 					|| !aimedTarget.getUuid().equals(followupTarget)) {
-				// The axe selection belongs to one shield target. If the crosshair moves to
-				// another shielder while charge fills, restore instead of attacking B and
-				// accidentally arming the sword continuation for A.
+				// The axe selection belongs to one target; restore if the crosshair moves off it.
 				if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AXE_STUN)) return;
 				selectSlot(client, player, previousSlot);
 				resetCombo();
@@ -147,8 +129,7 @@ public final class AxeStunController {
 			return;
 		}
 
-		// Phase 1: we've spotted a shielder and are sitting out a human reaction delay. If they
-		// drop the shield or leave the crosshair before it elapses, abandon the swap.
+		// Phase 1: waiting out the reaction delay; abandon if the shielder leaves the crosshair.
 		if (phase == 1) {
 			if (target == null) { resetCombo(); return; }
 			if (now < engageAtNanos) return;
@@ -160,18 +141,15 @@ public final class AxeStunController {
 			followupTarget = target.getUuid();
 			selectSlot(client, player, axe);
 			phase = 3;
-			// Never combine a hotbar packet and attack in the same dispatch. One
-			// movement tick with the axe visibly selected keeps the sequence ordinary.
+			// The hotbar packet and the attack must not share a dispatch; wait one movement tick.
 			axeReadyAge = player.age + 1;
 			axeAttackDeadlineAge = player.age + 6;
 			return;
 		}
 
-		// Phase 0 (idle): only engage when not resting, a shielder is under the crosshair, and we
-		// actually carry an axe. Start the reaction delay; the swap fires next tick once it elapses.
+		// Phase 0: start the reaction delay.
 		if (now < cooldownUntil || target == null || findAxe(player) < 0) return;
-		// A crit window is a handful of ticks wide. Spending the usual reaction delay inside one
-		// throws the crit away, so when you are already falling on them, commit almost immediately.
+		// A crit window is only a few ticks wide, so shorten the delay while already falling.
 		double reactionScale = isCritFalling(player) ? 0.25D : 1.0D;
 		engageAtNanos = now + (long) (Math.max(0, tuning.stunReactionMs()) * reactionScale) * 1_000_000L
 				+ (long) (rng.nextDouble() * Math.max(0, tuning.stunReactionJitterMs())
@@ -180,20 +158,15 @@ public final class AxeStunController {
 	}
 
 	/**
-	 * Charge this hit has to reach first. The old floor was 90%, and an axe needs about a second to
-	 * get there — so the module stood holding an axe while the shield came back down, which is why
-	 * it so rarely broke anything. The disable lands on any hit that connects, so the bar only has
-	 * to be high enough for the hit to be worth taking, and lower still inside a crit window.
+	 * Charge the hit must reach. The shield disable is a weapon component applied on any
+	 * connecting hit, so it is not gated at full attack charge.
 	 */
 	private float requiredCharge(ClientPlayerEntity player, CombatModeProfile.Axe tuning) {
-		// Shield disable duration is a WEAPON component on the connected axe hit;
-		// it is not gated at 90% attack charge. Waiting near a full axe cooldown
-		// routinely lets a raised shield disappear before the packet is sent.
 		return AxeStunPolicy.requiredCharge(
 				tuning.minimumAttackChargePct(), isCritFalling(player));
 	}
 
-	/** The vanilla crit window: falling after a jump, with nothing that cancels a crit. */
+	/** Whether the player is inside the vanilla crit window. */
 	private boolean isCritFalling(ClientPlayerEntity player) {
 		return player.fallDistance > 0.0F
 				&& !player.isOnGround()
@@ -211,18 +184,9 @@ public final class AxeStunController {
 				&& client.currentScreen == null && player.isAlive() && !player.isSpectator();
 	}
 
-	/**
-	 * The player you're aiming at if they're raising a shield and in normal ground combat —
-	 * i.e. your crosshair entity is a living player who's blocking, both of you on the ground.
-	 * Returns null otherwise. Crosshair-gated, so we never act unless you're already looking
-	 * right at them.
-	 */
+	/** The crosshair-confirmed player raising a shield, or null. */
 	private PlayerEntity shieldTargetUnderCrosshair(MinecraftClient client, ClientPlayerEntity player) {
-		// Deliberately NOT ground-only any more. Refusing to fire unless you were standing on the
-		// ground meant the axe could never land as a crit — a crit is by definition mid-fall — so
-		// the one hit this module exists to land was always the weakest version of itself. The one
-		// case the old rule was right about survives: while AutoMace is live a descent is its smash
-		// window, and the axe must not take the tick off it.
+		// Airborne is allowed so the axe can crit, except while AutoMace owns the descent.
 		if (player.hasVehicle() || player.isTouchingWater() || player.isClimbing()) return null;
 		if (!player.isOnGround() && CombatModePolicy.enabled(config, CombatFeature.AUTO_MACE)) return null;
 		PlayerEntity target = playerTargetUnderCrosshair(client, player);
@@ -251,10 +215,9 @@ public final class AxeStunController {
 	}
 
 	/**
-	 * True when the target is raising a shield. In 1.21.11 blocking is driven by the
-	 * {@code BLOCKS_ATTACKS} data component, not the SHIELD item id, and {@code isBlocking()}
-	 * only flips true AFTER the item's block-delay warmup (~5 ticks) — so we also catch that
-	 * warmup (any actively-used item that can block attacks) to break it the instant it goes up.
+	 * True when the target is raising a shield. Blocking is driven by the {@code BLOCKS_ATTACKS}
+	 * component, and {@code isBlocking()} only flips after the roughly 5-tick warmup, so an
+	 * actively-used blocking item counts too.
 	 */
 	private boolean isHoldingShield(PlayerEntity target) {
 		if (target == null) return false;
@@ -263,7 +226,7 @@ public final class AxeStunController {
 				&& target.getActiveItem().contains(DataComponentTypes.BLOCKS_ATTACKS);
 	}
 
-	/** First hotbar slot (0..8) holding any axe, or -1. */
+	/** First hotbar slot holding any axe, or -1. */
 	private int findAxe(ClientPlayerEntity player) {
 		for (int s = 0; s < 9; s++) {
 			if (isAxe(player.getInventory().getStack(s).getItem())) return s;
@@ -271,7 +234,7 @@ public final class AxeStunController {
 		return -1;
 	}
 
-	/** Best practical PvP sword in the hotbar; material and damage enchantments both count. */
+	/** Hotbar slot with the highest-scoring sword, or -1. Material and enchantments both count. */
 	private int findBestSword(ClientPlayerEntity player) {
 		int bestSlot = -1;
 		int bestScore = Integer.MIN_VALUE;
@@ -326,10 +289,6 @@ public final class AxeStunController {
 		return null;
 	}
 
-	/**
-	 * Select {@code slot} and attack {@code target} in one shot, sending the slot-change packet
-	 * BEFORE the attack packet so the server sees the new held item when the hit resolves.
-	 */
 	private void attackSelectedAxe(MinecraftClient client, ClientPlayerEntity player, PlayerEntity target) {
 		client.interactionManager.attackEntity(player, target);
 		player.swingHand(Hand.MAIN_HAND);
@@ -337,9 +296,8 @@ public final class AxeStunController {
 	}
 
 	/**
-	 * Set the held hotbar slot locally and tell the server immediately (ordered before any attack
-	 * this same tick). Skips a no-op change and keeps vanilla's slot-sync in step so it never fires
-	 * a duplicate packet — both of which would otherwise flag as BadPacketsA.
+	 * Sets the held slot locally and sends the packet immediately, before any attack this tick.
+	 * No-op changes are skipped and vanilla's slot-sync is updated to avoid a duplicate packet.
 	 */
 	private void selectSlot(MinecraftClient client, ClientPlayerEntity player, int slot) {
 		if (slot < 0 || slot > 8 || player.getInventory().getSelectedSlot() == slot) return;
@@ -349,7 +307,6 @@ public final class AxeStunController {
 				.profps$setLastSelectedSlot(slot);
 	}
 
-	/** Read-only coordination state for diagnostics and future controller ordering. */
 	public boolean isBusy() {
 		return phase != 0;
 	}

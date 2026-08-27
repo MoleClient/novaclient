@@ -12,9 +12,7 @@ public interface ClientPlayerInteractionManagerAccessor {
 	@Accessor("blockBreakingCooldown")
 	void profps$setBlockBreakingCooldown(int cooldown);
 
-	// Vanilla resends a held-slot packet whenever the inventory's selected slot differs from this
-	// remembered value. After we send our own slot packet we set this to match, so vanilla doesn't
-	// fire a duplicate (same-slot) packet next tick — which anti-cheats flag as BadPacketsA.
+	// Must be synced after sending a manual slot packet, or vanilla sends a duplicate next tick.
 	@Accessor("lastSelectedSlot")
 	void profps$setLastSelectedSlot(int slot);
 }

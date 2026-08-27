@@ -7,30 +7,8 @@ import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4fc;
 
 /**
- * Shared tracer system for every DonutSMP overlay, built on the geometry that
- * makes Xenon's tracers read as composed rather than scribbled:
- *
- * <ul>
- *   <li><b>Crosshair origin.</b> Lines do not start at the hand or the screen
- *       bottom — they start at a point far along the camera's forward axis
- *       ({@code FORWARD * 150}). Projected, that point IS the crosshair dot, so
- *       every tracer appears to grow out of the center of the screen no matter
- *       how the camera swings.</li>
- *   <li><b>Short directional ends.</b> The line does not run all the way to the
- *       target. Its end is a point a fixed {@code 24} blocks from the camera in
- *       the direction whose screen projection lands on the target. Distant
- *       targets therefore produce identical, tidy pointer lines instead of
- *       kilometre-long streaks with wild perspective.</li>
- *   <li><b>Behind-camera stability.</b> When the target is behind the view
- *       plane its projected offset collapses toward zero, which would fold the
- *       tracer into a dot at the crosshair. Ends whose screen offset falls
- *       under {@code 2.75} while behind the camera are pushed out to that ring,
- *       so the line keeps pointing at the screen edge nearest the target.</li>
- * </ul>
- *
- * All coordinates are camera-relative before they touch the vertex buffer, and
- * the lines go through {@link DonutWorldRenderer#LINES}, which already renders
- * with depth off — through terrain, like every other Nova overlay.
+ * Shared tracer geometry for the DonutSMP overlays. Lines run from a point on the camera
+ * forward axis (which projects to the crosshair) out toward the target's screen direction.
  */
 final class NovaTracers {
 	/** Distance of the shared origin point along the camera forward axis. */
@@ -39,7 +17,6 @@ final class NovaTracers {
 	private static final double END_DISTANCE = 24.0;
 	/** Minimum projected offset for a target behind the camera plane. */
 	private static final double MIN_BEHIND_SPREAD = 2.75;
-	/** Matches the reference client's default line width. */
 	static final float LINE_WIDTH = 2.0F;
 
 	private NovaTracers() {}
@@ -56,24 +33,17 @@ final class NovaTracers {
 		return new Basis(camera.getCameraPos(), forward, right, up, forward.multiply(ORIGIN_DISTANCE));
 	}
 
-	/**
-	 * Draw one tracer from the crosshair origin toward {@code target} (a world
-	 * position). {@code buf} must be the {@link DonutWorldRenderer#LINES} buffer.
-	 */
+	/** Draws one tracer toward a world position; {@code buf} must be {@link DonutWorldRenderer#LINES}. */
 	static void draw(VertexConsumer buf, Matrix4fc pos, MatrixStack.Entry entry, Basis basis,
 			Vec3d target, int color, float alpha) {
 		Vec3d end = endFor(basis, target);
-		// Both endpoints are already camera-relative; hand the line helper a
-		// zero camera so it does not subtract the camera position a second time.
+		// Endpoints are already camera-relative, so pass a zero camera position.
 		DonutWorldRenderer.drawLine(buf, pos, entry, Vec3d.ZERO,
 				basis.origin().x, basis.origin().y, basis.origin().z,
 				end.x, end.y, end.z, color, alpha, LINE_WIDTH);
 	}
 
-	/**
-	 * The camera-relative end point: {@code END_DISTANCE} out, in the direction
-	 * whose projection lands on the target's screen position.
-	 */
+	/** Camera-relative end point: END_DISTANCE out, in the direction that projects onto the target. */
 	private static Vec3d endFor(Basis basis, Vec3d target) {
 		double dx = target.x - basis.cameraPos().x;
 		double dy = target.y - basis.cameraPos().y;
@@ -83,8 +53,7 @@ final class NovaTracers {
 		double alongUp = dx * basis.up().x + dy * basis.up().y + dz * basis.up().z;
 		double alongForward = dx * basis.forward().x + dy * basis.forward().y + dz * basis.forward().z;
 
-		// Divide the lateral offsets by the forward depth to get screen-space
-		// proportions; the depth floor stops division blow-ups near the plane.
+		// Lateral offsets over forward depth give screen-space proportions; the floor avoids blow-up.
 		double depth = Math.max(Math.abs(alongForward), 0.25);
 		double spreadRight = alongRight / depth;
 		double spreadUp = alongUp / depth;
@@ -93,7 +62,7 @@ final class NovaTracers {
 			double offset = Math.hypot(spreadRight, spreadUp);
 			if (offset < MIN_BEHIND_SPREAD) {
 				if (offset < 1.0E-4) {
-					// Dead astern: no direction to preserve, pick screen-right.
+					// Directly behind: no direction to preserve, pick screen-right.
 					spreadRight = MIN_BEHIND_SPREAD;
 					spreadUp = 0.0;
 				} else {

@@ -21,32 +21,7 @@ import net.minecraft.world.World;
 
 import java.security.SecureRandom;
 
-/**
- * Hold right-click on obsidian to place a crystal and break it, over and over.
- *
- * <p>There is no state machine here, and that is the point. The previous version
- * tracked a base position, a pending entity id, a saved hotbar slot and five
- * phases with confirmation timeouts — and it switched your hotbar slot for you,
- * which is what produced towers of obsidian: holding right-click with obsidian
- * selected let vanilla place a block on every beat while the module was still
- * trying to arrange a crystal on the same spot.
- *
- * <p>What replaces it is the observation that the crosshair already carries all
- * the state needed. Look at obsidian and there is no crystal yet, so place one;
- * the crystal you just placed is now the thing under the crosshair, so break it;
- * breaking it puts the obsidian back under the crosshair. The alternation falls
- * out of what you are looking at, needs nothing remembered between actions, and
- * cannot desynchronise from the world.
- *
- * <p>It never changes your hotbar slot. Crystals have to be in hand, which is
- * both simpler and the actual fix for the obsidian towers: with anything else
- * held the module does nothing at all and your clicks stay your own.
- *
- * <p>Both actions are the ones vanilla sends for a real click — {@code
- * interactBlock} against the live ray, {@code attackEntity} on a crystal the ray
- * genuinely hits — spaced by a sampled interval rather than fired every tick, so
- * the rhythm is a fast player's rather than a machine's.
- */
+/** Places and breaks end crystals while right-click is held, driven entirely by the crosshair target. */
 public final class AutoCrystalController {
 	private static final double REACH_SQUARED = 4.5D * 4.5D;
 
@@ -59,11 +34,7 @@ public final class AutoCrystalController {
 		this.config = config;
 	}
 
-	/**
-	 * Kept so the module can stay registered on the use-block event, but it no
-	 * longer intercepts anything: the loop below drives itself from the crosshair,
-	 * and letting a real click through unchanged is what keeps the two in step.
-	 */
+	/** Keeps the module registered on the use-block event without intercepting it. */
 	public ActionResult onUseBlock(net.minecraft.entity.player.PlayerEntity player, World world,
 			Hand hand, BlockHitResult hit) {
 		return ActionResult.PASS;
@@ -79,8 +50,7 @@ public final class AutoCrystalController {
 			status = "Hold right click on obsidian";
 			return;
 		}
-		// Crystals in hand or nothing happens. Switching slots for you is what
-		// let a held right-click spam whatever else was selected.
+		// Requires crystals already in hand; the hotbar slot is never changed.
 		Hand hand = crystalHand(player);
 		if (hand == null) {
 			status = "Hold end crystals";
@@ -92,7 +62,7 @@ public final class AutoCrystalController {
 		HitResult fresh = player.getCrosshairTarget(1.0F,
 				client.getCameraEntity() == null ? player : client.getCameraEntity());
 
-		// A crystal is in the way: that is the one just placed, so break it.
+		// A crystal under the ray is the one just placed, so break it.
 		if (fresh instanceof EntityHitResult entityHit
 				&& entityHit.getEntity() instanceof EndCrystalEntity crystal && crystal.isAlive()) {
 			if (player.getEyePos().squaredDistanceTo(crystal.getBoundingBox().getCenter()) > REACH_SQUARED) {
@@ -107,11 +77,11 @@ public final class AutoCrystalController {
 			return;
 		}
 
-		// Otherwise a clear base under the crosshair: place one.
+		// Otherwise a clear base under the crosshair: place a crystal.
 		if (fresh instanceof BlockHitResult blockHit && blockHit.getType() == HitResult.Type.BLOCK
 				&& isCrystalBase(client.world, blockHit.getBlockPos())) {
 			if (crystalOn(client, blockHit.getBlockPos()) != null) {
-				// Occupied but not under the ray — aiming past it. Do not stack.
+				// Occupied but not under the ray; do not stack.
 				status = "Crystal already there";
 				return;
 			}
@@ -130,11 +100,7 @@ public final class AutoCrystalController {
 		status = "Aim at obsidian";
 	}
 
-	/**
-	 * Gap before the next action, sampled every time. The speed setting sets the
-	 * pace; the spread around it is what stops the stream being a metronome,
-	 * which is the part of a fast rhythm that does not occur naturally.
-	 */
+	/** Jittered gap before the next action, derived from the configured speed. */
 	private long actionGapNanos() {
 		int speed = MathHelper.clamp(config.autoCrystalSpeed, 1, 10);
 		double base = 300.0D - (speed - 1) * 26.0D;      // 300ms at 1, ~66ms at 10

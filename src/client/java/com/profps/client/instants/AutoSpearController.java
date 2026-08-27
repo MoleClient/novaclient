@@ -23,69 +23,32 @@ import java.security.SecureRandom;
 import java.util.UUID;
 
 /**
- * Auto Spear — keeps the kinetic charge running and puts the point on whoever you are
- * fighting, so the contact hit vanilla resolves for you has something to resolve against.
- *
- * <p>A spear is not a click weapon and this is the rule the module is built around. Every
- * tick the charge is held, {@code KineticWeaponComponent.usageTick} runs:
- *
- * <pre>
- *   held    = ticks the use has run;  inert while held &lt; delayTicks (8 netherite, 10 diamond)
- *   look    = getRotationVector()
- *   speed   = look · (yourMovement × 20)          blocks/second along the LOOK axis
- *   ray     = eye + look×2.0  →  eye + look×(4.5 + max(0, movement·look))
- *   for each player the ray pierces, outside its 10-tick contact cooldown:
- *       closing = max(0, speed − look · (theirMovement × 20))
- *       damage if closing ≥ 4.6
- * </pre>
- *
- * <p>Three things follow, and the module is those three things:
- * <ol>
- *   <li><b>The look vector is the weapon.</b> Contact is a ray along where the body points,
- *       not a swing at whatever is nearby — so aiming at them <em>is</em> the attack. That is
- *       why this now turns your head, frame by frame, exactly the way Auto Mace does.</li>
- *   <li><b>The charge has to already be running.</b> Arming costs 8–10 ticks. Started on
- *       arrival it is a hit that never happens, so the spear comes out and stays charged for
- *       the whole engagement rather than being produced at the moment of contact.</li>
- *   <li><b>Holding it is free.</b> A spear's {@code USE_EFFECTS} is
- *       {@code (canSprint = true, speedMultiplier = 1.0)}: the charge neither slows you nor
- *       stops you sprinting. There is therefore no cost to simply holding it while an
- *       opponent is close, and no reason to gate on anything cleverer.</li>
- * </ol>
- *
- * <p>That last point is what the previous version got wrong, and why it appeared to do
- * nothing. It refused to start until the player was already closing at 0.28 blocks/tick
- * <em>along the straight line to the target</em> — a bar a sprinting player only clears when
- * running exactly at somebody, and by the time that reads true the 8–10 tick arm delay has
- * already eaten the pass. It also never aimed at all, so even when it did charge, the ray it
- * was arming pointed wherever the player happened to be looking.
- *
- * <p>The one thing it will not do is move you. Closing speed is the player's to supply —
- * sprint, jump, swoop, or ride — and when a charged, aimed spear is sitting in contact range
- * and still short of the 4.6 blocks/second bar, the module says so instead of looking broken.
+ * Holds a spear's kinetic charge and aims it at the current target. Contact is resolved by
+ * {@code KineticWeaponComponent.usageTick} as a ray along the look vector, so the aim is the
+ * attack. Arming costs 8 to 10 ticks depending on tier, which is why the charge is held for the
+ * whole engagement rather than started on arrival. Closing speed is the player's to supply.
  */
 public final class AutoSpearController {
-	/** Hotbar slots to search, and the one search that has to stay cheap. */
 	private static final int HOTBAR_SLOTS = 9;
-	/** A target that ducks behind cover for a moment is still the fight you are in. */
+	/** Ticks a lost target is kept before disengaging. */
 	private static final int LOST_TARGET_GRACE_TICKS = 10;
-	/** Re-check for a lapsed charge no more often than this. */
+	/** Minimum ticks between checks for a lapsed charge. */
 	private static final int REARM_INTERVAL_TICKS = 2;
-	/** How long a charged spear may sit in contact range too slow before it is worth saying. */
+	/** Ticks in range under the speed bar before the overlay notice fires. */
 	private static final int TOO_SLOW_NOTICE_TICKS = 20;
-	/** Past this much of the contact band the turn stops being a sweep and becomes a flick. */
+	/** Distance inside the contact band at which the turn speeds up. */
 	private static final double URGENT_CONTACT_MARGIN = 2.0D;
 
 	private final ProFPSConfig config;
 	private final SecureRandom rng = new SecureRandom();
-	private final MouseGcd mouse = new MouseGcd(); // shared rotation grid → valid deltas
+	private final MouseGcd mouse = new MouseGcd();
 
 	private UUID targetUuid;
-	private double fx, fy, fz; // relative hitbox offsets (0..1), never dead centre
+	private double fx, fy, fz; // relative hitbox offsets, 0 to 1
 	private long nextRetargetNanos;
 	private long lastFrameNanos;
 
-	// Slow wandering aim bias — the drift that keeps a held aim off perfect centre.
+	// Slow wandering aim bias.
 	private double biasYaw, biasPitch, biasYawTarget, biasPitchTarget;
 	private long nextBiasNanos;
 
@@ -113,9 +76,7 @@ public final class AutoSpearController {
 		}
 		ClientPlayerEntity player = client.player;
 
-		// Stay on the opponent already committed to. Re-running the selector every tick made
-		// two nearby players trade ownership and restart the charge, and a restarted charge is
-		// another 8–10 inert ticks.
+		// Keep the committed target: re-acquiring restarts the charge and its arm delay.
 		PlayerEntity target = byUuid(client, targetUuid);
 		if (target != null && !trackable(player, target)) target = null;
 		if (target == null) target = acquire(client, player);
@@ -141,7 +102,6 @@ public final class AutoSpearController {
 			nextRetargetNanos = now + retargetDelayNanos();
 		}
 
-		// The spear is out for the approach, not produced on arrival.
 		if (!isSpear(player.getMainHandStack())) {
 			releaseUseKey(client);
 			int slot = findSpear(player);
@@ -154,9 +114,7 @@ public final class AutoSpearController {
 				status = "Hold a spear";
 				return;
 			}
-			// Only the slot change is claimed. It is the part that genuinely collides — a
-			// spear arriving mid Auto Mace stun-slam would swap the axe out from under it.
-			// The charge itself is an ordinary use and is never worth starving over.
+			// Only the slot change is claimed; the charge itself is an ordinary use.
 			if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AUTO_SPEAR)) return;
 			if (returnSlot < 0) returnSlot = player.getInventory().getSelectedSlot();
 			select(client, player, slot);
@@ -169,15 +127,11 @@ public final class AutoSpearController {
 	}
 
 	/**
-	 * Keeps the charge alive. Vanilla ends a use the moment the key reads released, and the
-	 * use also simply finishes on its own after {@code delayTicks + damage window} — so this
-	 * both holds the key and restarts a charge that has lapsed.
+	 * Holds the use key and restarts a lapsed charge. Vanilla ends the use when the key reads
+	 * released, and it also finishes on its own after {@code delayTicks} plus the damage window.
 	 */
 	private void sustain(MinecraftClient client, ClientPlayerEntity player) {
-		// Never hold the key, and never fire a use, for anything but a spear. This is the same
-		// button that throws an ender pearl and eats a gap, and the grace window below reaches
-		// here on a tick where the player may have scrolled off the spear themselves — so the
-		// check belongs here, on the one path that can press it, rather than at each caller.
+		// The use key must never be pressed for a non-spear; this is the only path that presses it.
 		if (!isSpear(player.getMainHandStack())) {
 			releaseUseKey(client);
 			return;
@@ -188,24 +142,17 @@ public final class AutoSpearController {
 		}
 		client.options.useKey.setPressed(true);
 
-		// An offhand shield, or whatever was mid-use before the hotbar swap, is not a spear
-		// charge. Treating any active item as success is how the old version could stay
-		// engaged indefinitely without ever arming the spear.
+		// Any other active item, such as an offhand shield, is not a spear charge.
 		if (chargingSpear(player)) return;
 		if (player.isUsingItem()) client.interactionManager.stopUsingItem(player);
 		if (player.age < rearmAge) return;
 		rearmAge = player.age + REARM_INTERVAL_TICKS;
-		// Started here rather than left to the key press, because this runs at the tail of
-		// handleInputEvents, after vanilla has already read the key for this tick — a tick of
-		// arm delay thrown away at exactly the moment it is least affordable.
+		// This runs at the tail of handleInputEvents, after vanilla read the key, so the use is
+		// started directly rather than waiting a tick for the held key to be picked up.
 		client.interactionManager.interactItem(player, Hand.MAIN_HAND);
 	}
 
-	/**
-	 * Reports what the charge is actually doing against vanilla's own gates, and says the one
-	 * thing the player has to fix. Everything here is read from the held stack rather than
-	 * assumed, so a netherite spear is measured as a netherite spear.
-	 */
+	/** Updates the status string from the held stack's own kinetic component values. */
 	private void describe(MinecraftClient client, ClientPlayerEntity player, PlayerEntity target) {
 		ItemStack spear = player.getMainHandStack();
 		KineticWeaponComponent kinetic = spear.get(DataComponentTypes.KINETIC_WEAPON);
@@ -247,8 +194,7 @@ public final class AutoSpearController {
 			return;
 		}
 
-		// A charged, aimed spear sitting inside contact range and still under the bar is the
-		// one failure that looks exactly like a broken module. Say it once per engagement.
+		// Notify once per engagement when in range but under the closing-speed bar.
 		if (wouldDamage) {
 			tooSlowTicks = 0;
 			return;
@@ -264,11 +210,9 @@ public final class AutoSpearController {
 	// ── Frame: the aim ────────────────────────────────────────────────────────
 
 	/**
-	 * Whips the real view onto the target every frame: a large fraction of the remaining
-	 * error, capped per frame so it stays a smooth flick rather than a teleport, with tremor,
-	 * an occasional overshoot and a slow wandering bias so it reads like a hand.
+	 * Steps the view toward the target by a capped fraction of the remaining error each frame.
 	 *
-	 * @return true while this controller owns rotation, so nothing else drags the head off.
+	 * @return true while this controller owns rotation
 	 */
 	public boolean frame(MinecraftClient client) {
 		long now = System.nanoTime();
@@ -279,15 +223,12 @@ public final class AutoSpearController {
 		aiming = false;
 		if (!engaged || targetUuid == null || !allowed(client)) return false;
 		ClientPlayerEntity player = client.player;
-		// Never turn on a tick that could not legally end in a contact hit: the ray is cast
-		// from the held stack's own component, so with no spear in hand there is nothing to
-		// aim. This was the other half of "aims but never hits".
+		// The contact ray comes from the held stack, so there is nothing to aim without a spear.
 		if (!isSpear(player.getMainHandStack())) return false;
 		PlayerEntity target = byUuid(client, targetUuid);
 		if (target == null || !trackable(player, target)) return false;
 
-		// Silent aim is held by continuous request, so simply not asking on a frame where the
-		// spear is not aiming is what hands the body back.
+		// Silent aim is held by continuous request; skipping a frame releases the body.
 		if (config.autoSpearSilentAim) SilentAimController.instance().engage(player);
 
 		updateBias(now, dt);
@@ -303,24 +244,21 @@ public final class AutoSpearController {
 		float yawErr = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
 		float pitchErr = MathHelper.wrapDegrees(desiredPitch - player.getPitch());
 
-		// Inside the contact band the ray is about to be evaluated, so the turn has to finish
-		// now; further out it eases on slowly, because a turn that closes a large angle in one
-		// tick is a rotation-speed fingerprint regardless of how legitimate the hit is.
+		// Inside the contact band the ray is about to be evaluated, so the turn speeds up.
 		double distance = target.getBoundingBox().getCenter().distanceTo(eye);
 		boolean urgent = distance <= maxRange(player) + URGENT_CONTACT_MARGIN;
 		float base = MathHelper.clamp(config.autoSpearTurnSpeed, 20, 90) / 100.0F;
 		float speed = urgent ? Math.min(0.92F, base * 1.7F) : base;
 		float k = 1.0F - (float) Math.pow(1.0F - speed, dt);
-		float yawStep = yawErr * k + (float) (rng.nextGaussian() * 0.30D);   // micro-tremor
+		float yawStep = yawErr * k + (float) (rng.nextGaussian() * 0.30D);
 		float pitchStep = pitchErr * k + (float) (rng.nextGaussian() * 0.22D);
 
-		// A human snap blows slightly past on a big turn.
+		// Occasional overshoot on a large turn.
 		if (Math.abs(yawErr) > 28.0F && rng.nextFloat() < 0.16F * dt) {
 			yawStep += Math.signum(yawErr) * (2.0F + rng.nextFloat() * 4.0F);
 		}
 
-		// Per-frame rotation cap, then snapped to the player's own mouse grid so the packet
-		// still looks like whole mouse counts at their sensitivity.
+		// Per-frame rotation cap, then snapped to the mouse GCD grid.
 		float cap = speed * 100.0F * (urgent ? 0.6F : 0.5F) * dt;
 		float yawApplied = mouse.yaw(MathHelper.clamp(yawStep, -cap, cap));
 		float pitchApplied = mouse.pitch(MathHelper.clamp(pitchStep, -cap * 0.8F, cap * 0.8F));
@@ -331,7 +269,7 @@ public final class AutoSpearController {
 		return true;
 	}
 
-	/** Re-roll the slow aim bias every so often — a drifting "not perfectly on" wander. */
+	/** Re-rolls and blends the slow aim bias. */
 	private void updateBias(long now, float dt) {
 		if (now >= nextBiasNanos) {
 			biasYawTarget = rng.nextGaussian() * 0.55D;
@@ -344,12 +282,8 @@ public final class AutoSpearController {
 	}
 
 	/**
-	 * A randomized point in the upper chest, plus a fraction of a tick of lead.
-	 *
-	 * <p>Height is not cosmetic here. Contact speed is measured along the look vector, so
-	 * every degree of pitch spent aiming at their feet is speed subtracted from the closing
-	 * bar the hit has to clear. Upper chest keeps the ray flat, which is both where a player
-	 * aims and where the arithmetic is kindest.
+	 * Randomized upper-chest point plus a fraction of a tick of lead. Aiming high keeps the ray
+	 * flat, since closing speed is measured along the look vector and pitch subtracts from it.
 	 */
 	private Vec3d aimPoint(PlayerEntity target) {
 		Box box = target.getBoundingBox();
@@ -371,24 +305,22 @@ public final class AutoSpearController {
 		return 240_000_000L + (long) (rng.nextDouble() * 420_000_000L);
 	}
 
-	/** Upper-chest, off-centre hitbox fractions — never dead centre. */
+	/** Samples off-centre hitbox fractions, biased high. */
 	private void pickPoint() {
-		fx = 0.32 + rng.nextDouble() * 0.36; // 0.32..0.68
-		fy = 0.52 + rng.nextDouble() * 0.24; // upper chest, kept high so the ray stays flat
+		fx = 0.32 + rng.nextDouble() * 0.36;
+		fy = 0.52 + rng.nextDouble() * 0.24; // upper chest keeps the ray flat
 		fz = 0.32 + rng.nextDouble() * 0.36;
 	}
 
 	// ── Targeting ─────────────────────────────────────────────────────────────
 
-	/** Nearest visible player inside the configured range and cone, with bounded stickiness. */
+	/** Nearest visible player inside the configured range and cone, biased toward the current target. */
 	private PlayerEntity acquire(MinecraftClient client, ClientPlayerEntity self) {
 		double range = range();
 		PlayerEntity best = null;
 		double bestScore = Double.NEGATIVE_INFINITY;
 		for (PlayerEntity other : client.world.getPlayers()) {
 			if (!trackable(self, other)) continue;
-			// A spear is a contact weapon, so nearest wins; the bonus only stops a marginally
-			// closer newcomer from stealing an approach already under way.
 			double distance = other.getBoundingBox().getCenter().distanceTo(self.getEyePos());
 			double score = (range - distance) / range
 					+ (other.getUuid().equals(targetUuid) ? 0.35D : 0.0D);
@@ -400,7 +332,7 @@ public final class AutoSpearController {
 		return best;
 	}
 
-	/** Configured acquisition cone plus real line of sight — the contact ray needs both. */
+	/** Whether the target is alive, in range, in the configured cone, and in line of sight. */
 	private boolean trackable(ClientPlayerEntity self, PlayerEntity target) {
 		if (target == self || !target.isAlive() || target.isSpectator()) return false;
 		double range = range();
@@ -413,9 +345,8 @@ public final class AutoSpearController {
 	}
 
 	/**
-	 * How early the spear comes out — not its reach. Contact resolves between 2 and ~4.5
-	 * blocks whatever this is set to; the range only decides how much of the approach the
-	 * charge gets to run for, and the charge needs 8–10 ticks of it to arm.
+	 * Acquisition range, not reach. Contact still resolves between 2 and about 4.5 blocks; this
+	 * only decides how early the charge starts.
 	 */
 	private double range() {
 		return MathHelper.clamp(config.autoSpearRange, 4, 64);
@@ -459,8 +390,7 @@ public final class AutoSpearController {
 	private double maxRange(ClientPlayerEntity player) {
 		AttackRangeComponent range = player.getAttackRange();
 		if (range == null) return SpearCombatPolicy.MAX_JAB_REACH;
-		// Vanilla extends the far end by the forward component of this tick's movement, which
-		// is why a fast pass reaches slightly further than a standing one.
+		// Vanilla extends the far end by the forward component of this tick's movement.
 		double lunge = Math.max(0.0D,
 				player.getMovement().dotProduct(player.getHeadRotationVector()));
 		return range.getEffectiveMaxRange(player) + lunge;
@@ -473,14 +403,14 @@ public final class AutoSpearController {
 		((ClientPlayerInteractionManagerAccessor) client.interactionManager).profps$setLastSelectedSlot(slot);
 	}
 
-	/** Gives the use key back to whatever the player had it doing before the charge. */
+	/** Restores the use key to the state it had before the charge. */
 	private void releaseUseKey(MinecraftClient client) {
 		if (!holdingUseKey || client == null || client.options == null) return;
 		client.options.useKey.setPressed(originalUseKey);
 		holdingUseKey = false;
 	}
 
-	/** Stops the charge, hands the use key back, and returns the slot that was borrowed. */
+	/** Stops the charge, restores the use key, and returns the borrowed hotbar slot. */
 	private void disengage(MinecraftClient client) {
 		if (client != null && client.player != null) {
 			if (holdingUseKey && client.interactionManager != null
@@ -488,9 +418,8 @@ public final class AutoSpearController {
 				client.interactionManager.stopUsingItem(client.player);
 			}
 			releaseUseKey(client);
-			// Deliberately outside the use-key branch. The spear is selected on one tick and
-			// only charged on the next, so a module switched off in between had borrowed the
-			// hotbar without ever taking the key — and the slot stayed borrowed forever.
+			// Outside the use-key branch: the spear is selected one tick before it is charged,
+			// so the slot can be borrowed without the key ever having been taken.
 			if (returnSlot >= 0 && config.autoSpearAutoSwitch
 					&& isSpear(client.player.getMainHandStack())) {
 				select(client, client.player, returnSlot);
@@ -514,8 +443,7 @@ public final class AutoSpearController {
 		if (client.interactionManager == null || client.currentScreen != null
 				|| client.getOverlay() != null || !client.isWindowFocused()) return false;
 		ClientPlayerEntity player = client.player;
-		// Water caps you well under the closing bar, so a charge there is pure cost: it holds
-		// the use key down and blocks every other right-click for a hit that cannot land.
+		// Water caps movement well under the closing-speed bar, so no contact can land.
 		return player.isAlive() && !player.isSpectator() && !player.isTouchingWater();
 	}
 
@@ -527,11 +455,7 @@ public final class AutoSpearController {
 		return engaged;
 	}
 
-	/**
-	 * What the charge is doing right now, including the reasons it is doing nothing — "Hold a
-	 * spear", "Too close", or a live closing-speed readout. Gating this on {@code engaged}
-	 * would hide exactly the states worth reading.
-	 */
+	/** Current status text, including the not-engaged reasons. */
 	public String status() {
 		return status;
 	}

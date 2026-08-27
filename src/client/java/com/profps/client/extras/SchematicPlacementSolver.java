@@ -23,24 +23,12 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * Answers "where do I stand, and what do I look at, to get exactly this block".
- *
- * <p>Orientation is not a separate problem from movement — it <em>is</em> a
- * movement problem. Vanilla derives a block's horizontal facing from the
- * player's yaw at the moment of the click, so a furnace faces north because the
- * player was standing south of it. Which means a builder that picks its stand
- * without considering orientation is choosing the block's rotation by accident.
- * Every candidate here is therefore evaluated as a whole: a body position, the
- * rotation that position implies for a given aim point, and the block state
- * vanilla would actually produce from that combination.
- *
- * <p>The evaluation runs against a <em>hypothetical</em> eye — the raycast goes
- * through {@code world.raycast} from an arbitrary point rather than
- * {@code player.raycast} from the body — so a stand can be proved correct
- * before the builder walks to it, instead of being discovered wrong on arrival.
+ * Resolves the stand, aim point and click that produce a given block state. Vanilla
+ * derives horizontal facing from the yaw at click time, so each candidate is evaluated
+ * as a body position plus the rotation it implies, raycast from a hypothetical eye.
  */
 final class SchematicPlacementSolver {
-	/** Survival block reach. Measured eye to hit point, as vanilla does. */
+	/** Survival block reach, measured eye to hit point as vanilla does. */
 	static final double MAX_REACH = 4.5D;
 	static final double MAX_REACH_SQUARED = MAX_REACH * MAX_REACH;
 	private static final double EYE_STANDING = 1.62D;
@@ -67,10 +55,8 @@ final class SchematicPlacementSolver {
 	}
 
 	/**
-	 * A proved placement: stand here, look there, click that, get this state.
-	 * {@code sneak} is the posture the click itself needs — separate from the
-	 * stand's own posture, because a click against a repeater has to be
-	 * sneaked from anywhere.
+	 * A proved placement. {@code sneak} is the posture the click needs, separate from the
+	 * stand's own posture.
 	 */
 	record Solution(Stand stand, Vec3d aimPoint, BlockHitResult hit, BlockState predicted, boolean sneak) {
 	}
@@ -80,28 +66,13 @@ final class SchematicPlacementSolver {
 		boolean matches(BlockState desired, BlockState predicted, BlockState current);
 	}
 
-	/**
-	 * Proves a placement from one specific body position, or returns null.
-	 *
-	 * <p>The player's rotation is set to what it would be at {@code stand} for
-	 * the duration of the prediction and restored afterwards. That is the whole
-	 * fix for orientation: vanilla's {@code ItemPlacementContext} reads the live
-	 * yaw, so predicting under the player's current heading answers a question
-	 * nobody asked.
-	 */
+	/** Proves a placement from one specific body position, or returns null. */
 	static Solution solveFrom(MinecraftClient client, Stand stand, BlockPos target,
 			BlockState desired, StateMatcher matcher) {
 		return solveFromEye(client, stand, stand.eye(), target, desired, matcher);
 	}
 
-	/**
-	 * Proves a placement from the body's real eye rather than a stand's
-	 * idealised one. Used to answer "can I build this from exactly where I am
-	 * standing right now", which is a different and stricter question than
-	 * whether the cell is merely visible: a cell in plain sight whose facing
-	 * would come out wrong from here is not workable from here, and finding
-	 * that out now is what sends the builder walking instead of stalling.
-	 */
+	/** Proves a placement from the body's real eye rather than a stand's idealised one. */
 	static Solution solveHere(MinecraftClient client, BlockPos target, BlockState desired, StateMatcher matcher) {
 		ClientPlayerEntity player = client.player;
 		Stand approximate = new Stand(MathHelper.floor(player.getX()),
@@ -139,10 +110,7 @@ final class SchematicPlacementSolver {
 		return null;
 	}
 
-	/**
-	 * The first stand in {@code stands} that can place {@code target} correctly.
-	 * Candidates are already ranked, so this returns the cheapest working one.
-	 */
+	/** The first stand in the already-ranked {@code stands} that can place {@code target} correctly. */
 	static Solution solve(MinecraftClient client, BlockPos target, BlockState desired,
 			List<Stand> stands, StateMatcher matcher, int examineLimit) {
 		int examined = 0;
@@ -155,15 +123,8 @@ final class SchematicPlacementSolver {
 	}
 
 	/**
-	 * Body positions worth trying for {@code target}, cheapest first.
-	 *
-	 * <p>Ranking matters more than the cap: a stand directly over the cell wins
-	 * outright, because a straight-down click at the face below it cannot be
-	 * occluded by the rest of the layer, and it is the one position a wide
-	 * interior always has while the layer above is still empty. Stands
-	 * overlooking the cell come next, then the nearest ones. Every candidate is
-	 * offered standing and sneaking; sneaking reaches less far but sees over a
-	 * lip and never walks off the edge it is building from.
+	 * Body positions worth trying for {@code target}, cheapest first: overhead stands,
+	 * then stands above the cell, then the nearest. Each is offered standing and sneaking.
 	 */
 	static List<Stand> candidateStands(SchematicPathfinder.Space space, BlockPos target,
 			SchematicPathfinder.Node from, int radius, int minDy, int maxDy) {
@@ -175,7 +136,6 @@ final class SchematicPlacementSolver {
 			for (int dz = -radius; dz <= radius; dz++) {
 				for (int dx = -radius; dx <= radius; dx++) {
 					boolean overhead = dx == 0 && dz == 0;
-					// The cell's own column only works from clear of the cell.
 					if (overhead && dy < 1) continue;
 					if (Math.abs(dx) + Math.abs(dz) > radius + 2) continue;
 					int x = target.getX() + dx;
@@ -190,8 +150,6 @@ final class SchematicPlacementSolver {
 					for (boolean sneak : new boolean[]{false, true}) {
 						Stand stand = new Stand(x, y, z, sneak);
 						if (stand.eye().squaredDistanceTo(centre) > MAX_REACH_SQUARED) continue;
-						// Standing is the default posture; only pay for sneaking
-						// when it is the option that reaches.
 						ranked.add(new Ranked(stand, cost + (sneak ? 0.75D : 0.0D)));
 					}
 				}
@@ -215,11 +173,7 @@ final class SchematicPlacementSolver {
 		};
 	}
 
-	/**
-	 * One of five points on a block face. Sample 0 is the centre; the rest step
-	 * off-centre so a face partly hidden behind a neighbour still offers a
-	 * clear ray.
-	 */
+	/** One of five points on a block face; sample 0 is the centre, the rest step off-centre. */
 	static Vec3d facePoint(BlockPos block, Direction side, int sample) {
 		double a = sample == 1 ? 0.28D : sample == 2 ? 0.72D : 0.5D;
 		double b = sample == 3 ? 0.28D : sample == 4 ? 0.72D : 0.5D;
@@ -239,8 +193,8 @@ final class SchematicPlacementSolver {
 	}
 
 	/**
-	 * Vanilla's own placement prediction, evaluated under the rotation this
-	 * stand and aim point imply rather than under the body's current heading.
+	 * Vanilla's placement prediction, evaluated under the rotation the stand and aim point
+	 * imply. The player's rotation is set for the prediction and restored afterwards.
 	 */
 	private static BlockState predictUnder(MinecraftClient client, BlockItem blockItem, ItemStack stack,
 			BlockHitResult hit, Vec3d eye, Vec3d aimPoint, BlockPos expected) {

@@ -13,7 +13,7 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
 
-/** Vape-compatible explosion exposure and reduction model, isolated for crystals, anchors and beds. */
+/** Explosion exposure and damage reduction model for crystals, anchors and beds. */
 public final class ExplosionDamageService {
 	private static final float CRYSTAL_POWER = 6.0F;
 
@@ -58,7 +58,7 @@ public final class ExplosionDamageService {
 		return Math.max(0.0F, reduced * (1.0F - protection / 25.0F));
 	}
 
-	/** Raw modern-client formula used by the recovered implementation for its efficiency percentage. */
+	/** Damage before armor and enchantment reduction, used for the efficiency percentage. */
 	public static float rawCrystalDamage(World world, Box box, Vec3d explosion) {
 		return rawDamage(world, box, explosion, CRYSTAL_POWER);
 	}
@@ -82,8 +82,7 @@ public final class ExplosionDamageService {
 	private static float exposure(World world, Box box, Vec3d explosion) {
 		int clear = 0;
 		int total = 0;
-		// Same bounding-box density idea as Vape, with a bounded 3x5x3 sample grid so an aura
-		// scan cannot turn one client tick into hundreds of thousands of raycasts.
+		// Fixed 3x5x3 sample grid bounds the raycast count per scan.
 		for (int xi = 0; xi < 3; xi++) {
 			for (int yi = 0; yi < 5; yi++) {
 				for (int zi = 0; zi < 3; zi++) {

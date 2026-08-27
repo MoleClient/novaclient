@@ -9,27 +9,11 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.math.MathHelper;
 
 /**
- * Mob ESP — the mob's own silhouette, outlined through walls.
- *
- * <p>This draws nothing itself. It decides which entities are targets and what
- * colour each one is, and vanilla's entity-outline pass does the drawing, via
- * {@code MinecraftClient.hasOutline} and {@code Entity.getTeamColorValue}. That
- * is the same pipeline a glowing entity uses: it traces the actual rendered
- * model, so the outline follows the animation frame by frame and shows through
- * terrain, and it costs nothing extra because the model is already being drawn.
- *
- * <p>The previous version drew its own boxes, centre crosses, overhead markers,
- * nameplates and screen-edge badges. All of that is gone. A hitbox is a blocky
- * approximation of a mob that never matches its shape or its pose, and the
- * labels covered the thing they were pointing at. What is left is what was
- * actually wanted: where the mob is, what shape it is, and whether it can hurt
- * you — red for hostile, green for passive.
+ * Mob ESP target and colour selection; vanilla's entity-outline pass does the drawing.
  */
 public final class BasicEspRenderer {
 	private static final int HOSTILE = 0xFF3B30;
 	private static final int PASSIVE = 0x3BE86A;
-	// Players are neither, and confusing one for a passive mob is the expensive
-	// mistake, so they keep a colour of their own.
 	private static final int PLAYER = 0xC77DFF;
 
 	private static BasicEspRenderer instance;

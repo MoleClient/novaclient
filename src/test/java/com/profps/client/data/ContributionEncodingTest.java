@@ -20,15 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Drives the real encoder — the same {@code RowWriter}, header and gzip path the client uses — and
- * reads the bytes back. Everything else about this system is verified against a hand-written stand-in
- * for the Java output, which proves the collector works but not that the client agrees with it. This
- * is the test that pins the two together.
- *
- * <p>It also drops a sample batch in {@code build/tmp} so the Python collector and reader can be run
- * against genuine client output rather than a fixture.
- */
+/** Drives the real {@code RowWriter}, header and gzip path, then reads the bytes back. */
 class ContributionEncodingTest {
 	private static final String SESSION = "11112222-3333-4444-5555-666677778888";
 	private static final String PSEUDONYM = "0123456789abcdef";
@@ -41,7 +33,7 @@ class ContributionEncodingTest {
 		return uploader;
 	}
 
-	/** Fills every declared column with something type-appropriate, the way a real tick does. */
+	/** Fills every declared column with a type-appropriate value. */
 	private static String buildRow(ContributionUploader uploader, long tick) {
 		DataContribution.RowWriter w =
 				new DataContribution.RowWriter(DataContribution.FIELDS.length, uploader);
@@ -91,10 +83,6 @@ class ContributionEncodingTest {
 		assertEquals(DataContribution.FIELDS.length, fields.size());
 	}
 
-	/**
-	 * The guard that stops a schema edit from silently shifting every later column in the corpus.
-	 * Worth a test of its own: without it the damage is invisible until training.
-	 */
 	@Test
 	void aShortRowIsRejectedRatherThanShipped() {
 		ContributionUploader uploader = uploader(false);
@@ -112,8 +100,7 @@ class ContributionEncodingTest {
 		for (long tick = 0; tick < 50; tick++) {
 			rows.add(buildRow(uploader, tick));
 		}
-		// header() has to be built after the rows: interning during row encoding is what fills the
-		// dictionary the header carries.
+		// header() must be built after the rows; row encoding fills the dictionary it carries.
 		byte[] gzip = ContributionUploader.compress(new ContributionUploader.Batch(uploader.header(), rows));
 		List<JsonObject> lines = readBack(gzip);
 
@@ -133,8 +120,7 @@ class ContributionEncodingTest {
 				() -> assertEquals(DataContribution.ENTITY_FIELDS.length,
 						header.getAsJsonArray("entity_fields").size()));
 
-		// Resolve a dictionary-encoded column the way the reader does, and confirm it lands on the
-		// string the encoder put in — this is the part that silently breaks if the two disagree.
+		// Resolve a dictionary-encoded column the way the reader does.
 		int mainItemIndex = indexOf(fieldNames, "main_item");
 		int activityIndex = indexOf(fieldNames, "activity");
 		JsonObject firstRow = lines.get(1);
@@ -166,13 +152,11 @@ class ContributionEncodingTest {
 				() -> assertTrue(lines.get(0).get("location") != null
 						&& !lines.get(0).get("location").getAsBoolean()),
 				() -> assertTrue(lines.get(0).get("server") == null, "server must be absent"),
-				// buildRow writes the same non-zero filler into abs_* as every other numeric
-				// column, so this asserts the header flag is what a reader keys off — the columns
-				// themselves are only trustworthy when location is on.
+				// buildRow writes the same filler into every numeric column, so both abs_* match.
 				() -> assertEquals(f.get(indexOf(names, "abs_x")), f.get(indexOf(names, "abs_y"))));
 	}
 
-	/** Writes genuine client output for the Python collector and reader to be run against. */
+	/** Writes a sample batch for the Python collector and reader to run against. */
 	@Test
 	void emitsASampleBatchForTheCollector() throws IOException {
 		ContributionUploader uploader = uploader(true);

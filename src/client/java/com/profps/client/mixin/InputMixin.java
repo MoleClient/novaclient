@@ -17,19 +17,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Overrides the local player's movement AFTER the keyboard has been read.
- *
- * <p>When the Tunnel bot is controlling, the body is driven from its published
- * {@link PlayerInput} rather than the raw keybindings — so it keeps tunnelling
- * even while Freecam reads those same keys to fly the camera. With Freecam on
- * (and no tunnel), the body reads dead keys so WASD only moves the camera.
- * Otherwise the player's own input is passed through the module layers below.
- *
- * <p>Targets {@link KeyboardInput#tick()} — the override the player actually
- * runs. The previous {@code Input.tick} target never fired, because
- * KeyboardInput overrides tick without calling super. The movement fields live on
- * the {@code Input} superclass, so they're written through {@link InputAccessor}
- * rather than a (illegal) cross-class field shadow.
+ * Applies the module movement overrides after {@link KeyboardInput#tick()} has read
+ * the keyboard.
  */
 @Mixin(KeyboardInput.class)
 public abstract class InputMixin {
@@ -41,8 +30,7 @@ public abstract class InputMixin {
 			self.profps$setPlayerInput(input);
 			self.profps$setMovementVector(vectorFor(input));
 		} else if (FreecamController.isActive()) {
-			// WASD belongs to the camera now; the body must read dead keys or it
-			// would walk blind underneath the flight.
+			// Freecam owns WASD, so the body reads dead keys.
 			self.profps$setPlayerInput(PlayerInput.DEFAULT);
 			self.profps$setMovementVector(Vec2f.ZERO);
 		} else {
@@ -54,10 +42,7 @@ public abstract class InputMixin {
 				overridden = true;
 			}
 
-			// Any physical movement key immediately hands the body back. The
-			// builder is the only layer here that walks the player somewhere
-			// they did not ask to go, so it is the only one that has to yield
-			// on the very same frame rather than a tick later.
+			// The builder yields to any manual movement key on the same frame.
 			boolean schematicMoving = SchematicBuildController.isAutoMoving();
 			boolean manualMovement = input.forward() || input.backward() || input.left() || input.right()
 					|| input.jump() || input.sneak();
@@ -71,8 +56,6 @@ public abstract class InputMixin {
 					overridden = true;
 				}
 			} else if (StrafeImprovementsController.isStrafing()) {
-				// Layer a juke step onto the player's own input: drop forward, step to
-				// the side (and back), keep their jump/sneak.
 				PlayerInput juke = StrafeImprovementsController.strafeOverride(input);
 				if (juke != null) {
 					input = juke;
@@ -81,36 +64,27 @@ public abstract class InputMixin {
 			}
 
 			if (!schematicMoving) {
-				// Sword mode may add only the vanilla sprint-key bit while the player is
-				// already holding forward. It yields during the post-hit retreat and never
-				// creates movement by itself.
 				PlayerInput swordSprint = StrafeImprovementsController.swordSprintOverride(input);
 				if (swordSprint != null) {
 					input = swordSprint;
 					overridden = true;
 				}
 
-				// Triggerbot normal-hit prep is layered last, so its brief W+sprint tap
-				// travels through the same real input path even when AI/Strafe supplied
-				// the base movement. Manual retreat, jump, and sneak remain authoritative.
+				// Layered after AI/strafe so the hit prep tap goes through the same input path.
 				PlayerInput normalHit = HitImprovementsController.normalHitOverride(input);
 				if (normalHit != null) {
 					input = normalHit;
 					overridden = true;
 				}
 
-				// The crit W-tap comes after the sprint prep on purpose: a sprint
-				// established for a ground hit must still be dropped once the
-				// player is airborne, or the swing cannot crit at all.
+				// Must run after the sprint prep: an airborne swing cannot crit while sprinting.
 				PlayerInput critTap = HitImprovementsController.critSprintOverride(input);
 				if (critTap != null) {
 					input = critTap;
 					overridden = true;
 				}
 
-				// Axe Crit drops the sprint for the same reason and by the same
-				// means, but it runs from its own switch, so it needs its own
-				// layer: the Triggerbot's crit timing may well be off.
+				// Separate layer because Axe Crit runs from its own toggle.
 				PlayerInput axeCritTap = com.profps.client.instants.AxeCritController
 						.critSprintOverride(input);
 				if (axeCritTap != null) {
@@ -118,10 +92,7 @@ public abstract class InputMixin {
 					overridden = true;
 				}
 
-				// The stun-slam drops the sprint for its axe tap for a different
-				// reason: a sprinting hit above 0.9 charge pays a knockback bonus,
-				// and that bonus is what used to shove the target out of reach
-				// before the mace could land.
+				// Sprinting hits above 0.9 charge add knockback, pushing the target out of mace range.
 				PlayerInput stunTap = com.profps.client.instants.AutoMaceController
 						.stunSprintOverride(input);
 				if (stunTap != null) {
@@ -130,10 +101,7 @@ public abstract class InputMixin {
 				}
 			}
 
-			// Silent aim turns the body away from where the player is looking, and
-			// walking resolves against the body. Re-pick the keys last, on top of
-			// whatever produced this input, so the player still travels the way
-			// the view faces.
+			// Applied last: movement resolves against the body rotation, not the view.
 			PlayerInput silent = SilentAimController.movementOverride(input);
 			if (silent != null) {
 				input = silent;

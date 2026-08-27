@@ -13,19 +13,11 @@ import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
-/**
- * Anti Fireball — visibly tracks an incoming fireball and deflects it with a sword.
- *
- * <p>The assist acquires early, turns through sensitivity-grid mouse deltas with
- * bounded yaw/pitch steps, selects the sword for a complete tick, and attacks only
- * when a fresh vanilla ray actually names the fireball. Attempts are rate-limited
- * and share the combat action arbiter, so another combat module cannot also attack
- * in the same input tick.</p>
- */
+/** Tracks an incoming fireball and deflects it with a sword. */
 public final class AntiFireballController {
-	private static final double SCAN_RANGE = 18.0;   // engage fireballs this far out (lock on early)
-	private static final double THREAT_RADIUS = 3.0; // its path must pass within this of you to count
-	private static final double HIT_RANGE = 3.0;     // server attack reach
+	private static final double SCAN_RANGE = 18.0;
+	private static final double THREAT_RADIUS = 3.0;
+	private static final double HIT_RANGE = 3.0; // server attack reach
 	private static final long HIT_COOLDOWN_NS = 180_000_000L;
 
 	private final ProFPSConfig config;
@@ -55,10 +47,8 @@ public final class AntiFireballController {
 		}
 
 		int swordSlot = hotbarSword(player);
-		if (swordSlot < 0) return; // nothing to deflect with — leave the head alone
+		if (swordSlot < 0) return;
 
-		// Fast but bounded visible turn. A one-tick 180° snap is not physical mouse
-		// input, even when it happens to land on the sensitivity grid.
 		Vec3d aimAt = threat.getEntityPos().add(0.0, threat.getHeight() * 0.5, 0.0);
 		Vec3d eye = player.getEyePos();
 		double dx = aimAt.x - eye.x;
@@ -67,7 +57,7 @@ public final class AntiFireballController {
 		double horiz = Math.sqrt(dx * dx + dz * dz);
 		float wantYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
 		float wantPitch = MathHelper.clamp((float) -Math.toDegrees(Math.atan2(dy, horiz)), -90.0F, 90.0F);
-		// Emit the fast deflection turn as carried, grid-quantized mouse deltas.
+		// Turn is emitted as carried, sensitivity-grid-quantized mouse deltas.
 		float yawError = MathHelper.wrapDegrees(wantYaw - player.getYaw());
 		float pitchError = MathHelper.wrapDegrees(wantPitch - player.getPitch());
 		player.setYaw(player.getYaw() + mouse.yaw(MathHelper.clamp(yawError, -34.0F, 34.0F)));
@@ -85,7 +75,6 @@ public final class AntiFireballController {
 			return;
 		}
 
-		// In reach, rate-limited, and named by the current vanilla ray: swing once.
 		long now = System.nanoTime();
 		if (eye.distanceTo(threat.getEntityPos()) <= HIT_RANGE
 				&& player.age >= swordReadyAge
@@ -105,9 +94,9 @@ public final class AntiFireballController {
 		return hit instanceof EntityHitResult entityHit ? entityHit.getEntity() : null;
 	}
 
-	/** The nearest fireball whose flight path passes close enough to actually hit you. */
+	/** Nearest fireball whose flight path passes within {@link #THREAT_RADIUS} of the player. */
 	private AbstractFireballEntity findIncomingFireball(MinecraftClient client, ClientPlayerEntity player) {
-		Vec3d center = player.getEntityPos().add(0.0, 1.0, 0.0); // roughly chest height
+		Vec3d center = player.getEntityPos().add(0.0, 1.0, 0.0); // chest height
 		AbstractFireballEntity best = null;
 		double bestDist = Double.MAX_VALUE;
 		for (Entity e : client.world.getEntities()) {
@@ -118,12 +107,12 @@ public final class AntiFireballController {
 			Vec3d vel = fb.getVelocity();
 			if (vel.lengthSquared() < 1.0E-4) continue;
 			Vec3d toCenter = center.subtract(fb.getEntityPos());
-			if (toCenter.dotProduct(vel) <= 0.0) continue; // travelling away from you
+			if (toCenter.dotProduct(vel) <= 0.0) continue; // travelling away
 
 			Vec3d dir = vel.normalize();
 			double along = toCenter.dotProduct(dir);
 			Vec3d closest = fb.getEntityPos().add(dir.multiply(along));
-			if (closest.distanceTo(center) > THREAT_RADIUS) continue; // it'll sail past
+			if (closest.distanceTo(center) > THREAT_RADIUS) continue;
 
 			if (dist < bestDist) {
 				bestDist = dist;

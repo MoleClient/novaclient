@@ -178,8 +178,6 @@ class ProFPSConfigCombatModeTest {
 				() -> assertTrue(config.lungeAim),
 				() -> assertTrue(config.lungeSpearMace),
 				() -> assertTrue(config.lungeShieldBreak),
-				// Spear Charge Assist became Auto Spear in v95, and a module that
-				// aims for you must never arrive switched on.
 				() -> assertFalse(config.autoSpearEnabled),
 				() -> assertFalse(config.autoSpearSilentAim));
 	}
@@ -220,8 +218,7 @@ class ProFPSConfigCombatModeTest {
 
 	@Test
 	void v84DropsTheRetiredClassicUiToggle() throws Exception {
-		// The classic panel is gone and guiExperimental with it. A config still carrying the key
-		// has to load cleanly — Gson must ignore the unknown field rather than choking on it.
+		// Gson must ignore the removed guiExperimental key rather than failing to load.
 		ProFPSConfig config = new Gson().fromJson(
 				"{\"configVersion\":83,\"guiExperimental\":false}", ProFPSConfig.class);
 

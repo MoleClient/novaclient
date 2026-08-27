@@ -18,42 +18,15 @@ import net.minecraft.util.hit.HitResult;
 import java.security.SecureRandom;
 
 /**
- * Axe Crit — you jump onto somebody with an axe, this lands the swing on a
- * critical.
- *
- * <p>It does not jump for you and it does not touch your hotbar. The player
- * makes the play; this only gets the release right, because the release is the
- * hard part. Verified against 1.21.11's own {@code PlayerEntity#isCriticalHit}
- * and {@code #attack}, a crit needs every one of these at the instant the packet
- * is sent:
- *
- * <ul>
- *   <li>attack charge past 0.9 — below that the 1.5x is never applied at all,
- *       so an early click is not a weak crit, it is no crit;</li>
- *   <li>{@code fallDistance > 0} and not on the ground — the descent, not the
- *       jump, so the whole ascent is dead time;</li>
- *   <li>not climbing, not in water, no vehicle, no blindness;</li>
- *   <li>and <b>not sprinting</b>.</li>
- * </ul>
- *
- * <p>That last one is why hand-timed jump crits fail so often: sprinting cancels
- * the crit outright and silently, so a swing that looks perfect just pays normal
- * damage. Releasing it is handled the way a player does, by publishing the same
- * W-tap through the real input path ({@link #critSprintOverride}) rather than
- * flipping the sprint flag underneath the server — air control means the jump
- * still carries.
- *
- * <p>The click itself is vanilla's: the tick-current crosshair ray picks the
- * target at vanilla reach with vanilla occlusion, and the swing goes out through
- * the same interaction manager a real click uses. What is humanized is the
- * timing — the reaction to the window opening is sampled once per jump, so the
- * hits land scattered through the descent instead of on its first legal tick
- * every single time, which is the pattern that reads as a machine.
+ * Times an axe swing during a jump so it lands as a critical hit. Does not jump or swap slots.
+ * Mirrors {@code PlayerEntity#isCriticalHit}: charge past 0.9, falling, not climbing, not in
+ * water, no vehicle, no blindness, and not sprinting. Sprint is dropped via a W-tap published
+ * through the real input path, see {@link #critSprintOverride}.
  */
 public final class AxeCritController {
-	/** Vanilla applies the 1.5x only past this charge; under it there is no crit to time. */
+	/** Vanilla applies the 1.5x multiplier only past this charge. */
 	private static final float CRIT_CHARGE = 0.9F;
-	/** One crit per jump. A second swing in the same descent is not something a hand does. */
+	/** Minimum gap between swings, enforcing one crit per descent. */
 	private static final long RESWING_GAP_NANOS = 260_000_000L;
 
 	private final ProFPSConfig config;
@@ -62,7 +35,7 @@ public final class AxeCritController {
 	private static AxeCritController instance;
 
 	private long windowOpenedNanos;   // when this descent first became crit-legal
-	private long reactionNanos;       // sampled once per window, not per tick
+	private long reactionNanos;       // sampled once per window
 	private long lastSwingNanos;
 	private boolean swungThisJump;
 	private String status = "Idle";
@@ -80,23 +53,17 @@ public final class AxeCritController {
 		}
 		ClientPlayerEntity player = client.player;
 
-		// Landing ends the jump. Everything about this module is scoped to one
-		// descent, so this is also what re-arms it for the next one.
+		// Landing ends the jump and re-arms for the next one.
 		if (player.isOnGround()) {
 			resetJump();
 			status = "Grounded";
 			return;
 		}
-		// The axe has to already be in your hand. Producing one for you is a
-		// different module's job, and a weapon that appears mid-jump is a far
-		// louder tell than any click timing.
 		if (!isAxe(player.getMainHandStack().getItem())) {
 			resetJump();
 			status = "No axe";
 			return;
 		}
-		// Vanilla's own ray, this tick: it carries vanilla reach and block
-		// occlusion, so a hit it confirms is a hit the server will accept.
 		PlayerEntity target = crosshairPlayer(client, player);
 		if (target == null) {
 			status = "No target";
@@ -108,17 +75,14 @@ public final class AxeCritController {
 		}
 
 		long now = System.nanoTime();
-		// Sample the reaction once, when the window opens. Re-rolling it every
-		// tick would pull every swing onto the earliest legal tick.
+		// Sample the reaction once when the window opens, not per tick.
 		if (windowOpenedNanos == 0L) {
 			windowOpenedNanos = now;
 			reactionNanos = (long) ((18.0D + rng.nextDouble() * 95.0D) * 1_000_000D);
 		}
 		if (swungThisJump || now - lastSwingNanos < RESWING_GAP_NANOS) return;
 
-		// Sprinting cancels the crit. The W-tap that ends it is published through
-		// the real input path, so this simply waits for that to take effect
-		// rather than swinging into a hit that cannot crit.
+		// Sprinting cancels the crit; wait for the W-tap to take effect.
 		if (player.isSprinting()) {
 			status = "Dropping sprint";
 			return;
@@ -132,9 +96,7 @@ public final class AxeCritController {
 		if (!CombatModeRuntime.tryClaim(CombatModeRuntime.ActionOwner.AXE_CRIT)) return;
 		client.interactionManager.attackEntity(player, target);
 		player.swingHand(Hand.MAIN_HAND);
-		// attackEntity sends the packet but does not reset the local charge clock
-		// the way MinecraftClient#doAttack does. Mirror vanilla or the next check
-		// reads a full bar that the server has already spent.
+		// attackEntity does not reset the local charge clock the way doAttack does.
 		player.resetTicksSinceLastAttack();
 		swungThisJump = true;
 		lastSwingNanos = now;
@@ -142,17 +104,8 @@ public final class AxeCritController {
 	}
 
 	/**
-	 * The W-tap that ends the sprint so the swing can actually crit.
-	 *
-	 * <p>Releasing forward is what a player does by hand, and it is the only
-	 * thing that ends a sprint through vanilla's own path — the sprint flag is
-	 * derived from input, so setting it directly describes a state the client
-	 * could not have produced. Momentum and air control carry the jump through
-	 * the tap, so the arc is unchanged.
-	 *
-	 * <p>Only ever published while airborne with a real target in front and an
-	 * axe in hand: on the ground there is no crit to protect, and away from a
-	 * fight this would be an unexplained stutter in ordinary movement.
+	 * Releases forward input to end the sprint so the swing can crit. Returns null unless
+	 * airborne with an axe in hand and a target in front.
 	 */
 	public static PlayerInput critSprintOverride(PlayerInput current) {
 		AxeCritController controller = instance;
@@ -163,13 +116,9 @@ public final class AxeCritController {
 		if (player == null || !player.isSprinting() || player.isOnGround()) return null;
 		if (!controller.usable(client)) return null;
 		if (!isAxe(player.getMainHandStack().getItem())) return null;
-		// A manual retreat or sneak is the player's own intent and already ends
-		// the sprint; never layer a tap on top of it.
 		if (current.backward() || current.sneak() || !current.forward()) return null;
-		// Deliberately airborne rather than the full crit position: the sprint has
-		// to be gone BEFORE the descent starts. Waiting for fallDistance to climb
-		// would spend the first ticks of the window dropping a sprint the swing
-		// was already blocked on.
+		// Gated on airborne, not the full crit position: the sprint must be gone before
+		// the descent starts, so this cannot wait on fallDistance.
 		if (player.isClimbing() || player.isTouchingWater() || player.isInLava()
 				|| player.hasVehicle() || player.isGliding() || player.getAbilities().flying) {
 			return null;
@@ -181,9 +130,8 @@ public final class AxeCritController {
 	}
 
 	/**
-	 * Everything vanilla asks of the attacker's own state for a crit, minus the
-	 * charge and the sprint, which are handled where they can still be waited
-	 * out. Mirrors {@code PlayerEntity#isCriticalHit} exactly.
+	 * Mirrors {@code PlayerEntity#isCriticalHit} minus the charge and sprint checks,
+	 * which are handled separately.
 	 */
 	private boolean critPosition(ClientPlayerEntity player) {
 		return player.fallDistance > 0.0D
@@ -196,7 +144,7 @@ public final class AxeCritController {
 				&& !player.getAbilities().flying;
 	}
 
-	/** The player under the tick-current vanilla ray, or null. */
+	/** The player under the tick-current vanilla crosshair ray, or null. */
 	private PlayerEntity crosshairPlayer(MinecraftClient client, ClientPlayerEntity self) {
 		Entity camera = client.getCameraEntity();
 		HitResult hit = self.getCrosshairTarget(1.0F, camera == null ? self : camera);

@@ -18,23 +18,10 @@ import java.util.List;
 import java.util.stream.Stream;
 
 /**
- * Loads {@code .litematic} files ourselves, out of the game's own
- * {@code schematics/} folder.
- *
- * <p>This exists because going through Litematica's placement API proved
- * unreliable: it depends on the user having created and enabled a placement,
- * on several reflected method names staying put across versions, and it fails
- * closed and silently when any of that drifts. Reading the file is a shorter
- * path with no moving parts — pick a file, press Load, and the build is
- * anchored where you stand.
- *
- * <p>The loaded schematic is exposed the same way the Litematica bridge was — a
- * bounding box plus a per-position state lookup — so the builder's scanner
- * consumes it without knowing the difference. Remember captures are untouched
- * and still take priority over both.
+ * Loads {@code .litematic} files from the game's {@code schematics/} folder and exposes
+ * them as a bounding box plus a per-position state lookup.
  */
 public final class SchematicLibrary {
-	/** Guard against a stray huge file eating the frame budget on load. */
 	private static final long MAX_FILE_BYTES = 64L * 1024L * 1024L;
 	private static final int MAX_LISTED = 256;
 
@@ -44,26 +31,19 @@ public final class SchematicLibrary {
 	private static String loadedLabel = "";
 	private static BlockPos origin = BlockPos.ORIGIN;
 	private static String status = "";
-	// names() is read from the render loop, so the one-shot auto scan must
-	// latch: without this a folder with no schematics walks the disk every frame.
+	// Latched because names() is read from the render loop and would otherwise rescan every frame.
 	private static boolean scanned;
-	/** Bumped on every load/unload so the builder notices without polling contents. */
+	/** Bumped on every load and unload so the builder notices without polling contents. */
 	private static long revision;
 
 	private SchematicLibrary() {
 	}
 
-	// ── Folder ─────────────────────────────────────────────────────────────────
-
-	/** Where Litematica and every other tool puts schematics. */
 	private static Path folder() {
 		return FabricLoader.getInstance().getGameDir().resolve("schematics");
 	}
 
-	/**
-	 * Re-reads the schematics folder. Cheap enough to call whenever the UI
-	 * opens, which is what keeps the dropdown honest without a file watcher.
-	 */
+	/** Re-reads the schematics folder. */
 	public static void rescan() {
 		scanned = true;
 		Path root = folder();
@@ -94,19 +74,13 @@ public final class SchematicLibrary {
 		if (names.isEmpty()) status = "No .litematic files in the schematics folder";
 	}
 
-	/** Dropdown contents. Never empty, so the UI always has something to render. */
+	/** Dropdown contents; never empty. */
 	public static List<String> names() {
 		if (!scanned) rescan();
 		return names.isEmpty() ? List.of("(no schematics found)") : names;
 	}
 
-	// ── Loading ────────────────────────────────────────────────────────────────
-
-	/**
-	 * Loads the selected file and anchors it at the player's feet. The corner
-	 * the schematic considers its own minimum lands on the block you are
-	 * standing on, so what you see in the world is what you walked to.
-	 */
+	/** Loads the selected file, anchoring its minimum corner at the player's feet. */
 	public static boolean load(MinecraftClient client, ProFPSConfig config, int index) {
 		if (names.isEmpty()) rescan();
 		if (index < 0 || index >= files.size()) {
@@ -126,18 +100,14 @@ public final class SchematicLibrary {
 		config.schematicLibraryOriginX = anchor.getX();
 		config.schematicLibraryOriginY = anchor.getY();
 		config.schematicLibraryOriginZ = anchor.getZ();
-		// "Load and go" — the point of the button is that the builder then runs.
-		// Auto Move is deliberately left as the player set it: with it off, the
-		// builder places what the crosshair serves while the player walks, and
-		// forcing it on here used to silently revert that choice on every load.
+		// Auto Move is left as the player set it.
 		config.schematicBuildEnabled = true;
-		// Button presses do not go through the screen's own save path, so the
-		// selection would be forgotten by the next launch without this.
+		// Button presses bypass the screen's save path.
 		config.save();
 		return true;
 	}
 
-	/** Re-opens the last loaded schematic at its saved origin, after a restart. */
+	/** Re-opens the last loaded schematic at its saved origin. */
 	public static void restore(ProFPSConfig config) {
 		if (config.schematicLibraryFile == null || config.schematicLibraryFile.isEmpty()) return;
 		rescan();
@@ -192,8 +162,6 @@ public final class SchematicLibrary {
 		announce(Formatting.GRAY);
 	}
 
-	// ── Queries used by the builder ────────────────────────────────────────────
-
 	public static boolean isLoaded() {
 		return loaded != null;
 	}
@@ -219,7 +187,7 @@ public final class SchematicLibrary {
 				pos.getY() - origin.getY(), pos.getZ() - origin.getZ());
 	}
 
-	/** Puts the last status on the hotbar overlay, where a button press is felt. */
+	/** Puts the last status on the hotbar overlay. */
 	private static void announce(Formatting color) {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client == null || client.inGameHud == null) return;

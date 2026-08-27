@@ -81,9 +81,6 @@ final class SchematicSupportPlannerTest {
 
 	@Test
 	void standFloorPlanLeavesTheBodyCellsOpen() {
-		// Stand scaffolding plans a causeway to the floor cell beneath a stand
-		// while the stand's two body cells stay open for the player. The plan
-		// must arrive without ever occupying them.
 		TestSpace space = new TestSpace();
 		space.groundY = 0;
 		SchematicSupportPlanner.Cell floor = new SchematicSupportPlanner.Cell(0, 5, 0);

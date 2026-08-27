@@ -7,16 +7,7 @@ import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/**
- * Pins the two pieces of {@code .litematic} decoding that fail silently.
- *
- * <p>Neither the bit packing nor the signed extents throw when read wrongly —
- * they return plausible block indices and a plausible bounding box, so the only
- * symptom is a schematic that builds subtly wrong. The reference values here
- * come from real files in a schematics folder, cross-checked by decoding every
- * entry and comparing the resulting non-air count against the header's own
- * {@code TotalBlocks} (410, 1437 and 2636 respectively, all exact).
- */
+/** Pins the {@code .litematic} bit packing and signed extent decoding. */
 final class LitematicFileTest {
 
 	@Test
@@ -31,7 +22,7 @@ final class LitematicFileTest {
 		assertEquals(3, LitematicFile.bitsFor(5));
 		assertEquals(3, LitematicFile.bitsFor(8));
 		assertEquals(4, LitematicFile.bitsFor(9));
-		// Observed in real files: 11 entries → 4 bits, 131 and 160 → 8.
+		// Widths taken from real files: 11 entries need 4 bits, 131 and 160 need 8.
 		assertEquals(4, LitematicFile.bitsFor(11));
 		assertEquals(8, LitematicFile.bitsFor(131));
 		assertEquals(8, LitematicFile.bitsFor(160));
@@ -43,8 +34,7 @@ final class LitematicFileTest {
 	void negativeExtentsResolveToTheLowerCorner() {
 		// Straight case: 5 wide starting at 0 covers 0..4.
 		assertEquals(0, LitematicFile.minCorner(0, 5));
-		// The case that actually appears in files: position is the HIGH corner
-		// and the extent runs back toward negative. 72 with −73 covers 0..72.
+		// A negative extent means position is the high corner: 72 with -73 covers 0..72.
 		assertEquals(0, LitematicFile.minCorner(72, -73));
 		assertEquals(0, LitematicFile.minCorner(4, -5));
 		// Away from the origin, both directions.
@@ -58,9 +48,7 @@ final class LitematicFileTest {
 	@Test
 	@DisplayName("entries that straddle a long boundary round-trip")
 	void packedEntriesSpanLongs() {
-		// 3 bits does not divide 64, so entries 21, 42, 63… each begin in one
-		// long and end in the next. That is the case the modern padded layout
-		// gets wrong while still returning a valid-looking index.
+		// 3 bits does not divide 64, so entries 21, 42 and 63 straddle a long boundary.
 		int bits = 3;
 		int[] values = new int[200];
 		Random random = new Random(20260822L);
