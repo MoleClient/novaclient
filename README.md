@@ -4,8 +4,6 @@ A Fabric utility client for Minecraft 1.21.11. Combat assists, movement modules,
 
 Press **Right Shift** in game to open it.
 
-> Built for singleplayer and servers you control. Anywhere else this will get you banned.
-
 ## Requirements
 
 - Minecraft 1.21.11
@@ -32,8 +30,6 @@ Press **Right Shift** in game to open it.
 **World** Stash pinger, prime chunk finder, storage ESP, hole and tunnel ESP, base tracers, schematic builder.
 
 **Utility** Ping spoofer, ping equalizer, autoclicker, fastbreak, auto tool, fast place, fullbright, nickname, spam.
-
-**Performance** Frame budget scheduler, foveated entity culling, particle admission control, predictive render distance.
 
 Any module can be bound to a key from the panel.
 
