@@ -88,7 +88,7 @@ class ContributionGateTest {
 		assertAll(
 				() -> assertEquals(Taint.NONE, ContributionGate.scopeOf("fullbright")),
 				() -> assertEquals(Taint.BLOCKS, ContributionGate.scopeOf("autotool")),
-				() -> assertEquals(Taint.BLOCKS, ContributionGate.scopeOf("fastbreak")),
+				() -> assertEquals(Taint.BLOCKS, ContributionGate.scopeOf("instamine")),
 				() -> assertEquals(Taint.COMBAT, ContributionGate.scopeOf("totem")));
 	}
 }

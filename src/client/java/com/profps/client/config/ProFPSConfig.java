@@ -201,8 +201,9 @@ public final class ProFPSConfig {
 	public boolean instantClickRight = false;
 	/** Suppress left-clicks unless a fresh vanilla ray names a live entity. */
 	public boolean instantClickTargetOnly = false;
-	public boolean instantFastBreak = false;
-	public int instantFastBreakLevel = 4;
+	public boolean instamineEnabled = false;
+	/** 1 is a modest boost, 10 breaks in a single tick with no post-break gap. */
+	public int instamineLevel = 8;
 	public boolean instantAutoTool = false;
 	public int instantAutoToolSwapToDelayMs = 50;
 	public boolean instantAutoToolSwapWeapon = true;
@@ -512,7 +513,7 @@ public final class ProFPSConfig {
 	/** Random per-install salt; the uploaded pseudonym is a hash of the account UUID and this salt. */
 	public String dataContributionSalt = "";
 
-	public int configVersion = 113;
+	public int configVersion = 114;
 
 	/** Plain HTTP is accepted only for loopback. */
 	static boolean isLoopback(String endpoint) {
@@ -1036,8 +1037,8 @@ public final class ProFPSConfig {
 			spamMessage = "Novaclient Is The Best Client";
 			changed = true;
 		}
-		if (instantFastBreakLevel < 1 || instantFastBreakLevel > 10) {
-			instantFastBreakLevel = MathHelper.clamp(instantFastBreakLevel, 1, 10);
+		if (instamineLevel < 1 || instamineLevel > 10) {
+			instamineLevel = MathHelper.clamp(instamineLevel, 1, 10);
 			changed = true;
 		}
 		int oldToolSwapDelay = instantAutoToolSwapToDelayMs;
@@ -1070,13 +1071,12 @@ public final class ProFPSConfig {
 		if (configVersion < 26) {
 			instantBreakOn = false;
 			instantAutoClicker = false;
-			instantFastBreak = false;
+			instamineEnabled = false;
 			instantAutoTool = false;
 			instantFastPlace = false;
 			instantAutoSprint = false;
 			instantAutoWalk = false;
 			instantClickCps = 12;
-			instantFastBreakLevel = 4;
 			configVersion = 26;
 			changed = true;
 		}
@@ -1769,6 +1769,15 @@ public final class ProFPSConfig {
 			// Schematic Build defaults to its quickest pace.
 			schematicBuildSpeed = 10;
 			configVersion = 113;
+			changed = true;
+		}
+		if (configVersion < 114) {
+			// Fastbreak became Instamine: it targets a tick count and clears the post-break
+			// cooldown rather than scaling the vanilla rate, so the old level does not carry
+			// over. The module stays off until it is asked for.
+			instamineEnabled = false;
+			instamineLevel = 8;
+			configVersion = 114;
 			changed = true;
 		}
 

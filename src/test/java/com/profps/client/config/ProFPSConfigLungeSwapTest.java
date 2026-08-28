@@ -19,7 +19,7 @@ final class ProFPSConfigLungeSwapTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(113, config.configVersion),
+				() -> assertEquals(114, config.configVersion),
 				() -> assertTrue(config.lungeSwapHumanize),
 				() -> assertTrue(config.lungeSpamScaling));
 	}
@@ -32,7 +32,7 @@ final class ProFPSConfigLungeSwapTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(113, config.configVersion),
+				() -> assertEquals(114, config.configVersion),
 				() -> org.junit.jupiter.api.Assertions.assertFalse(config.lungeSwapHumanize,
 						"a re-run must not re-stamp the user's own choice"));
 	}

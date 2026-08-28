@@ -19,7 +19,7 @@ final class ProFPSConfigEspSplitTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(113, config.configVersion),
+				() -> assertEquals(114, config.configVersion),
 				() -> assertFalse(config.donutStorageEsp),
 				() -> assertTrue(config.donutStorageShowChests),
 				() -> assertTrue(config.donutStorageShowShulkers),

@@ -32,7 +32,7 @@ final class ContributionGate {
 			// Exception: draws player boxes through walls, so recorded movement reflects that knowledge.
 			Map.entry("hitboxes", Taint.NONE),
 			// Reach only into breaking and placing.
-			Map.entry("fastbreak", Taint.BLOCKS),
+			Map.entry("instamine", Taint.BLOCKS),
 			Map.entry("autotool", Taint.BLOCKS),
 			Map.entry("breakon", Taint.BLOCKS),
 			Map.entry("fastplace", Taint.BLOCKS),

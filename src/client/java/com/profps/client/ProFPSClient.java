@@ -216,6 +216,8 @@ public final class ProFPSClient implements ClientModInitializer {
 			amethystDetector.tick(client);
 			toolMine.tick(client);
 			fastPlace.tick(client);
+			// Runs after mining has been handled, so it clears the cooldown vanilla just set.
+			com.profps.client.instants.InstamineController.tick(client);
 			inventoryAutomation.tick(client);
 			// Runs with a screen open: the sign editor is its trigger.
 			autoSign.tick(client);

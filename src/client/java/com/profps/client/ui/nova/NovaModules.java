@@ -348,7 +348,11 @@ public final class NovaModules {
 		d.put("novahome", "Custom NovaClient main menu. Off = classic Minecraft menu.");
 		d.put("breakon", "Auto-swaps tool and mines what you see.");
 		d.put("autoclicker", "Clicks autonomously at a naturally varied CPS; no mouse hold required.");
-		d.put("fastbreak", "A modest block-break speed boost.");
+		d.put("instamine", "Breaks blocks in a fixed number of ticks instead of scaling the "
+				+ "vanilla rate, so stone and obsidian both go down fast, and clears the "
+				+ "post-break cooldown so mining flows. Falling blocks like gravel and sand "
+				+ "stay at vanilla speed on purpose, since outrunning their falling entities "
+				+ "desyncs the column. Speed 10 is a single tick with no gap.");
 		d.put("autotool", "Swaps to the best tool or weapon, with optional delay and restoration.");
 		d.put("fastplace", "Lowers vanilla's right-click delay for all items, blocks, or projectiles.");
 		d.put("autoarmor", "Equips the best armor through a paced, shared inventory click queue.");
@@ -699,9 +703,9 @@ public final class NovaModules {
 				new BoolSetting("Hand Use", () -> cfg.instantBreakOnHandUse, v -> cfg.instantBreakOnHandUse = v),
 				new BlockPickerSetting("Certain Blocks", () -> cfg.instantBreakOnCertain,
 						v -> cfg.instantBreakOnCertain = v, cfg.instantBreakOnBlocks)));
-		m.put("fastbreak", new Module("fastbreak", "Fastbreak", Items.NETHERITE_PICKAXE,
-				() -> cfg.instantFastBreak, v -> cfg.instantFastBreak = v,
-				new IntSetting("Speed", "", 1, 10, 1, () -> cfg.instantFastBreakLevel, v -> cfg.instantFastBreakLevel = v)));
+		m.put("instamine", new Module("instamine", "Instamine", Items.NETHERITE_PICKAXE,
+				() -> cfg.instamineEnabled, v -> cfg.instamineEnabled = v,
+				new IntSetting("Speed", "", 1, 10, 1, () -> cfg.instamineLevel, v -> cfg.instamineLevel = v)));
 		m.put("autotool", new Module("autotool", "AutoTool", Items.IRON_PICKAXE,
 				() -> cfg.instantAutoTool, v -> cfg.instantAutoTool = v,
 				new IntSetting("Swap to delay", " ms", 0, 500, 50,
@@ -874,7 +878,7 @@ public final class NovaModules {
 		categories.add(new Category("Hypixel", Items.GOLD_INGOT, pick(m,
 				"autoclicker", "antifireball", "heightclutch", "clutch", "scaffold", "bedbreaker", "remember", "schematicbuild")));
 		categories.add(new Category("Instants", Items.CLOCK, pick(m,
-				"breakon", "fastbreak", "autotool", "fastplace", "autosprint", "autowalk")));
+				"breakon", "instamine", "autotool", "fastplace", "autosprint", "autowalk")));
 		categories.add(new Category("Inventory", Items.CHEST, pick(m,
 				"autoarmor", "cheststeal", "refill", "autohotbar", "invcleaner", "autosign")));
 		categories.add(new Category("Misc", Items.COMPASS, pick(m,

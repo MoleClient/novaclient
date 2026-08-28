@@ -14,7 +14,7 @@
 		"ClientPlayerInteractionManagerAccessor",
 		"ExpandedHitboxAttackMixin",
 		"ExpandedHitboxMovementMixin",
-		"FastbreakMixin",
+		"InstamineMixin",
 		"FreecamEntityMixin",
 		"FreecamPlayerMixin",
 		"InputAccessor",

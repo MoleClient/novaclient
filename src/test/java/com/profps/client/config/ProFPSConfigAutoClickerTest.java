@@ -19,7 +19,7 @@ final class ProFPSConfigAutoClickerTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(113, config.configVersion),
+				() -> assertEquals(114, config.configVersion),
 				() -> assertFalse(config.instantClickTargetOnly));
 	}
 

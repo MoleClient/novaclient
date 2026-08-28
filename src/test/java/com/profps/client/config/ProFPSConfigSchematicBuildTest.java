@@ -21,7 +21,7 @@ final class ProFPSConfigSchematicBuildTest {
 
 		sanitize(config);
 
-		assertEquals(113, config.configVersion);
+		assertEquals(114, config.configVersion);
 		assertEquals(10, config.schematicBuildSpeed);
 	}
 
