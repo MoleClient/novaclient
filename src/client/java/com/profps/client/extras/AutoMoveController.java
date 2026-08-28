@@ -279,6 +279,15 @@ public final class AutoMoveController {
 
 		long rememberRevision = remember.revision();
 		List<SourceBounds> bounds = litematica.bounds();
+		boolean windowed = false;
+		// The placement-manager reflection is the fragile half of the bridge; the schematic
+		// world getter is the half the manual builder proves works. When bounds cannot be
+		// read but the schematic world is alive, scan a player-centred window of it directly,
+		// quantized to the chunk grid so the window is stable while building.
+		if (bounds.isEmpty() && litematica.worldAvailable()) {
+			bounds = List.of(windowBounds(client));
+			windowed = true;
+		}
 		long signature = boundsSignature(bounds);
 		if (rememberRevision == knownRememberRevision && signature == knownLitematicaSignature) return;
 
@@ -287,7 +296,21 @@ public final class AutoMoveController {
 		remembered = remember.desiredStatesSnapshot();
 		rememberedEntries = new ArrayList<>(remembered.entrySet());
 		schematicBounds = bounds;
+		com.profps.ProFPS.LOGGER.info(
+				"[AutoMoveBuilder] sources: {} remembered cell(s), {} litematica bound(s){}",
+				remembered.size(), bounds.size(), windowed ? " (schematic-world window)" : "");
 		resetSweep();
+	}
+
+	/** Player-centred scan window over the schematic world, on the chunk grid. */
+	private SourceBounds windowBounds(MinecraftClient client) {
+		int centerX = (client.player.getBlockX() >> 4) << 4;
+		int centerZ = (client.player.getBlockZ() >> 4) << 4;
+		int centerY = (client.player.getBlockY() >> 4) << 4;
+		int bottom = client.world.getBottomY();
+		int top = bottom + client.world.getHeight() - 1;
+		return new SourceBounds(centerX - 48, Math.max(bottom, centerY - 40), centerZ - 48,
+				centerX + 48, Math.min(top, centerY + 40), centerZ + 48, 0);
 	}
 
 	private void resetPlanning() {
@@ -399,7 +422,7 @@ public final class AutoMoveController {
 
 	private void considerCell(MinecraftClient client, BlockPos pos, BlockState desired) {
 		if (pos.getY() != activeLayer || desired.isAir()) return;
-		if (!desired.getFluidState().isEmpty() && desired.getBlock() == Blocks.WATER) return;
+		if (desired.isOf(Blocks.WATER) || desired.isOf(Blocks.LAVA)) return;
 		layerFootprint.add(SchematicLayerOrder.key(pos.getX(), pos.getZ()));
 		if (pending.size() >= MAX_PENDING_PER_LAYER) return;
 		if (desiredComplete(client.world, pos, desired)) return;
@@ -1062,6 +1085,16 @@ public final class AutoMoveController {
 			return null;
 		}
 
+		/** True while the schematic world can be read, whatever the placement chain does. */
+		boolean worldAvailable() {
+			if (!initialize() || worldGetter == null) return false;
+			try {
+				return worldGetter.invoke(null) instanceof BlockView;
+			} catch (ReflectiveOperationException | RuntimeException ignored) {
+				return false;
+			}
+		}
+
 		List<SourceBounds> bounds() {
 			if (!initialize() || placementManagerGetter == null) return List.of();
 			try {
@@ -1094,20 +1127,36 @@ public final class AutoMoveController {
 			try {
 				Class<?> handler = Class.forName("fi.dy.masa.litematica.world.SchematicWorldHandler");
 				worldGetter = handler.getMethod("getSchematicWorld");
+			} catch (ReflectiveOperationException | LinkageError ignored) {
+				worldGetter = null;
+				return false;
+			}
+			// The placement chain is optional: losing it degrades bounds to the schematic
+			// world window, it must never take the world getter down with it.
+			try {
 				Class<?> dataManager = Class.forName("fi.dy.masa.litematica.data.DataManager");
 				placementManagerGetter = dataManager.getMethod("getSchematicPlacementManager");
 				Class<?> manager = Class.forName("fi.dy.masa.litematica.schematic.placement.SchematicPlacementManager");
 				getAllPlacements = manager.getMethod("getAllSchematicsPlacements");
 				Class<?> placement = Class.forName("fi.dy.masa.litematica.schematic.placement.SchematicPlacement");
 				placementEnabled = placement.getMethod("isEnabled");
-				placementBox = placement.getMethod("getEclosingBox");
+				placementBox = boxMethod(placement);
 				Class<?> selectionBox = Class.forName("fi.dy.masa.litematica.selection.Box");
 				boxPos1 = selectionBox.getMethod("getPos1");
 				boxPos2 = selectionBox.getMethod("getPos2");
 			} catch (ReflectiveOperationException | LinkageError ignored) {
-				worldGetter = null;
+				placementManagerGetter = null;
 			}
-			return worldGetter != null;
+			return true;
+		}
+
+		/** Litematica has shipped both spellings of the enclosing-box getter. */
+		private Method boxMethod(Class<?> placement) throws NoSuchMethodException {
+			try {
+				return placement.getMethod("getEclosingBox");
+			} catch (NoSuchMethodException ignored) {
+				return placement.getMethod("getEnclosingBox");
+			}
 		}
 	}
 }

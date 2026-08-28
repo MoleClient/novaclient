@@ -24,6 +24,7 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.BlockView;
 
 import java.lang.reflect.Method;
@@ -47,9 +48,12 @@ public final class SchematicBuildController {
 	private static final double MAX_REACH_SQUARED = MAX_REACH * MAX_REACH;
 	/** How long a just-placed cell is left alone while the server confirms it. */
 	private static final long RECENT_POSITION_NS = 900_000_000L;
-	/** Vanilla holds 4 ticks between uses; the floor sits just above it. */
-	private static final int PLACE_GAP_MIN_MS = 205;
-	private static final int PLACE_GAP_MAX_MS = 285;
+	/**
+	 * Placement gap per Speed setting, index 0 unused. Speed 5 sits just above vanilla's
+	 * 4-tick use cadence; above it outruns a held right click and trades stealth for pace.
+	 */
+	private static final int[] GAP_MIN_MS = {0, 360, 310, 270, 235, 205, 190, 178, 167, 156, 146};
+	private static final int[] GAP_MAX_MS = {0, 470, 410, 360, 315, 285, 262, 242, 222, 204, 188};
 
 	/** State properties a placement must reproduce for the cell to count as built. */
 	private static final Set<String> PLACEMENT_PROPERTIES = Set.of(
@@ -145,7 +149,8 @@ public final class SchematicBuildController {
 			return;
 		}
 		player.swingHand(Hand.MAIN_HAND);
-		long gap = jitterMs(PLACE_GAP_MIN_MS, PLACE_GAP_MAX_MS);
+		int speed = MathHelper.clamp(config.schematicBuildSpeed, 1, 10);
+		long gap = jitterMs(GAP_MIN_MS[speed], GAP_MAX_MS[speed]);
 		// The occasional longer hesitation of a hand re-checking its line.
 		if (random.nextInt(100) < 7) gap += jitterMs(140, 420);
 		nextPlaceNanos = now + gap;

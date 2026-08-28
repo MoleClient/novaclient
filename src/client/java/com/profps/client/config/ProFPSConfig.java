@@ -320,6 +320,8 @@ public final class ProFPSConfig {
 	public boolean antiFireballAssist = false; // smooth-aim + sword-deflect incoming bedwars fireballs
 	public boolean rememberEnabled = false;    // capture multiple builds as translucent real-block ghosts
 	public boolean schematicBuildEnabled = false; // place the crosshair cell from Remember or an enabled Litematica placement
+	/** Placement pace 1-10; 5 matches vanilla's held-click cadence, 10 is quickest. */
+	public int schematicBuildSpeed = 5;
 	/** Auto Move: walks the build and places it layer by layer on its own. */
 	public boolean autoMoveEnabled = false;
 	/** Retained only to read older config files; the crosshair builder no longer moves the player. */
@@ -861,6 +863,10 @@ public final class ProFPSConfig {
 		}
 		if (autoSpearTurnSpeed < 20 || autoSpearTurnSpeed > 90) {
 			autoSpearTurnSpeed = MathHelper.clamp(autoSpearTurnSpeed, 20, 90);
+			changed = true;
+		}
+		if (schematicBuildSpeed < 1 || schematicBuildSpeed > 10) {
+			schematicBuildSpeed = MathHelper.clamp(schematicBuildSpeed, 1, 10);
 			changed = true;
 		}
 		if (subTiersMinecartBowSpeed < 1 || subTiersMinecartBowSpeed > 10) {

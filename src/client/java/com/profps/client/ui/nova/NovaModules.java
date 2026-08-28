@@ -770,7 +770,9 @@ public final class NovaModules {
 		m.put("remember", new Module("remember", "Remember", Items.YELLOW_WOOL,
 				() -> cfg.rememberEnabled, v -> cfg.rememberEnabled = v));
 		m.put("schematicbuild", new Module("schematicbuild", "Schematic Build", Items.FILLED_MAP,
-				() -> cfg.schematicBuildEnabled, v -> cfg.schematicBuildEnabled = v));
+				() -> cfg.schematicBuildEnabled, v -> cfg.schematicBuildEnabled = v,
+				new IntSetting("Speed", "", 1, 10, 1,
+						() -> cfg.schematicBuildSpeed, v -> cfg.schematicBuildSpeed = v)));
 		m.put("automove", new Module("automove", "Auto Move Builder", Items.LEATHER_BOOTS,
 				() -> cfg.autoMoveEnabled, v -> cfg.autoMoveEnabled = v));
 		m.put("slow", new Module("slow", "Slow", Items.COBWEB,
