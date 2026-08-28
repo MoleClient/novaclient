@@ -28,6 +28,7 @@ public final class CombatModeRuntime {
 		AUTO_LUNGE,
 		AUTO_SPEAR,
 		SCHEMATIC_BUILD,
+		AUTO_MOVE,
 		ANTI_FIREBALL,
 		KB_DISPLACE,
 		AUTO_TOTEM

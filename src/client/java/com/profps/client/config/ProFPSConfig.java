@@ -320,7 +320,9 @@ public final class ProFPSConfig {
 	public boolean antiFireballAssist = false; // smooth-aim + sword-deflect incoming bedwars fireballs
 	public boolean rememberEnabled = false;    // capture multiple builds as translucent real-block ghosts
 	public boolean schematicBuildEnabled = false; // place the crosshair cell from Remember or an enabled Litematica placement
-	/** Retained only to read older config files; the builder no longer moves the player. */
+	/** Auto Move: walks the build and places it layer by layer on its own. */
+	public boolean autoMoveEnabled = false;
+	/** Retained only to read older config files; the crosshair builder no longer moves the player. */
 	public boolean schematicAutoMove = true;
 	/** Retained only to read older config files; temporary support scaffolding is gone. */
 	public boolean schematicTemporaryBlocks = true;

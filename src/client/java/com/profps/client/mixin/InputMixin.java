@@ -32,6 +32,11 @@ public abstract class InputMixin {
 			// Freecam owns WASD, so the body reads dead keys.
 			self.profps$setPlayerInput(PlayerInput.DEFAULT);
 			self.profps$setMovementVector(Vec2f.ZERO);
+		} else if (com.profps.client.extras.AutoMoveController.isControlling()) {
+			// Auto Move publishes ordinary input; its controller yields to manual keys itself.
+			PlayerInput input = com.profps.client.extras.AutoMoveController.movementInput();
+			self.profps$setPlayerInput(input);
+			self.profps$setMovementVector(vectorFor(input));
 		} else {
 			PlayerInput input = self.profps$getPlayerInput();
 			boolean overridden = false;

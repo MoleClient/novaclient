@@ -109,6 +109,7 @@ public final class ProFPSClient implements ClientModInitializer {
 	private static AutoLungeSwapController autoLunge;
 	private static AutoSpearController autoSpear;
 	private static SchematicBuildController schematicBuild;
+	private static com.profps.client.extras.AutoMoveController autoMove;
 	private static AntiFireballController antiFireball;
 	private static KnockbackDisplacementController kbDisplace;
 	private static KeyBinding openKey;
@@ -165,6 +166,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		antiFireball = new AntiFireballController(config);
 		RememberController remember = new RememberController(config);
 		schematicBuild = new SchematicBuildController(config, remember);
+		autoMove = new com.profps.client.extras.AutoMoveController(config, remember);
 		FlightController flight = new FlightController(config);
 		SpamController spam = new SpamController(config);
 		WaterWalkController waterWalk = new WaterWalkController(config);
@@ -260,12 +262,19 @@ public final class ProFPSClient implements ClientModInitializer {
 					spearOwnsRotation = autoLunge.frame(mc);
 					if (!spearOwnsRotation) spearOwnsRotation = autoSpear.frame(mc);
 				}
+				if (!pearlOwnsRotation && !expandedOwnsRotation && !creeperOwnsRotation
+						&& !spearOwnsRotation) {
+					autoMove.frame(mc);
+				}
+				boolean autoMoveOwnsRotation = autoMove.ownsRotation();
 				// The pot flick must own rotation exclusively while it runs.
 				boolean potOwnsRotation = autoPot.ownsRotation();
-				autoPot.frame(mc);
-				tunnel.frame(mc);
+				if (!autoMoveOwnsRotation) {
+					autoPot.frame(mc);
+					tunnel.frame(mc);
+				}
 				boolean modeRotationBlocked = pearlOwnsRotation || expandedOwnsRotation || creeperOwnsRotation
-						|| spearOwnsRotation || potOwnsRotation;
+						|| spearOwnsRotation || autoMoveOwnsRotation || potOwnsRotation;
 				if (!modeRotationBlocked) {
 					aimImprovements.frame(mc);
 					strafeImprovements.frame(mc);
@@ -277,8 +286,8 @@ public final class ProFPSClient implements ClientModInitializer {
 					autoAim.frame(mc);
 					swordAi.frame(mc);
 				}
-				if (!pearlOwnsRotation && !expandedOwnsRotation) autoCreeper.frame(mc);
-				autoMinecart.frame(mc);
+				if (!autoMoveOwnsRotation && !pearlOwnsRotation && !expandedOwnsRotation) autoCreeper.frame(mc);
+				if (!autoMoveOwnsRotation) autoMinecart.frame(mc);
 			});
 		// Use END_MAIN, not BEFORE_DEBUG_RENDER: performance mods can skip the vanilla
 		// debug-renderer invocation and with it Fabric's event.
@@ -409,6 +418,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		if (autoCrystal != null) autoCrystal.tick(client);
 		// After the combat controllers: a quiet tick builds, a fighting tick never doubles an action.
 		if (schematicBuild != null) schematicBuild.tickPreMovement(client);
+		if (autoMove != null) autoMove.tickPreMovement(client);
 		if (autoClicker != null) autoClicker.tickPreMovement(client);
 		// Read-only, and last, so it samples the state the modules above settled.
 		com.profps.client.data.DataContribution recorder = com.profps.client.data.DataContribution.instance();
