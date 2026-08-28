@@ -19,7 +19,7 @@ final class ProFPSConfigTotemMaceTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(112, config.configVersion),
+				() -> assertEquals(113, config.configVersion),
 				() -> assertTrue(config.lungeSpamScaling),
 				() -> assertTrue(config.hitCritSprintRelease));
 	}
@@ -43,7 +43,7 @@ final class ProFPSConfigTotemMaceTest {
 
 		// Migrations are keyed on the version, so a current config is never re-stamped.
 		assertAll(
-				() -> assertEquals(112, config.configVersion),
+				() -> assertEquals(113, config.configVersion),
 				() -> assertTrue(config.maceSilentAim));
 	}
 

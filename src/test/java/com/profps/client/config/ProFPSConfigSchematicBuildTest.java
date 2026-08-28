@@ -5,13 +5,24 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 
-/** Schematic Build speed: default 5, clamped to 1..10. */
+/** Schematic Build speed: default 10, migrated to 10, clamped to 1..10. */
 final class ProFPSConfigSchematicBuildTest {
 	@Test
-	void speedDefaultsToTheVanillaCadence() {
-		assertEquals(5, new ProFPSConfig().schematicBuildSpeed);
+	void speedDefaultsToQuickest() {
+		assertEquals(10, new ProFPSConfig().schematicBuildSpeed);
+	}
+
+	@Test
+	void v113MovesExistingProfilesToTheQuickestPace() throws Exception {
+		ProFPSConfig config = new ProFPSConfig();
+		config.configVersion = 112;
+		config.schematicBuildSpeed = 5;
+
+		sanitize(config);
+
+		assertEquals(113, config.configVersion);
+		assertEquals(10, config.schematicBuildSpeed);
 	}
 
 	@Test
@@ -24,11 +35,6 @@ final class ProFPSConfigSchematicBuildTest {
 		config.schematicBuildSpeed = 0;
 		sanitize(config);
 		assertEquals(1, config.schematicBuildSpeed);
-	}
-
-	@Test
-	void autoMoveBuilderArrivesOff() {
-		assertFalse(new ProFPSConfig().autoMoveEnabled, "a module that moves for you is opt-in");
 	}
 
 	private static boolean sanitize(ProFPSConfig config) throws Exception {

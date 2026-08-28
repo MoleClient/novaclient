@@ -376,11 +376,7 @@ public final class NovaModules {
 		d.put("remember", "Captures multiple builds as see-through ghosts; Delete removes the one you see.");
 		d.put("schematicbuild", "Places the schematic block under your crosshair while you aim and "
 				+ "walk. Reads a Remember capture or an enabled Litematica placement, switches to "
-				+ "the right material, and clicks at a human pace.");
-		d.put("automove", "Builds the schematic on its own: walks the build, aims like a hand, and "
-				+ "places layer by layer from the bottom up, standing on the lower courses to "
-				+ "reach the upper ones. Any key you touch pauses it. Never mines and never "
-				+ "outruns a held right click.");
+				+ "the right material, and clicks at the pace you set.");
 		d.put(MODE_SWORD, "Full sword kit at one strength — aim, strafe, sprint and trigger together.");
 		d.put(MODE_AXE, "Full axe kit at one strength — shield stun, sword handoff and projectile aim.");
 		d.put(MODE_MACE, "Full mace kit at one strength — smash aim, Breach swaps and stun slams.");
@@ -773,8 +769,6 @@ public final class NovaModules {
 				() -> cfg.schematicBuildEnabled, v -> cfg.schematicBuildEnabled = v,
 				new IntSetting("Speed", "", 1, 10, 1,
 						() -> cfg.schematicBuildSpeed, v -> cfg.schematicBuildSpeed = v)));
-		m.put("automove", new Module("automove", "Auto Move Builder", Items.LEATHER_BOOTS,
-				() -> cfg.autoMoveEnabled, v -> cfg.autoMoveEnabled = v));
 		m.put("slow", new Module("slow", "Slow", Items.COBWEB,
 				() -> cfg.slowAnimations, v -> cfg.slowAnimations = v,
 				new IntSetting("Slowness", "x", 2, 8, 1, () -> cfg.slowAnimationStrength, v -> cfg.slowAnimationStrength = v)));
@@ -878,7 +872,7 @@ public final class NovaModules {
 		categories.add(new Category("DonutSMP", Items.ENDER_EYE, pick(m,
 				"mobesp", "advesp", "storageesp", "primechunk", "stash", "amethyst", "freecam", "tunnel")));
 		categories.add(new Category("Hypixel", Items.GOLD_INGOT, pick(m,
-				"autoclicker", "antifireball", "heightclutch", "clutch", "scaffold", "bedbreaker", "remember", "schematicbuild", "automove")));
+				"autoclicker", "antifireball", "heightclutch", "clutch", "scaffold", "bedbreaker", "remember", "schematicbuild")));
 		categories.add(new Category("Instants", Items.CLOCK, pick(m,
 				"breakon", "fastbreak", "autotool", "fastplace", "autosprint", "autowalk")));
 		categories.add(new Category("Inventory", Items.CHEST, pick(m,

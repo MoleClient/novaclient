@@ -19,7 +19,7 @@ final class ProFPSConfigAutoSpearTest {
 		sanitize(config);
 
 		assertAll(
-				() -> assertEquals(112, config.configVersion),
+				() -> assertEquals(113, config.configVersion),
 				() -> assertFalse(config.autoSpearEnabled, "a module that aims for you is opt-in"),
 				() -> assertFalse(config.autoSpearSilentAim));
 	}

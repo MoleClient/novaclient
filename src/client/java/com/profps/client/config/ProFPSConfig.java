@@ -321,9 +321,7 @@ public final class ProFPSConfig {
 	public boolean rememberEnabled = false;    // capture multiple builds as translucent real-block ghosts
 	public boolean schematicBuildEnabled = false; // place the crosshair cell from Remember or an enabled Litematica placement
 	/** Placement pace 1-10; 5 matches vanilla's held-click cadence, 10 is quickest. */
-	public int schematicBuildSpeed = 5;
-	/** Auto Move: walks the build and places it layer by layer on its own. */
-	public boolean autoMoveEnabled = false;
+	public int schematicBuildSpeed = 10;
 	/** Retained only to read older config files; the crosshair builder no longer moves the player. */
 	public boolean schematicAutoMove = true;
 	/** Retained only to read older config files; temporary support scaffolding is gone. */
@@ -514,7 +512,7 @@ public final class ProFPSConfig {
 	/** Random per-install salt; the uploaded pseudonym is a hash of the account UUID and this salt. */
 	public String dataContributionSalt = "";
 
-	public int configVersion = 112;
+	public int configVersion = 113;
 
 	/** Plain HTTP is accepted only for loopback. */
 	static boolean isLoopback(String endpoint) {
@@ -1765,6 +1763,12 @@ public final class ProFPSConfig {
 			// Silent aim decouples the camera; it must never arrive switched on.
 			autoSpearSilentAim = false;
 			configVersion = 112;
+			changed = true;
+		}
+		if (configVersion < 113) {
+			// Schematic Build defaults to its quickest pace.
+			schematicBuildSpeed = 10;
+			configVersion = 113;
 			changed = true;
 		}
 

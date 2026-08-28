@@ -28,7 +28,7 @@ class ProFPSConfigVapeModesTest {
 		assertTrue(config.inventoryAutoArmorOpen);
 		assertEquals(150, config.inventoryChestStealDelayMinMs);
 		assertFalse(config.hypixelBedBreaker);
-		assertEquals(112, config.configVersion);
+		assertEquals(113, config.configVersion);
 	}
 
 	@Test
@@ -84,7 +84,7 @@ class ProFPSConfigVapeModesTest {
 		sanitize.setAccessible(true);
 		assertTrue((Boolean) sanitize.invoke(config));
 		assertAll(
-				() -> assertEquals(112, config.configVersion),
+				() -> assertEquals(113, config.configVersion),
 				() -> assertFalse(config.velocityKiteMode),
 				() -> assertFalse(config.instantAutoToolSwapBack),
 				() -> assertFalse(config.instantFastPlace),
@@ -102,7 +102,7 @@ class ProFPSConfigVapeModesTest {
 		sanitize.setAccessible(true);
 		assertTrue((Boolean) sanitize.invoke(config));
 		assertAll(
-				() -> assertEquals(112, config.configVersion),
+				() -> assertEquals(113, config.configVersion),
 				() -> assertFalse(config.inventoryAutoArmor),
 				() -> assertFalse(config.inventoryChestSteal),
 				() -> assertFalse(config.hypixelBedBreaker));
@@ -117,7 +117,7 @@ class ProFPSConfigVapeModesTest {
 		sanitize.setAccessible(true);
 		assertTrue((Boolean) sanitize.invoke(config));
 		assertAll(
-				() -> assertEquals(112, config.configVersion),
+				() -> assertEquals(113, config.configVersion),
 				() -> assertTrue(config.anchorDetonate));
 	}
 
@@ -131,7 +131,7 @@ class ProFPSConfigVapeModesTest {
 
 		assertTrue((Boolean) sanitize.invoke(config));
 		assertAll(
-				() -> assertEquals(112, config.configVersion),
+				() -> assertEquals(113, config.configVersion),
 				() -> assertEquals(6, config.anchorSpeed));
 	}
 
@@ -145,7 +145,7 @@ class ProFPSConfigVapeModesTest {
 
 		assertTrue((Boolean) sanitize.invoke(config));
 		assertAll(
-				() -> assertEquals(112, config.configVersion),
+				() -> assertEquals(113, config.configVersion),
 				() -> assertTrue(config.anchorDetonate));
 	}
 
