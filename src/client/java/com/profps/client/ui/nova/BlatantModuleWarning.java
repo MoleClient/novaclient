@@ -11,7 +11,7 @@ import java.util.Set;
 /** Confirmation gate required before enabling modules that alter vanilla reach, velocity or movement. */
 final class BlatantModuleWarning {
 	private static final Set<String> MODULE_IDS = Set.of(
-			"reach", "velocity", "flight", "waterwalk", "boatfly", "teleporter");
+			"reach", "velocity", "flight", "noclip", "waterwalk", "boatfly", "teleporter");
 
 	private BlatantModuleWarning() {}
 

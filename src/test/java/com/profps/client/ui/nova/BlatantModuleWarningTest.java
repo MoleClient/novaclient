@@ -10,7 +10,7 @@ class BlatantModuleWarningTest {
 	@Test
 	void everyPreviouslyMultiplayerGatedModuleRequiresConfirmation() {
 		assertEquals(Set.of(
-				"reach", "velocity", "flight", "waterwalk", "boatfly", "teleporter"),
+				"reach", "velocity", "flight", "noclip", "waterwalk", "boatfly", "teleporter"),
 				BlatantModuleWarning.moduleIds());
 		for (String id : BlatantModuleWarning.moduleIds()) {
 			assertTrue(BlatantModuleWarning.requiresConfirmation(id));

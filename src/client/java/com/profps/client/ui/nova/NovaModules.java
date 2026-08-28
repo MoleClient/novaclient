@@ -369,6 +369,10 @@ public final class NovaModules {
 		d.put("heightclutch", "Water or ladder save when falling.");
 		d.put("pingspoof", "Reports whatever ping you choose.");
 		d.put("flight", "BLATANT FLAG · Forces non-vanilla flight velocity.");
+		d.put("noclip", "BLATANT FLAG · Drops collision and flies through blocks. Built for "
+				+ "singleplayer and servers you run; anywhere else the server resolves collision "
+				+ "itself and rubber-bands you. Sprint to move faster. Turning it off waits "
+				+ "until you are clear of blocks so you are never left stuck in a wall.");
 		d.put("spam", "Repeats a chat message on a timer.");
 		d.put("waterwalk", "BLATANT FLAG · Walk on water; sneak to dive.");
 		d.put("boatfly", "BLATANT FLAG · Fly a boat, even over land.");
@@ -738,6 +742,9 @@ public final class NovaModules {
 		m.put("flight", new Module("flight", "Flight", Items.ELYTRA,
 				() -> cfg.flightEnabled, v -> cfg.flightEnabled = v,
 				new IntSetting("Speed", "/10", 1, 10, 1, () -> cfg.flightSpeed, v -> cfg.flightSpeed = v)));
+		m.put("noclip", new Module("noclip", "NoClip", Items.GLASS,
+				() -> cfg.noClipEnabled, v -> cfg.noClipEnabled = v,
+				new IntSetting("Speed", "/10", 1, 10, 1, () -> cfg.noClipSpeed, v -> cfg.noClipSpeed = v)));
 		m.put("spam", new Module("spam", "Spam", Items.WRITABLE_BOOK,
 				() -> cfg.spamEnabled, v -> cfg.spamEnabled = v,
 				new StringSetting("Message", "Type a message…", () -> cfg.spamMessage, v -> cfg.spamMessage = v),
@@ -882,7 +889,7 @@ public final class NovaModules {
 		categories.add(new Category("Inventory", Items.CHEST, pick(m,
 				"autoarmor", "cheststeal", "refill", "autohotbar", "invcleaner", "autosign")));
 		categories.add(new Category("Misc", Items.COMPASS, pick(m,
-				"fullbright", "flight", "spam", "waterwalk", "boatfly", "teleporter", "nickname", "nickother",
+				"fullbright", "flight", "noclip", "spam", "waterwalk", "boatfly", "teleporter", "nickname", "nickother",
 				"pingspoof", "pingequalizer", "slow", "rtpfinder")));
 		return categories;
 	}

@@ -334,6 +334,9 @@ public final class ProFPSConfig {
 	// Classics
 	public boolean flightEnabled = false;
 	public int flightSpeed = 5; // 1 (slow) .. 10 (fast) blocks-per-tick fly speed
+	/** NoClip: drops collision and drives velocity; for singleplayer and servers you run. */
+	public boolean noClipEnabled = false;
+	public int noClipSpeed = 5;
 	public boolean spamEnabled = false;
 	public String spamMessage = "Novaclient Is The Best Client";
 	public int spamSpeed = 5; // 1 (slow) .. 10 (fast) chat-spam rate
@@ -1011,6 +1014,10 @@ public final class ProFPSConfig {
 		if (instantClickAllowedItems == null) { instantClickAllowedItems = new java.util.ArrayList<>(); changed = true; }
 		if (scaffoldSpeed < 0 || scaffoldSpeed > 10) {
 			scaffoldSpeed = MathHelper.clamp(scaffoldSpeed, 0, 10);
+			changed = true;
+		}
+		if (noClipSpeed < 1 || noClipSpeed > 10) {
+			noClipSpeed = MathHelper.clamp(noClipSpeed, 1, 10);
 			changed = true;
 		}
 		if (flightSpeed < 1 || flightSpeed > 10) {

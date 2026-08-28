@@ -109,6 +109,7 @@ public final class ProFPSClient implements ClientModInitializer {
 	private static AutoLungeSwapController autoLunge;
 	private static AutoSpearController autoSpear;
 	private static SchematicBuildController schematicBuild;
+	private static com.profps.client.classics.NoClipController noClip;
 	private static AntiFireballController antiFireball;
 	private static KnockbackDisplacementController kbDisplace;
 	private static KeyBinding openKey;
@@ -166,6 +167,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		RememberController remember = new RememberController(config);
 		schematicBuild = new SchematicBuildController(config, remember);
 		FlightController flight = new FlightController(config);
+		noClip = new com.profps.client.classics.NoClipController(config);
 		SpamController spam = new SpamController(config);
 		WaterWalkController waterWalk = new WaterWalkController(config);
 		BoatFlyController boatFly = new BoatFlyController(config);
@@ -230,6 +232,8 @@ public final class ProFPSClient implements ClientModInitializer {
 			heightClutch.tick(client);
 			remember.tick(client);
 			// schematicBuild is ticked from firePreMovement to keep use before flying packet order.
+			// Before Flight: both own velocity outright, and NoClip wins while it is phasing.
+			noClip.tick(client);
 			flight.tick(client);
 			spam.tick(client);
 			waterWalk.tick(client);

@@ -20,6 +20,9 @@ public final class FlightController {
 				|| !player.isAlive() || player.isSpectator()) {
 			return;
 		}
+		// NoClip drives velocity too, and it ticks first; overwriting it here would cancel its
+		// easing and strand the player mid-block.
+		if (config.noClipEnabled) return;
 		// Blocks per tick.
 		double speed = 0.13 * MathHelper.clamp(config.flightSpeed, 1, 10);
 
