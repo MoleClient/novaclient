@@ -953,7 +953,7 @@ public final class AutoMoveController {
 
 	private void status(MinecraftClient client, String message, Formatting color, int cooldown) {
 		if (client.player.age < nextStatusTick) return;
-		client.inGameHud.setOverlayMessage(Text.literal("Auto Move ").formatted(Formatting.AQUA, Formatting.BOLD)
+		client.inGameHud.setOverlayMessage(Text.literal("Auto Move Builder ").formatted(Formatting.AQUA, Formatting.BOLD)
 				.append(Text.literal("• " + message).formatted(color)), false);
 		nextStatusTick = client.player.age + cooldown;
 	}
