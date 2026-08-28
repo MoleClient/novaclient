@@ -108,6 +108,7 @@ public final class ProFPSClient implements ClientModInitializer {
 	private static AutoCrystalController autoCrystal;
 	private static AutoLungeSwapController autoLunge;
 	private static AutoSpearController autoSpear;
+	private static SchematicBuildController schematicBuild;
 	private static AntiFireballController antiFireball;
 	private static KnockbackDisplacementController kbDisplace;
 	private static KeyBinding openKey;
@@ -163,7 +164,7 @@ public final class ProFPSClient implements ClientModInitializer {
 		HeightClutchController heightClutch = new HeightClutchController(config);
 		antiFireball = new AntiFireballController(config);
 		RememberController remember = new RememberController(config);
-		SchematicBuildController schematicBuild = new SchematicBuildController(config, remember);
+		schematicBuild = new SchematicBuildController(config, remember);
 		FlightController flight = new FlightController(config);
 		SpamController spam = new SpamController(config);
 		WaterWalkController waterWalk = new WaterWalkController(config);
@@ -172,8 +173,6 @@ public final class ProFPSClient implements ClientModInitializer {
 		AutoBedController autoBed = new AutoBedController(config);
 		autoCreeper = new AutoCreeperController(config);
 		AutoMinecartController autoMinecart = new AutoMinecartController(config);
-		// Restore the last loaded schematic at its saved anchor.
-		com.profps.client.extras.SchematicLibrary.restore(config);
 		novaCategories = NovaModules.build(config);
 		ModuleKeybinds moduleKeybinds = new ModuleKeybinds(config, novaCategories);
 		KeyBinding.Category controlsCategory = KeyBinding.Category.create(Identifier.of(ProFPS.MOD_ID, "controls"));
@@ -228,7 +227,7 @@ public final class ProFPSClient implements ClientModInitializer {
 			clutch.tick(client);
 			heightClutch.tick(client);
 			remember.tick(client);
-			schematicBuild.tick(client);
+			// schematicBuild is ticked from firePreMovement to keep use before flying packet order.
 			flight.tick(client);
 			spam.tick(client);
 			waterWalk.tick(client);
@@ -261,19 +260,12 @@ public final class ProFPSClient implements ClientModInitializer {
 					spearOwnsRotation = autoLunge.frame(mc);
 					if (!spearOwnsRotation) spearOwnsRotation = autoSpear.frame(mc);
 				}
-				if (!pearlOwnsRotation && !expandedOwnsRotation && !creeperOwnsRotation
-						&& !spearOwnsRotation) {
-					schematicBuild.frame(mc);
-				}
-				boolean schematicOwnsRotation = schematicBuild.ownsRotation();
 				// The pot flick must own rotation exclusively while it runs.
 				boolean potOwnsRotation = autoPot.ownsRotation();
-				if (!schematicOwnsRotation) {
-					autoPot.frame(mc);
-					tunnel.frame(mc);
-				}
+				autoPot.frame(mc);
+				tunnel.frame(mc);
 				boolean modeRotationBlocked = pearlOwnsRotation || expandedOwnsRotation || creeperOwnsRotation
-						|| spearOwnsRotation || schematicOwnsRotation || potOwnsRotation;
+						|| spearOwnsRotation || potOwnsRotation;
 				if (!modeRotationBlocked) {
 					aimImprovements.frame(mc);
 					strafeImprovements.frame(mc);
@@ -285,8 +277,8 @@ public final class ProFPSClient implements ClientModInitializer {
 					autoAim.frame(mc);
 					swordAi.frame(mc);
 				}
-				if (!schematicOwnsRotation && !pearlOwnsRotation && !expandedOwnsRotation) autoCreeper.frame(mc);
-				if (!schematicOwnsRotation) autoMinecart.frame(mc);
+				if (!pearlOwnsRotation && !expandedOwnsRotation) autoCreeper.frame(mc);
+				autoMinecart.frame(mc);
 			});
 		// Use END_MAIN, not BEFORE_DEBUG_RENDER: performance mods can skip the vanilla
 		// debug-renderer invocation and with it Fabric's event.
@@ -294,8 +286,6 @@ public final class ProFPSClient implements ClientModInitializer {
 		WorldRenderEvents.END_MAIN.register(advancedEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(storageEsp::renderWorld);
 		WorldRenderEvents.END_MAIN.register(remember::render);
-		WorldRenderEvents.END_MAIN.register(
-				new com.profps.client.extras.SchematicGhostRenderer(config)::render);
 		WorldRenderEvents.END_MAIN.register(primeChunk::renderWorld);
 		WorldRenderEvents.END_MAIN.register(stashPinger::renderWorld);
 		WorldRenderEvents.END_MAIN.register(amethystDetector::renderWorld);
@@ -417,6 +407,8 @@ public final class ProFPSClient implements ClientModInitializer {
 		if (kbDisplace != null) kbDisplace.tick(client);
 		if (anchorMacro != null) anchorMacro.tick(client);
 		if (autoCrystal != null) autoCrystal.tick(client);
+		// After the combat controllers: a quiet tick builds, a fighting tick never doubles an action.
+		if (schematicBuild != null) schematicBuild.tickPreMovement(client);
 		if (autoClicker != null) autoClicker.tickPreMovement(client);
 		// Read-only, and last, so it samples the state the modules above settled.
 		com.profps.client.data.DataContribution recorder = com.profps.client.data.DataContribution.instance();

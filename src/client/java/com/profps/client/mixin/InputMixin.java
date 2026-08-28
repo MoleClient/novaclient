@@ -7,7 +7,6 @@ import com.profps.client.aim.SilentAimController;
 import com.profps.client.donutsmp.FreecamController;
 import com.profps.client.donutsmp.TunnelController;
 import com.profps.client.extras.ScaffoldController;
-import com.profps.client.extras.SchematicBuildController;
 import net.minecraft.client.input.KeyboardInput;
 import net.minecraft.util.PlayerInput;
 import net.minecraft.util.math.Vec2f;
@@ -42,14 +41,7 @@ public abstract class InputMixin {
 				overridden = true;
 			}
 
-			// The builder yields to any manual movement key on the same frame.
-			boolean schematicMoving = SchematicBuildController.isAutoMoving();
-			boolean manualMovement = input.forward() || input.backward() || input.left() || input.right()
-					|| input.jump() || input.sneak();
-			if (schematicMoving && !manualMovement) {
-				input = SchematicBuildController.movementInput();
-				overridden = true;
-			} else if (SwordAiController.isControlling()) {
+			if (SwordAiController.isControlling()) {
 				PlayerInput ai = SwordAiController.movementInput(input);
 				if (ai != null) {
 					input = ai;
@@ -63,42 +55,40 @@ public abstract class InputMixin {
 				}
 			}
 
-			if (!schematicMoving) {
-				PlayerInput swordSprint = StrafeImprovementsController.swordSprintOverride(input);
-				if (swordSprint != null) {
-					input = swordSprint;
-					overridden = true;
-				}
+			PlayerInput swordSprint = StrafeImprovementsController.swordSprintOverride(input);
+			if (swordSprint != null) {
+				input = swordSprint;
+				overridden = true;
+			}
 
-				// Layered after AI/strafe so the hit prep tap goes through the same input path.
-				PlayerInput normalHit = HitImprovementsController.normalHitOverride(input);
-				if (normalHit != null) {
-					input = normalHit;
-					overridden = true;
-				}
+			// Layered after AI/strafe so the hit prep tap goes through the same input path.
+			PlayerInput normalHit = HitImprovementsController.normalHitOverride(input);
+			if (normalHit != null) {
+				input = normalHit;
+				overridden = true;
+			}
 
-				// Must run after the sprint prep: an airborne swing cannot crit while sprinting.
-				PlayerInput critTap = HitImprovementsController.critSprintOverride(input);
-				if (critTap != null) {
-					input = critTap;
-					overridden = true;
-				}
+			// Must run after the sprint prep: an airborne swing cannot crit while sprinting.
+			PlayerInput critTap = HitImprovementsController.critSprintOverride(input);
+			if (critTap != null) {
+				input = critTap;
+				overridden = true;
+			}
 
-				// Separate layer because Axe Crit runs from its own toggle.
-				PlayerInput axeCritTap = com.profps.client.instants.AxeCritController
-						.critSprintOverride(input);
-				if (axeCritTap != null) {
-					input = axeCritTap;
-					overridden = true;
-				}
+			// Separate layer because Axe Crit runs from its own toggle.
+			PlayerInput axeCritTap = com.profps.client.instants.AxeCritController
+					.critSprintOverride(input);
+			if (axeCritTap != null) {
+				input = axeCritTap;
+				overridden = true;
+			}
 
-				// Sprinting hits above 0.9 charge add knockback, pushing the target out of mace range.
-				PlayerInput stunTap = com.profps.client.instants.AutoMaceController
-						.stunSprintOverride(input);
-				if (stunTap != null) {
-					input = stunTap;
-					overridden = true;
-				}
+			// Sprinting hits above 0.9 charge add knockback, pushing the target out of mace range.
+			PlayerInput stunTap = com.profps.client.instants.AutoMaceController
+					.stunSprintOverride(input);
+			if (stunTap != null) {
+				input = stunTap;
+				overridden = true;
 			}
 
 			// Applied last: movement resolves against the body rotation, not the view.

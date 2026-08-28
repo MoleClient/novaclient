@@ -2,12 +2,10 @@ package com.profps.client.ui.nova;
 
 import com.profps.client.config.NickEntry;
 import com.profps.client.config.ProFPSConfig;
-import com.profps.client.extras.SchematicLibrary;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.PotionContentsComponent;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.item.Items;
 import net.minecraft.potion.Potions;
 
@@ -376,12 +374,9 @@ public final class NovaModules {
 		d.put("nickname", "Changes your name everywhere on your client.");
 		d.put("nickother", "Rewrites other players' names on your client.");
 		d.put("remember", "Captures multiple builds as see-through ghosts; Delete removes the one you see.");
-		d.put("schematicbuild", "Pick a .litematic from your schematics folder and press Load here "
-				+ "to anchor it where you stand — no Litematica placement needed. Builds layer by "
-				+ "layer, deepest interior cell first so a thick or wide layer never seals itself "
-				+ "in. Auto Move walks the build itself, standing where each block's rotation "
-				+ "requires, crouching to place against repeaters and chests, and saving water for "
-				+ "a final pass. Remember captures still work and take priority.");
+		d.put("schematicbuild", "Places the schematic block under your crosshair while you aim and "
+				+ "walk. Reads a Remember capture or an enabled Litematica placement, switches to "
+				+ "the right material, and clicks at a human pace.");
 		d.put(MODE_SWORD, "Full sword kit at one strength — aim, strafe, sprint and trigger together.");
 		d.put(MODE_AXE, "Full axe kit at one strength — shield stun, sword handoff and projectile aim.");
 		d.put(MODE_MACE, "Full mace kit at one strength — smash aim, Breach swaps and stun slams.");
@@ -771,21 +766,7 @@ public final class NovaModules {
 		m.put("remember", new Module("remember", "Remember", Items.YELLOW_WOOL,
 				() -> cfg.rememberEnabled, v -> cfg.rememberEnabled = v));
 		m.put("schematicbuild", new Module("schematicbuild", "Schematic Build", Items.FILLED_MAP,
-				() -> cfg.schematicBuildEnabled, v -> cfg.schematicBuildEnabled = v,
-				new ChoiceSetting("Schematic", SchematicLibrary::names,
-						() -> cfg.schematicLibrarySelection,
-						v -> cfg.schematicLibrarySelection = v),
-				// Anchors the schematic at the player position and enables the builder.
-				new ButtonSetting("Place", "Load here", () -> SchematicLibrary.load(
-						MinecraftClient.getInstance(), cfg, cfg.schematicLibrarySelection)),
-				new ButtonSetting("Folder", "Rescan", SchematicLibrary::rescan),
-				new ButtonSetting("Loaded", "Unload", () -> SchematicLibrary.clear(cfg)),
-				new BoolSetting("Hologram", () -> cfg.schematicShowGhost,
-						v -> cfg.schematicShowGhost = v),
-				new BoolSetting("Auto Move", () -> cfg.schematicAutoMove,
-						v -> cfg.schematicAutoMove = v),
-				new BoolSetting("Temporary Blocks", () -> cfg.schematicTemporaryBlocks,
-						v -> cfg.schematicTemporaryBlocks = v)));
+				() -> cfg.schematicBuildEnabled, v -> cfg.schematicBuildEnabled = v));
 		m.put("slow", new Module("slow", "Slow", Items.COBWEB,
 				() -> cfg.slowAnimations, v -> cfg.slowAnimations = v,
 				new IntSetting("Slowness", "x", 2, 8, 1, () -> cfg.slowAnimationStrength, v -> cfg.slowAnimationStrength = v)));

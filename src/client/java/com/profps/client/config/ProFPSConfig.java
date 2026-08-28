@@ -319,15 +319,11 @@ public final class ProFPSConfig {
 	public boolean pingEqualizerEnabled = false; // match your reported ping to the opponent you're fighting
 	public boolean antiFireballAssist = false; // smooth-aim + sword-deflect incoming bedwars fireballs
 	public boolean rememberEnabled = false;    // capture multiple builds as translucent real-block ghosts
-	public boolean schematicBuildEnabled = false; // auto-place in-reach cells from Remember or a loaded Litematica placement
-	public boolean schematicAutoMove = true;   // walk the build itself, choosing stands that produce the right block rotation
-	public boolean schematicShowGhost = true;  // translucent hologram of what the loaded schematic still needs
-	public String schematicLibraryFile = "";   // .litematic loaded by us, read straight from the schematics folder
-	public int schematicLibrarySelection;      // dropdown index, remembered between openings
-	public int schematicLibraryOriginX;        // where Load anchored the schematic
-	public int schematicLibraryOriginY;
-	public int schematicLibraryOriginZ;
-	public boolean schematicTemporaryBlocks = true; // bridge/stair/platform supports for otherwise unsupported schematic cells
+	public boolean schematicBuildEnabled = false; // place the crosshair cell from Remember or an enabled Litematica placement
+	/** Retained only to read older config files; the builder no longer moves the player. */
+	public boolean schematicAutoMove = true;
+	/** Retained only to read older config files; temporary support scaffolding is gone. */
+	public boolean schematicTemporaryBlocks = true;
 	public boolean swordAiEnabled = false;     // distilled local movement model for sword combat
 	public boolean swordAiAim = true;          // let the AI turn your view (pitch + yaw) onto the target
 	public boolean swordAiJump = true;         // let the AI jump for crits + occasional movement (never constant)
